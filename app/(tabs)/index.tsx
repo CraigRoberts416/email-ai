@@ -7,7 +7,7 @@ import { Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } 
 
 // ─── Gmail helpers ────────────────────────────────────────────────────────
 
-const BACKEND_BASE_URL = 'http://localhost:3001';
+const BACKEND_BASE_URL = 'https://email-ai-server.onrender.com';
 
 function getHeader(headers: { name: string; value: string }[], name: string): string {
   return headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value ?? '';
@@ -336,6 +336,25 @@ export default function Index() {
                   setCards(prev => [...prev, enriched]);
                 } catch (err) {
                   console.error('[interpret-single] failed for', email.id, err);
+                  const meta = metaById[email.id];
+                  const fallback = {
+                    id: email.id,
+                    senderName: email.sender.name,
+                    senderEmail: email.sender.email,
+                    subject: email.subject,
+                    date: email.date,
+                    threadId: email.threadId,
+                    avatarUri: null,
+                    avatarFallbackText: (email.sender.name || email.sender.email || '?').charAt(0).toUpperCase(),
+                    quote: 'Unable to extract quote',
+                    summary: email.snippet || 'Unable to summarize email.',
+                    action: null,
+                    actionUrl: null,
+                    timestamp: meta ? formatRelativeTime(meta.date) : '',
+                    threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
+                  };
+                  console.log('[interpret-single] rendering fallback card for', email.id);
+                  setCards(prev => [...prev, fallback]);
                 }
               }
             } catch (err) {
@@ -348,7 +367,12 @@ export default function Index() {
         >
           <Text style={styles.connectLabel}>{loadingEmails ? 'Loading…' : 'Get Emails'}</Text>
         </Pressable>
-        {cards.map((card, i) => (
+        {cards.map((card, i) => {
+          console.log('AVATAR DEBUG:', {
+            sender: card.senderEmail,
+            avatarUri: card.avatarUri,
+          });
+          return (
           <View key={card.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
             <EmailCard
               sender={{
@@ -372,7 +396,8 @@ export default function Index() {
               actions={{ aiSuggestionCount: 0 }}
             />
           </View>
-        ))}
+          );
+        })}
       </ScrollView>
     </SafeAreaView>
   );
