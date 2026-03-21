@@ -4,8 +4,8 @@ import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
-import { useEffect, useState } from 'react';
-import { Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 // ─── Gmail helpers ────────────────────────────────────────────────────────
 
@@ -288,6 +288,144 @@ export default function Index() {
     })();
   }, []);
 
+  const runSync = useCallback(async () => {
+    if (!accessToken || loadingEmails) return;
+    setLoadingEmails(true);
+    // Snapshot cards at sync start — used consistently for dedup and combine
+    const existingCards = cards;
+    try {
+      // Refresh token if expired before making Gmail requests
+      let currentToken = accessToken;
+      const stored = await loadAuth();
+      if (stored && stored.refreshToken && Date.now() >= stored.expiresAt - 60_000) {
+        console.log('[auth] token expired before fetch, refreshing...');
+        const refreshed = await refreshAccessToken(stored.refreshToken);
+        if (refreshed) {
+          await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+          setAccessToken(refreshed.accessToken);
+          currentToken = refreshed.accessToken;
+        }
+      }
+
+      const listRes = await fetch(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
+        { headers: { Authorization: `Bearer ${currentToken}` } }
+      );
+      const listJson = await listRes.json();
+      if (!listRes.ok) {
+        console.error('[gmail] list error:', JSON.stringify(listJson, null, 2));
+        return;
+      }
+
+      const existingIds = new Set(existingCards.map((c: any) => c.id));
+      const allIds: string[] = (listJson.messages ?? []).slice(0, 5).map((m: any) => m.id);
+      const ids = allIds.filter(id => !existingIds.has(id));
+      if (ids.length === 0) {
+        console.log('[sync] no new emails');
+        return;
+      }
+      console.log('[sync]', ids.length, 'new email(s) to process');
+
+      const emails = await Promise.all(
+        ids.map(async (id) => {
+          const msgRes = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
+            { headers: { Authorization: `Bearer ${currentToken}` } }
+          );
+          const msg = await msgRes.json();
+          return cleanEmailForAI(msg);
+        })
+      );
+
+      console.log('[gmail] cleanEmailForAI first email:', JSON.stringify(emails[0], null, 2));
+
+      // Build local metadata map and fetch thread counts in parallel with backend call
+      const metaById: Record<string, { date: string; threadId: string }> = {};
+      emails.forEach((e: any) => { metaById[e.id] = { date: e.date, threadId: e.threadId }; });
+
+      const uniqueThreadIds = [...new Set(emails.map((e: any) => e.threadId as string))];
+
+      // Await thread counts before streaming — fast metadata call, always done before first AI response
+      const threadCountEntries = await Promise.all(uniqueThreadIds.map(async (threadId) => {
+        try {
+          const res = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=metadata`,
+            { headers: { Authorization: `Bearer ${currentToken}` } }
+          );
+          const json = await res.json();
+          return [threadId, json.messages?.length ?? 1] as [string, number];
+        } catch {
+          return [threadId, 1] as [string, number];
+        }
+      }));
+      const threadCounts = Object.fromEntries(threadCountEntries);
+      console.log('[thread-counts]', JSON.stringify(threadCounts));
+      console.log('[email-meta] first:', JSON.stringify(Object.values(metaById)[0]));
+
+      // Process emails sequentially — append each card as it arrives
+      const incomingCards: any[] = [];
+      for (const email of emails) {
+        console.log('[interpret-single] requesting', email.id, email.subject);
+        try {
+          const res = await fetch(`${BACKEND_BASE_URL}/interpret-single`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email }),
+          });
+          const { card } = await res.json();
+          const meta = metaById[card.id];
+          const enriched = {
+            ...card,
+            threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
+          };
+          console.log('[interpret-single] card received:', card.id, card.senderName);
+          incomingCards.push(enriched);
+        } catch (err) {
+          console.error('[interpret-single] failed for', email.id, err);
+          const meta = metaById[email.id];
+          const fallback = {
+            id: email.id,
+            senderName: email.sender.name,
+            senderEmail: email.sender.email,
+            subject: email.subject,
+            date: email.date,
+            threadId: email.threadId,
+            avatarUri: null,
+            avatarFallbackText: (email.sender.name || email.sender.email || '?').charAt(0).toUpperCase(),
+            quote: 'Unable to extract quote',
+            summary: email.snippet || 'Unable to summarize email.',
+            action: null,
+            actionUrl: null,
+            threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
+          };
+          console.log('[interpret-single] rendering fallback card for', email.id);
+          incomingCards.push(fallback);
+        }
+      }
+      if (incomingCards.length > 0) {
+        const combined = [...incomingCards, ...existingCards];
+        setCards(combined);
+        await saveCards(combined);
+      }
+    } catch (err) {
+      console.error('[get-emails] fetch failed:', err);
+    } finally {
+      setLoadingEmails(false);
+    }
+  }, [accessToken, cards, loadingEmails]);
+
+  // Keep a ref so the AppState listener always calls the latest runSync
+  const syncRef = useRef(runSync);
+  useEffect(() => { syncRef.current = runSync; }, [runSync]);
+
+  // Auto-sync whenever the app comes to the foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') syncRef.current();
+    });
+    return () => sub.remove();
+  }, []);
+
   const [request, response, promptAsync] = Google.useAuthRequest({
     iosClientId: GOOGLE_IOS_CLIENT_ID,
     scopes: ['openid', 'profile', 'email', 'https://mail.google.com/'],
@@ -367,131 +505,7 @@ export default function Index() {
         </Pressable>
         <Pressable
           style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
-          onPress={async () => {
-            if (!accessToken) return;
-            setLoadingEmails(true);
-            // Snapshot cards at sync start — used consistently for dedup and combine
-            const existingCards = cards;
-            try {
-              // Refresh token if expired before making Gmail requests
-              let currentToken = accessToken;
-              const stored = await loadAuth();
-              if (stored && stored.refreshToken && Date.now() >= stored.expiresAt - 60_000) {
-                console.log('[auth] token expired before fetch, refreshing...');
-                const refreshed = await refreshAccessToken(stored.refreshToken);
-                if (refreshed) {
-                  await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
-                  setAccessToken(refreshed.accessToken);
-                  currentToken = refreshed.accessToken;
-                }
-              }
-
-              const listRes = await fetch(
-                'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
-                { headers: { Authorization: `Bearer ${currentToken}` } }
-              );
-              const listJson = await listRes.json();
-              if (!listRes.ok) {
-                console.error('[gmail] list error:', JSON.stringify(listJson, null, 2));
-                return;
-              }
-
-              const existingIds = new Set(existingCards.map((c: any) => c.id));
-              const allIds: string[] = (listJson.messages ?? []).slice(0, 5).map((m: any) => m.id);
-              const ids = allIds.filter(id => !existingIds.has(id));
-              if (ids.length === 0) {
-                console.log('[sync] no new emails');
-                return;
-              }
-              console.log('[sync]', ids.length, 'new email(s) to process');
-
-              const emails = await Promise.all(
-                ids.map(async (id) => {
-                  const msgRes = await fetch(
-                    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
-                    { headers: { Authorization: `Bearer ${currentToken}` } }
-                  );
-                  const msg = await msgRes.json();
-                  return cleanEmailForAI(msg);
-                })
-              );
-
-              console.log('[gmail] cleanEmailForAI first email:', JSON.stringify(emails[0], null, 2));
-
-              // Build local metadata map and fetch thread counts in parallel with backend call
-              const metaById: Record<string, { date: string; threadId: string }> = {};
-              emails.forEach((e: any) => { metaById[e.id] = { date: e.date, threadId: e.threadId }; });
-
-              const uniqueThreadIds = [...new Set(emails.map((e: any) => e.threadId as string))];
-
-              // Await thread counts before streaming — fast metadata call, always done before first AI response
-              const threadCountEntries = await Promise.all(uniqueThreadIds.map(async (threadId) => {
-                try {
-                  const res = await fetch(
-                    `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=metadata`,
-                    { headers: { Authorization: `Bearer ${currentToken}` } }
-                  );
-                  const json = await res.json();
-                  return [threadId, json.messages?.length ?? 1] as [string, number];
-                } catch {
-                  return [threadId, 1] as [string, number];
-                }
-              }));
-              const threadCounts = Object.fromEntries(threadCountEntries);
-              console.log('[thread-counts]', JSON.stringify(threadCounts));
-              console.log('[email-meta] first:', JSON.stringify(Object.values(metaById)[0]));
-
-              // Process emails sequentially — append each card as it arrives
-              const incomingCards: any[] = [];
-              for (const email of emails) {
-                console.log('[interpret-single] requesting', email.id, email.subject);
-                try {
-                  const res = await fetch(`${BACKEND_BASE_URL}/interpret-single`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email }),
-                  });
-                  const { card } = await res.json();
-                  const meta = metaById[card.id];
-                  const enriched = {
-                    ...card,
-                    threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
-                  };
-                  console.log('[interpret-single] card received:', card.id, card.senderName);
-                  incomingCards.push(enriched);
-                } catch (err) {
-                  console.error('[interpret-single] failed for', email.id, err);
-                  const meta = metaById[email.id];
-                  const fallback = {
-                    id: email.id,
-                    senderName: email.sender.name,
-                    senderEmail: email.sender.email,
-                    subject: email.subject,
-                    date: email.date,
-                    threadId: email.threadId,
-                    avatarUri: null,
-                    avatarFallbackText: (email.sender.name || email.sender.email || '?').charAt(0).toUpperCase(),
-                    quote: 'Unable to extract quote',
-                    summary: email.snippet || 'Unable to summarize email.',
-                    action: null,
-                    actionUrl: null,
-                    threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
-                  };
-                  console.log('[interpret-single] rendering fallback card for', email.id);
-                  incomingCards.push(fallback);
-                }
-              }
-              if (incomingCards.length > 0) {
-                const combined = [...incomingCards, ...existingCards];
-                setCards(combined);
-                await saveCards(combined);
-              }
-            } catch (err) {
-              console.error('[get-emails] fetch failed:', err);
-            } finally {
-              setLoadingEmails(false);
-            }
-          }}
+          onPress={runSync}
           disabled={!accessToken || loadingEmails}
         >
           <Text style={styles.connectLabel}>{loadingEmails ? 'Loading…' : 'Get Emails'}</Text>
