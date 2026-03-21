@@ -290,7 +290,7 @@ const styles = StyleSheet.create({
   },
   senderEmail: {
     fontFamily: InterFonts.regular,
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: '400',
     color: Colors.light.textSecondary,
   },
@@ -299,13 +299,13 @@ const styles = StyleSheet.create({
     height: Spacing.xl,
     borderRadius: Radius.round,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-end',
     flexShrink: 0,
   },
 
   // Body
   body: {
-    gap: Spacing.lg,
+    gap: Spacing.md,
   },
   bodyTop: {
     gap: 12,
@@ -331,17 +331,19 @@ const styles = StyleSheet.create({
     letterSpacing: -0.32,
   },
   ctaBtn: {
-    backgroundColor: Colors.light.surface,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.light.textSecondary,
+    borderRadius: Radius.xl,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     alignSelf: 'flex-start',
   },
   ctaLabel: {
     fontFamily: InterFonts.regular,
-    fontSize: 10,
+    fontSize: 16,
     fontWeight: '400',
     color: Colors.light.textPrimary,
+    letterSpacing: -0.32,
   },
 
   // Bottom
@@ -371,7 +373,7 @@ const styles = StyleSheet.create({
   actionBar: {
     borderTopWidth: 1,
     borderTopColor: Colors.light.border,
-    paddingTop: Spacing.lg,
+    paddingTop: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',

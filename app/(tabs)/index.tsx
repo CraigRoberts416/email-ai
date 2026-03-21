@@ -2,12 +2,44 @@ import EmailCard from '@/components/EmailCard';
 import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import * as Google from 'expo-auth-session/providers/google';
+import * as SecureStore from 'expo-secure-store';
 import { useEffect, useState } from 'react';
 import { Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 // ─── Gmail helpers ────────────────────────────────────────────────────────
 
 const BACKEND_BASE_URL = 'https://email-ai-server.onrender.com';
+
+const AUTH_STORAGE_KEY = 'gmail_auth';
+
+async function saveAuth(accessToken: string, refreshToken: string | null, expiresAt: number) {
+  await SecureStore.setItemAsync(AUTH_STORAGE_KEY, JSON.stringify({ accessToken, refreshToken: refreshToken ?? null, expiresAt }));
+}
+
+async function loadAuth(): Promise<{ accessToken: string; refreshToken: string | null; expiresAt: number } | null> {
+  const raw = await SecureStore.getItemAsync(AUTH_STORAGE_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; expiresAt: number } | null> {
+  const body = new URLSearchParams({
+    client_id: GOOGLE_IOS_CLIENT_ID,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+  }).toString();
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+  const json = await res.json();
+  if (!res.ok) {
+    console.error('[auth] refresh failed:', json);
+    return null;
+  }
+  return { accessToken: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
+}
 
 function getHeader(headers: { name: string; value: string }[], name: string): string {
   return headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value ?? '';
@@ -189,6 +221,39 @@ export default function Index() {
   const [cards, setCards] = useState<any[]>([]);
   const [loadingEmails, setLoadingEmails] = useState(false);
 
+  // Restore auth on launch
+  useEffect(() => {
+    (async () => {
+      try {
+        const stored = await loadAuth();
+        if (!stored) { console.log('[auth] no stored session'); return; }
+        const isExpired = Date.now() >= stored.expiresAt - 60_000;
+        if (isExpired) {
+          console.log('[auth] stored token expired, refreshing...');
+          if (!stored.refreshToken) {
+            console.log('[auth] token expired and no refresh token, clearing session');
+            await SecureStore.deleteItemAsync(AUTH_STORAGE_KEY);
+          } else {
+            const refreshed = await refreshAccessToken(stored.refreshToken);
+            if (refreshed) {
+              await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+              setAccessToken(refreshed.accessToken);
+              console.log('[auth] session restored via refresh');
+            } else {
+              await SecureStore.deleteItemAsync(AUTH_STORAGE_KEY);
+              console.log('[auth] refresh failed, cleared stored session');
+            }
+          }
+        } else {
+          setAccessToken(stored.accessToken);
+          console.log('[auth] session restored from storage');
+        }
+      } catch (err) {
+        console.error('[auth] restore error:', err);
+      }
+    })();
+  }, []);
+
   const [request, response, promptAsync] = Google.useAuthRequest({
     iosClientId: GOOGLE_IOS_CLIENT_ID,
     scopes: ['openid', 'profile', 'email', 'https://mail.google.com/'],
@@ -236,6 +301,11 @@ export default function Index() {
 
         const accessToken = json.access_token;
         setAccessToken(accessToken);
+        const existingAuth = await loadAuth();
+        const refreshToken = json.refresh_token ?? existingAuth?.refreshToken ?? null;
+        await saveAuth(accessToken, refreshToken, Date.now() + json.expires_in * 1000);
+        console.log('[auth] refresh_token present:', !!refreshToken);
+        console.log('[auth] tokens saved to secure storage');
         console.log('[gmail] fetching profile with access_token:', accessToken);
 
         const profileRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
@@ -268,9 +338,22 @@ export default function Index() {
             setLoadingEmails(true);
             setCards([]);
             try {
+              // Refresh token if expired before making Gmail requests
+              let currentToken = accessToken;
+              const stored = await loadAuth();
+              if (stored && stored.refreshToken && Date.now() >= stored.expiresAt - 60_000) {
+                console.log('[auth] token expired before fetch, refreshing...');
+                const refreshed = await refreshAccessToken(stored.refreshToken);
+                if (refreshed) {
+                  await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+                  setAccessToken(refreshed.accessToken);
+                  currentToken = refreshed.accessToken;
+                }
+              }
+
               const listRes = await fetch(
                 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',
-                { headers: { Authorization: `Bearer ${accessToken}` } }
+                { headers: { Authorization: `Bearer ${currentToken}` } }
               );
               const listJson = await listRes.json();
               if (!listRes.ok) {
@@ -284,7 +367,7 @@ export default function Index() {
                 ids.map(async (id) => {
                   const msgRes = await fetch(
                     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
-                    { headers: { Authorization: `Bearer ${accessToken}` } }
+                    { headers: { Authorization: `Bearer ${currentToken}` } }
                   );
                   const msg = await msgRes.json();
                   return cleanEmailForAI(msg);
@@ -304,7 +387,7 @@ export default function Index() {
                 try {
                   const res = await fetch(
                     `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}?format=metadata`,
-                    { headers: { Authorization: `Bearer ${accessToken}` } }
+                    { headers: { Authorization: `Bearer ${currentToken}` } }
                   );
                   const json = await res.json();
                   return [threadId, json.messages?.length ?? 1] as [string, number];
