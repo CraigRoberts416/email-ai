@@ -1,6 +1,7 @@
 import EmailCard from '@/components/EmailCard';
 import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
 import { useEffect, useState } from 'react';
@@ -11,6 +12,17 @@ import { Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } 
 const BACKEND_BASE_URL = 'https://email-ai-server.onrender.com';
 
 const AUTH_STORAGE_KEY = 'gmail_auth';
+const CARDS_STORAGE_KEY = 'email_cards';
+
+async function saveCards(cards: any[]) {
+  await AsyncStorage.setItem(CARDS_STORAGE_KEY, JSON.stringify(cards));
+}
+
+async function loadCards(): Promise<any[]> {
+  const raw = await AsyncStorage.getItem(CARDS_STORAGE_KEY);
+  if (!raw) return [];
+  try { return JSON.parse(raw); } catch { return []; }
+}
 
 async function saveAuth(accessToken: string, refreshToken: string | null, expiresAt: number) {
   await SecureStore.setItemAsync(AUTH_STORAGE_KEY, JSON.stringify({ accessToken, refreshToken: refreshToken ?? null, expiresAt }));
@@ -254,6 +266,21 @@ export default function Index() {
     })();
   }, []);
 
+  // Restore cached cards on launch
+  useEffect(() => {
+    (async () => {
+      try {
+        const cached = await loadCards();
+        if (cached.length > 0) {
+          setCards(cached);
+          console.log('[cache] restored', cached.length, 'cards');
+        }
+      } catch (err) {
+        console.error('[cache] restore error:', err);
+      }
+    })();
+  }, []);
+
   const [request, response, promptAsync] = Google.useAuthRequest({
     iosClientId: GOOGLE_IOS_CLIENT_ID,
     scopes: ['openid', 'profile', 'email', 'https://mail.google.com/'],
@@ -400,6 +427,7 @@ export default function Index() {
               console.log('[email-meta] first:', JSON.stringify(Object.values(metaById)[0]));
 
               // Process emails sequentially — append each card as it arrives
+              const newCards: any[] = [];
               for (const email of emails) {
                 console.log('[interpret-single] requesting', email.id, email.subject);
                 try {
@@ -416,7 +444,9 @@ export default function Index() {
                     threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
                   };
                   console.log('[interpret-single] card received:', card.id, card.senderName);
+                  newCards.push(enriched);
                   setCards(prev => [...prev, enriched]);
+                  await saveCards(newCards);
                 } catch (err) {
                   console.error('[interpret-single] failed for', email.id, err);
                   const meta = metaById[email.id];
@@ -437,7 +467,9 @@ export default function Index() {
                     threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
                   };
                   console.log('[interpret-single] rendering fallback card for', email.id);
+                  newCards.push(fallback);
                   setCards(prev => [...prev, fallback]);
+                  await saveCards(newCards);
                 }
               }
             } catch (err) {
