@@ -363,7 +363,8 @@ export default function Index() {
           onPress={async () => {
             if (!accessToken) return;
             setLoadingEmails(true);
-            setCards([]);
+            // Snapshot cards at sync start — used consistently for dedup and combine
+            const existingCards = cards;
             try {
               // Refresh token if expired before making Gmail requests
               let currentToken = accessToken;
@@ -388,7 +389,14 @@ export default function Index() {
                 return;
               }
 
-              const ids: string[] = (listJson.messages ?? []).slice(0, 5).map((m: any) => m.id);
+              const existingIds = new Set(existingCards.map((c: any) => c.id));
+              const allIds: string[] = (listJson.messages ?? []).slice(0, 5).map((m: any) => m.id);
+              const ids = allIds.filter(id => !existingIds.has(id));
+              if (ids.length === 0) {
+                console.log('[sync] no new emails');
+                return;
+              }
+              console.log('[sync]', ids.length, 'new email(s) to process');
 
               const emails = await Promise.all(
                 ids.map(async (id) => {
@@ -427,7 +435,7 @@ export default function Index() {
               console.log('[email-meta] first:', JSON.stringify(Object.values(metaById)[0]));
 
               // Process emails sequentially — append each card as it arrives
-              const newCards: any[] = [];
+              const incomingCards: any[] = [];
               for (const email of emails) {
                 console.log('[interpret-single] requesting', email.id, email.subject);
                 try {
@@ -444,9 +452,7 @@ export default function Index() {
                     threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
                   };
                   console.log('[interpret-single] card received:', card.id, card.senderName);
-                  newCards.push(enriched);
-                  setCards(prev => [...prev, enriched]);
-                  await saveCards(newCards);
+                  incomingCards.push(enriched);
                 } catch (err) {
                   console.error('[interpret-single] failed for', email.id, err);
                   const meta = metaById[email.id];
@@ -467,10 +473,13 @@ export default function Index() {
                     threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
                   };
                   console.log('[interpret-single] rendering fallback card for', email.id);
-                  newCards.push(fallback);
-                  setCards(prev => [...prev, fallback]);
-                  await saveCards(newCards);
+                  incomingCards.push(fallback);
                 }
+              }
+              if (incomingCards.length > 0) {
+                const combined = [...incomingCards, ...existingCards];
+                setCards(combined);
+                await saveCards(combined);
               }
             } catch (err) {
               console.error('[get-emails] fetch failed:', err);
