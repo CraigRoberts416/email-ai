@@ -233,6 +233,13 @@ export default function Index() {
   const [cards, setCards] = useState<any[]>([]);
   const [loadingEmails, setLoadingEmails] = useState(false);
 
+  // Re-render every minute so relative timestamps stay current
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   // Restore auth on launch
   useEffect(() => {
     (async () => {
@@ -448,7 +455,6 @@ export default function Index() {
                   const meta = metaById[card.id];
                   const enriched = {
                     ...card,
-                    timestamp: meta ? formatRelativeTime(meta.date) : '',
                     threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
                   };
                   console.log('[interpret-single] card received:', card.id, card.senderName);
@@ -469,7 +475,6 @@ export default function Index() {
                     summary: email.snippet || 'Unable to summarize email.',
                     action: null,
                     actionUrl: null,
-                    timestamp: meta ? formatRelativeTime(meta.date) : '',
                     threadMessageCount: meta ? (threadCounts[meta.threadId] ?? 1) : 1,
                   };
                   console.log('[interpret-single] rendering fallback card for', email.id);
@@ -515,7 +520,7 @@ export default function Index() {
                   : undefined,
                 actionLabel: card.action && !card.actionUrl ? card.action : undefined,
               }}
-              timestamp={card.timestamp}
+              timestamp={formatRelativeTime(card.date)}
               threadMessageCount={card.threadMessageCount}
               actions={{ aiSuggestionCount: 0 }}
             />
