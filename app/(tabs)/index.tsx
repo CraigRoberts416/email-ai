@@ -275,12 +275,15 @@ export default function Index() {
 
   // Restore cached cards on launch
   useEffect(() => {
+    console.log('[cache] restore effect mounting');
     (async () => {
       try {
         const cached = await loadCards();
         if (cached.length > 0) {
           setCards(cached);
           console.log('[cache] restored', cached.length, 'cards');
+        } else {
+          console.log('[cache] no cached cards found');
         }
       } catch (err) {
         console.error('[cache] restore error:', err);
@@ -289,7 +292,9 @@ export default function Index() {
   }, []);
 
   const runSync = useCallback(async () => {
-    if (!accessToken || loadingEmails) return;
+    console.log('[runSync] called — accessToken:', !!accessToken, 'loadingEmails:', loadingEmails);
+    if (!accessToken) { console.log('[runSync] exit: no accessToken'); return; }
+    if (loadingEmails) { console.log('[runSync] exit: already loading'); return; }
     setLoadingEmails(true);
     // Snapshot cards at sync start — used consistently for dedup and combine
     const existingCards = cards;
@@ -421,7 +426,11 @@ export default function Index() {
   // Auto-sync whenever the app comes to the foreground
   useEffect(() => {
     const sub = AppState.addEventListener('change', nextState => {
-      if (nextState === 'active') syncRef.current();
+      console.log('[appstate] change →', nextState);
+      if (nextState === 'active') {
+        console.log('[appstate] foregrounded — calling syncRef.current()');
+        syncRef.current();
+      }
     });
     return () => sub.remove();
   }, []);
