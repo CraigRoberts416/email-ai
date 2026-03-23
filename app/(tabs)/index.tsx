@@ -1,4 +1,5 @@
 import EmailCard from '@/components/EmailCard';
+import InboxRecapHeader from '@/components/InboxRecapHeader';
 import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -13,9 +14,41 @@ const BACKEND_BASE_URL = 'https://email-ai-server.onrender.com';
 
 const AUTH_STORAGE_KEY = 'gmail_auth';
 const CARDS_STORAGE_KEY = 'email_cards';
+const RECAP_STORAGE_KEY = 'inbox_recap';
+const USER_NAME_KEY = 'user_name';
 
 async function saveCards(cards: any[]) {
   await AsyncStorage.setItem(CARDS_STORAGE_KEY, JSON.stringify(cards));
+}
+
+type RecapData = {
+  greeting: string;
+  summary: string;
+  totalInView: number;
+  requireAttention: number;
+};
+
+async function saveRecap(recap: RecapData) {
+  await AsyncStorage.setItem(RECAP_STORAGE_KEY, JSON.stringify(recap));
+}
+async function loadRecap(): Promise<RecapData | null> {
+  const raw = await AsyncStorage.getItem(RECAP_STORAGE_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function saveUserName(name: string) {
+  await AsyncStorage.setItem(USER_NAME_KEY, name);
+}
+async function loadUserName(): Promise<string> {
+  return (await AsyncStorage.getItem(USER_NAME_KEY)) ?? '';
+}
+
+function getTimeOfDay(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'morning';
+  if (h < 17) return 'afternoon';
+  return 'evening';
 }
 
 async function loadCards(): Promise<any[]> {
@@ -232,6 +265,8 @@ export default function Index() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [cards, setCards] = useState<any[]>([]);
   const [loadingEmails, setLoadingEmails] = useState(false);
+  const [userName, setUserName] = useState('');
+  const [recap, setRecap] = useState<RecapData | null>(null);
 
   // Re-render every minute so relative timestamps stay current
   const [, setTick] = useState(0);
@@ -291,6 +326,12 @@ export default function Index() {
     })();
   }, []);
 
+  // Restore recap and user name on launch
+  useEffect(() => {
+    loadRecap().then(r => { if (r) setRecap(r); });
+    loadUserName().then(n => { if (n) setUserName(n); });
+  }, []);
+
   const runSync = useCallback(async () => {
     console.log('[runSync] called — accessToken:', !!accessToken, 'loadingEmails:', loadingEmails);
     if (!accessToken) { console.log('[runSync] exit: no accessToken'); return; }
@@ -326,7 +367,28 @@ export default function Index() {
       const allIds: string[] = (listJson.messages ?? []).slice(0, 5).map((m: any) => m.id);
       const ids = allIds.filter(id => !existingIds.has(id));
       if (ids.length === 0) {
-        console.log('[sync] no new emails');
+        console.log('[sync] no new emails — recapping current feed');
+        try {
+          const recapRes = await fetch(`${BACKEND_BASE_URL}/session-recap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              cards: existingCards.map((c: any) => ({
+                senderName: c.senderName,
+                subject: c.subject,
+                summary: c.summary,
+                action: c.action,
+              })),
+              userName,
+              timeOfDay: getTimeOfDay(),
+            }),
+          });
+          const { recap: recapData } = await recapRes.json();
+          setRecap(recapData);
+          await saveRecap(recapData);
+        } catch (err) {
+          console.error('[session-recap] failed:', err);
+        }
         return;
       }
       console.log('[sync]', ids.length, 'new email(s) to process');
@@ -411,13 +473,34 @@ export default function Index() {
         const combined = [...incomingCards, ...existingCards];
         setCards(combined);
         await saveCards(combined);
+        try {
+          const recapRes = await fetch(`${BACKEND_BASE_URL}/session-recap`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              cards: combined.map((c: any) => ({
+                senderName: c.senderName,
+                subject: c.subject,
+                summary: c.summary,
+                action: c.action,
+              })),
+              userName,
+              timeOfDay: getTimeOfDay(),
+            }),
+          });
+          const { recap: recapData } = await recapRes.json();
+          setRecap(recapData);
+          await saveRecap(recapData);
+        } catch (err) {
+          console.error('[session-recap] failed:', err);
+        }
       }
     } catch (err) {
       console.error('[get-emails] fetch failed:', err);
     } finally {
       setLoadingEmails(false);
     }
-  }, [accessToken, cards, loadingEmails]);
+  }, [accessToken, cards, loadingEmails, userName]);
 
   // Keep a ref so the AppState listener always calls the latest runSync
   const syncRef = useRef(runSync);
@@ -494,6 +577,13 @@ export default function Index() {
         });
         const profileJson = await profileRes.json();
         console.log('[gmail] profile:', JSON.stringify(profileJson, null, 2));
+
+        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const userInfoJson = await userInfoRes.json();
+        const firstName = userInfoJson.given_name ?? '';
+        if (firstName) { setUserName(firstName); await saveUserName(firstName); }
       } catch (err) {
         console.error('[auth] token exchange failed:', err);
       }
@@ -505,6 +595,7 @@ export default function Index() {
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.content}>
+        {recap && <InboxRecapHeader recap={recap} />}
         <Pressable
           style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
           onPress={() => promptAsync()}

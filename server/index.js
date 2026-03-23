@@ -65,6 +65,7 @@ function renderPrompt(template, vars) {
 const PROMPTS = {
   interpretEmail: loadPrompt('interpret-email'),
   decideActionSurface: loadPrompt('decide-action-surface'),
+  sessionRecap: loadPrompt('session-recap'),
 };
 
 // ─── AI helper ────────────────────────────────────────────────────────────
@@ -169,6 +170,41 @@ app.post('/interpret-single', async (req, res) => {
 
   console.log(`[interpret-single] done ${email.id}`);
   res.json({ card });
+});
+
+app.post('/session-recap', async (req, res) => {
+  const { cards, userName, timeOfDay } = req.body;
+  if (!Array.isArray(cards)) return res.status(400).json({ error: 'cards required' });
+
+  // Single source: all three values derived from the same cards array
+  const totalInView = cards.length;
+  const attentionCards = cards.filter(c => c.action != null);
+  const requireAttention = attentionCards.length;
+
+  const formatCards = (arr) =>
+    arr.map(c =>
+      `- From: ${c.senderName} | Subject: ${c.subject} | Summary: ${c.summary}${c.action ? ` | Action: ${c.action}` : ''}`
+    ).join('\n') || '(none)';
+
+  const prompt = renderPrompt(PROMPTS.sessionRecap, {
+    timeOfDay: timeOfDay ?? 'morning',
+    userName: userName ?? '',
+    totalInView,
+    requireAttention,
+    attentionCards: formatCards(attentionCards),
+    contextCards: formatCards(cards),
+  });
+
+  try {
+    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+    const recap = JSON.parse(response.output_text);
+    recap.totalInView = totalInView;
+    recap.requireAttention = requireAttention;
+    res.json({ recap });
+  } catch (err) {
+    console.error('[session-recap] failed:', err.message);
+    res.status(500).json({ error: 'recap failed' });
+  }
 });
 
 app.get('/test-ai', async (req, res) => {
