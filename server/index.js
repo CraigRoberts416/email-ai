@@ -133,6 +133,7 @@ app.post('/interpret-single', async (req, res) => {
   let summary = 'Unable to summarize email.';
   let action = null;
   let actionUrl = null;
+  let requiresAttention = false;
 
   const [interpretResult, actionResult] = await Promise.allSettled([
     interpretEmail(email),
@@ -149,6 +150,7 @@ app.post('/interpret-single', async (req, res) => {
   if (actionResult.status === 'fulfilled') {
     action = actionResult.value.action ?? null;
     actionUrl = actionResult.value.actionUrl ?? null;
+    requiresAttention = actionResult.value.requiresAttention === true;
   } else {
     console.error(`[interpret-single] decideActionSurface failed for ${email.id}:`, actionResult.reason?.message);
   }
@@ -166,6 +168,7 @@ app.post('/interpret-single', async (req, res) => {
     summary,
     action,
     actionUrl,
+    requiresAttention,
   };
 
   console.log(`[interpret-single] done ${email.id}`);
@@ -178,7 +181,7 @@ app.post('/session-recap', async (req, res) => {
 
   // Single source: all three values derived from the same cards array
   const totalInView = cards.length;
-  const attentionCards = cards.filter(c => c.action != null);
+  const attentionCards = cards.filter(c => c.requiresAttention === true);
   const requireAttention = attentionCards.length;
 
   const formatCards = (arr) =>
