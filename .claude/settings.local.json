@@ -12,7 +12,11 @@
       "Bash(npm install:*)",
       "Bash(grep -r \"Good morning\\\\|greeting\\\\|header\" /Users/craigroberts/email-ai --include=*.tsx --include=*.ts --include=*.jsx --include=*.js)",
       "Bash(grep -r \"useState\\\\|useContext\\\\|useReducer\" /Users/craigroberts/email-ai/app --include=*.tsx --include=*.ts)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }
