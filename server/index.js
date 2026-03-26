@@ -291,6 +291,7 @@ app.post('/dev/ingest', async (req, res) => {
 
       const card = {
         id,
+        emailId:            email.id,   // original Gmail message ID — used by client to avoid re-ingesting the same email
         senderName:         email.sender.name,
         senderEmail:        email.sender.email,
         subject:            email.subject,

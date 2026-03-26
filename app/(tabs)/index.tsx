@@ -38,6 +38,49 @@ async function fetchFeed(accessToken: string): Promise<{ cards: FeedCard[]; reca
   return res.json();
 }
 
+// DEV ONLY ─────────────────────────────────────────────────────────────────
+// Fetches the most recent Gmail message not already visible in the feed and
+// sends it through the real Render /dev/ingest pipeline.
+// Only called from __DEV__-gated UI, so this never ships in production builds.
+//
+// knownEmailIds: set of Gmail message IDs already present in feedCards,
+// so repeated test taps use a fresh email each time.
+async function devTriggerIngest(accessToken: string, knownEmailIds: Set<string>): Promise<string> {
+  // Fetch the 5 most recent message IDs — enough to find one not yet in the feed
+  const listRes = await fetch(
+    'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5',
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!listRes.ok) throw new Error('Gmail list failed');
+  const listJson = await listRes.json();
+  const candidates: string[] = (listJson.messages ?? []).map((m: any) => m.id);
+  if (candidates.length === 0) throw new Error('No messages found in inbox');
+
+  // Prefer a message not already in the feed; fall back to the most recent
+  const msgId = candidates.find(id => !knownEmailIds.has(id)) ?? candidates[0];
+
+  // Fetch full message content
+  const msgRes = await fetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}?format=full`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!msgRes.ok) throw new Error('Gmail message fetch failed');
+  const msg = await msgRes.json();
+
+  // Clean with the same function used by the production ingestion path
+  const email = cleanEmailForAI(msg);
+
+  // POST to /dev/ingest — server immediately adds pending card, runs AI async
+  const ingestRes = await fetch(`${FEED_BASE_URL}/dev/ingest`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  });
+  if (!ingestRes.ok) throw new Error(`/dev/ingest returned ${ingestRes.status}`);
+  const { id } = await ingestRes.json();
+  return id;
+}
+
 // ─── Gmail helpers ────────────────────────────────────────────────────────
 
 const BACKEND_BASE_URL = 'https://email-ai-server.onrender.com';
@@ -300,6 +343,7 @@ export default function Index() {
 
   // ── Feed state ────────────────────────────────────────────────────────
   const [feedCards, setFeedCards] = useState<FeedCard[]>([]);
+  const [loadingDevIngest, setLoadingDevIngest] = useState(false);
 
   const pollFeed = useCallback(async () => {
     // Gate on auth — do not hit the server until the user has a valid token.
@@ -329,6 +373,26 @@ export default function Index() {
     const id = setInterval(pollFeed, 12_000);
     return () => clearInterval(id);
   }, [pollFeed]);
+
+  // DEV ONLY — handler for the in-app ingestion trigger button
+  const handleDevIngest = useCallback(async () => {
+    if (!accessToken) return;
+    // Build the set of Gmail message IDs already visible in the feed,
+    // so the trigger prefers a fresh email on each tap.
+    const knownEmailIds = new Set<string>(
+      feedCards.flatMap(c => (c.data?.emailId ? [c.data.emailId as string] : []))
+    );
+    setLoadingDevIngest(true);
+    try {
+      const cardId = await devTriggerIngest(accessToken, knownEmailIds);
+      console.log('[dev/ingest] pending card id:', cardId);
+      await pollFeed(); // immediate poll so skeleton appears without waiting 12s
+    } catch (err) {
+      console.error('[dev/ingest] trigger failed:', err);
+    } finally {
+      setLoadingDevIngest(false);
+    }
+  }, [accessToken, feedCards, pollFeed]);
 
   // Re-render every minute so relative timestamps stay current
   const [, setTick] = useState(0);
@@ -672,6 +736,17 @@ export default function Index() {
         >
           <Text style={styles.connectLabel}>{loadingEmails ? 'Loading…' : 'Get Emails'}</Text>
         </Pressable>
+        {__DEV__ && !!accessToken && (
+          <Pressable
+            style={({ pressed }) => [styles.connectBtn, styles.devBtn, pressed && styles.connectBtnPressed]}
+            onPress={handleDevIngest}
+            disabled={loadingDevIngest}
+          >
+            <Text style={styles.connectLabel}>
+              {loadingDevIngest ? 'Injecting…' : '[DEV] Ingest Latest Email'}
+            </Text>
+          </Pressable>
+        )}
         {feedCards.map((feedCard, i) => (
           <View key={feedCard.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
             {feedCard.status === 'pending' || !feedCard.data ? (
@@ -726,6 +801,11 @@ const styles = StyleSheet.create({
   },
   connectBtnPressed: {
     opacity: 0.6,
+  },
+  devBtn: {
+    borderWidth: 1,
+    borderColor: Colors.light.textSecondary,
+    borderStyle: 'dashed',
   },
   connectLabel: {
     ...Typography.bodySm,
