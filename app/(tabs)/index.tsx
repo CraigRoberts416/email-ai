@@ -1,4 +1,5 @@
 import EmailCard from '@/components/EmailCard';
+import EmailCardSkeleton from '@/components/EmailCardSkeleton';
 import InboxRecapHeader from '@/components/InboxRecapHeader';
 import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
@@ -7,6 +8,35 @@ import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+// ─── Feed ─────────────────────────────────────────────────────────────────
+//
+// SLICE: Step 1 — real client → Render backend, user-scoped feed requests.
+// The Google access token is sent as a Bearer header so the server can scope
+// the feed to the authenticated user. Polling is gated on auth — no requests
+// are made before the user has a valid token.
+//
+// NOT YET IMPLEMENTED:
+//   - Seen state (Step 3): all cards are returned on every poll
+//   - Unseen-only feed (Step 3): feed will filter to unseen cards
+//   - Persistence (Step 2): server state resets on redeploy
+
+const FEED_BASE_URL = 'https://email-ai-server.onrender.com';
+
+type FeedCard = {
+  id: string;
+  status: 'pending' | 'ready';
+  data: any | null;
+  createdAt: number;
+};
+
+async function fetchFeed(accessToken: string): Promise<{ cards: FeedCard[]; recap: any | null }> {
+  const res = await fetch(`${FEED_BASE_URL}/feed`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`/feed returned ${res.status}`);
+  return res.json();
+}
 
 // ─── Gmail helpers ────────────────────────────────────────────────────────
 
@@ -267,6 +297,38 @@ export default function Index() {
   const [loadingEmails, setLoadingEmails] = useState(false);
   const [userName, setUserName] = useState('');
   const [recap, setRecap] = useState<RecapData | null>(null);
+
+  // ── Feed state ────────────────────────────────────────────────────────
+  const [feedCards, setFeedCards] = useState<FeedCard[]>([]);
+
+  const pollFeed = useCallback(async () => {
+    // Gate on auth — do not hit the server until the user has a valid token.
+    // accessToken is restored from SecureStore on mount, so the first poll
+    // fires shortly after launch once auth is confirmed.
+    if (!accessToken) return;
+    try {
+      const { cards: incoming, recap: incomingRecap } = await fetchFeed(accessToken);
+      // Merge by id so cards update in place: pending → ready without positional jump.
+      setFeedCards(prev => {
+        const map = new Map(prev.map(c => [c.id, c]));
+        for (const card of incoming) map.set(card.id, card);
+        return Array.from(map.values()).sort((a, b) => b.createdAt - a.createdAt);
+      });
+      // Recap is user-scoped and returned from the same feed state.
+      // It is a session intro — set it once and do not update it mid-session.
+      if (incomingRecap) setRecap(incomingRecap);
+    } catch (err) {
+      console.warn('[feed] poll failed:', err);
+    }
+  }, [accessToken]);
+
+  // Fetch on mount, then every 12 seconds.
+  // The interval restarts automatically if accessToken changes (user logs in).
+  useEffect(() => {
+    pollFeed();
+    const id = setInterval(pollFeed, 12_000);
+    return () => clearInterval(id);
+  }, [pollFeed]);
 
   // Re-render every minute so relative timestamps stay current
   const [, setTick] = useState(0);
@@ -610,37 +672,37 @@ export default function Index() {
         >
           <Text style={styles.connectLabel}>{loadingEmails ? 'Loading…' : 'Get Emails'}</Text>
         </Pressable>
-        {cards.map((card, i) => {
-          console.log('AVATAR DEBUG:', {
-            sender: card.senderEmail,
-            avatarUri: card.avatarUri,
-          });
-          return (
-          <View key={card.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
-            <EmailCard
-              sender={{
-                name: card.senderName,
-                email: card.senderEmail,
-                avatarUri: card.avatarUri ?? undefined,
-                avatarFallbackText: card.avatarFallbackText,
-              }}
-              content={{
-                contentType: 'structured',
-                headline: card.quote,
-                subtitle: card.subject,
-                body: card.summary,
-                cta: card.action && card.actionUrl
-                  ? { label: card.action, onPress: () => Linking.openURL(card.actionUrl) }
-                  : undefined,
-                actionLabel: card.action && !card.actionUrl ? card.action : undefined,
-              }}
-              timestamp={formatRelativeTime(card.date)}
-              threadMessageCount={card.threadMessageCount}
-              actions={{ aiSuggestionCount: 0 }}
-            />
+        {feedCards.map((feedCard, i) => (
+          <View key={feedCard.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
+            {feedCard.status === 'pending' || !feedCard.data ? (
+              <EmailCardSkeleton />
+            ) : (
+              <EmailCard
+                sender={{
+                  name: feedCard.data.senderName,
+                  email: feedCard.data.senderEmail,
+                  avatarUri: feedCard.data.avatarUri ?? undefined,
+                  avatarFallbackText: feedCard.data.avatarFallbackText,
+                }}
+                content={{
+                  contentType: 'structured',
+                  headline: feedCard.data.quote,
+                  subtitle: feedCard.data.subject,
+                  body: feedCard.data.summary,
+                  cta: feedCard.data.action && feedCard.data.actionUrl
+                    ? { label: feedCard.data.action, onPress: () => Linking.openURL(feedCard.data.actionUrl) }
+                    : undefined,
+                  actionLabel: feedCard.data.action && !feedCard.data.actionUrl
+                    ? feedCard.data.action
+                    : undefined,
+                }}
+                timestamp={formatRelativeTime(feedCard.data.date)}
+                threadMessageCount={feedCard.data.threadMessageCount}
+                actions={{ aiSuggestionCount: 0 }}
+              />
+            )}
           </View>
-          );
-        })}
+        ))}
       </ScrollView>
     </SafeAreaView>
   );
