@@ -16,6 +16,16 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+// ─── Sender parser ────────────────────────────────────────────────────────
+
+function parseSenderServer(from) {
+  const match = from.match(/^(.*?)\s*<([^>]+)>$/);
+  const email = match ? match[2].trim() : from.trim();
+  const name  = match ? match[1].replace(/^"|"$/g, '').trim() : email;
+  const domain = email.split('@')[1] ?? '';
+  return { name, email, domain };
+}
+
 // ─── Avatar helpers ───────────────────────────────────────────────────────
 
 const LOGO_DEV_TOKEN = process.env.LOGO_DEV_TOKEN ?? 'pk_bcvjuzCeRt6gzuz5ZoYayg';
@@ -587,6 +597,77 @@ app.post('/dev/ingest', async (req, res) => {
       console.error(`[dev/ingest] AI processing failed for ${id}:`, err.message);
     }
   });
+});
+
+// ─── All Mail ─────────────────────────────────────────────────────────────
+//
+// Returns the user's most recent Gmail messages as a flat card list.
+// For each message, checks if it has been AI-interpreted via Mail Feed.
+// Cards with an interpretation get AI fields; unprocessed cards get raw data.
+// The client renders the appropriate card variant based on the `interpreted` flag.
+//
+// Uses format=metadata (fast — headers + snippet, no body decode).
+
+app.get('/all-mail', async (req, res) => {
+  const auth        = req.headers['authorization'] ?? '';
+  const accessToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const userId      = await resolveUserId(req);
+  if (!userId || !accessToken) return res.status(401).json({ error: 'unauthorized' });
+
+  try {
+    const listRes = await fetch(
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20',
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    if (!listRes.ok) return res.status(502).json({ error: 'Gmail list failed' });
+    const listJson  = await listRes.json();
+    const messageIds = (listJson.messages ?? []).map(m => m.id);
+    if (messageIds.length === 0) return res.json({ cards: [] });
+
+    // Fetch metadata for all messages in parallel (no body decode — fast)
+    const messages = await Promise.all(messageIds.map(async (id) => {
+      const r = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      return r.json();
+    }));
+
+    const cards = messages.map(msg => {
+      const headers = msg.payload?.headers ?? [];
+      const fromRaw = headers.find(h => h.name.toLowerCase() === 'from')?.value ?? '';
+      const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value ?? '(no subject)';
+      const sender  = parseSenderServer(fromRaw);
+
+      // resolveAvatarUri and resolveAvatarFallbackText expect { sender: { domain, name, email } }
+      const emailShell = { sender };
+      const interp     = feedStore.getInterpretation(userId, msg.id);
+
+      return {
+        id:                msg.id,
+        emailId:           msg.id,
+        senderName:        sender.name,
+        senderEmail:       sender.email,
+        subject,
+        snippet:           msg.snippet ?? '',
+        date:              msg.internalDate ?? String(Date.now()),
+        threadId:          msg.threadId   ?? null,
+        avatarUri:         resolveAvatarUri(emailShell),
+        avatarFallbackText: resolveAvatarFallbackText(emailShell),
+        interpreted:       !!interp,
+        quote:             interp?.quote             ?? null,
+        summary:           interp?.summary           ?? null,
+        action:            interp?.action            ?? null,
+        actionUrl:         interp?.actionUrl         ?? null,
+        requiresAttention: interp?.requiresAttention ?? false,
+      };
+    });
+
+    res.json({ cards });
+  } catch (err) {
+    console.error('[all-mail] failed:', err.message);
+    res.status(500).json({ error: 'all-mail failed' });
+  }
 });
 
 app.get('/test-ai', async (req, res) => {

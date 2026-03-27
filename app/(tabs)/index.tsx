@@ -46,12 +46,40 @@ type FeedCard = {
   requiresAttention: boolean;
 };
 
+type AllMailCard = {
+  id: string;
+  emailId: string;
+  senderName: string;
+  senderEmail: string;
+  subject: string;
+  snippet: string;
+  date: string;
+  threadId: string | null;
+  avatarUri: string | null;
+  avatarFallbackText: string;
+  interpreted: boolean;
+  quote: string | null;
+  summary: string | null;
+  action: string | null;
+  actionUrl: string | null;
+  requiresAttention: boolean;
+};
+
 async function fetchFeed(accessToken: string): Promise<{ cards: FeedCard[]; recap: any | null }> {
   const res = await fetch(`${FEED_BASE_URL}/feed`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) throw new Error(`/feed returned ${res.status}`);
   return res.json();
+}
+
+async function fetchAllMail(accessToken: string): Promise<AllMailCard[]> {
+  const res = await fetch(`${FEED_BASE_URL}/all-mail`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) throw new Error(`/all-mail returned ${res.status}`);
+  const { cards } = await res.json();
+  return cards;
 }
 
 // DEV ONLY ─────────────────────────────────────────────────────────────────
@@ -361,6 +389,18 @@ export default function Index() {
   const [feedCards, setFeedCards] = useState<FeedCard[]>([]);
   const [loadingDevIngest, setLoadingDevIngest] = useState(false);
 
+  // ── All Mail state ────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<'feed' | 'allMail'>('feed');
+  const [allMailCards, setAllMailCards] = useState<AllMailCard[]>([]);
+  const [loadingAllMail, setLoadingAllMail] = useState(false);
+  const [allMailFetched, setAllMailFetched] = useState(false);
+
+  // Reset All Mail cache when auth changes so a new user gets a fresh fetch
+  useEffect(() => {
+    setAllMailFetched(false);
+    setAllMailCards([]);
+  }, [accessToken]);
+
   const pollFeed = useCallback(async () => {
     // Gate on auth — do not hit the server until the user has a valid token.
     // accessToken is restored from SecureStore on mount, so the first poll
@@ -508,6 +548,22 @@ export default function Index() {
       setLoadingDevIngest(false);
     }
   }, [accessToken, feedCards, pollFeed]);
+
+  const handleTabChange = useCallback(async (tab: 'feed' | 'allMail') => {
+    setActiveTab(tab);
+    if (tab === 'allMail' && !allMailFetched && accessToken) {
+      setLoadingAllMail(true);
+      try {
+        const cards = await fetchAllMail(accessToken);
+        setAllMailCards(cards);
+        setAllMailFetched(true);
+      } catch (err) {
+        console.error('[all-mail] fetch failed:', err);
+      } finally {
+        setLoadingAllMail(false);
+      }
+    }
+  }, [allMailFetched, accessToken]);
 
   // Re-render every minute so relative timestamps stay current
   const [, setTick] = useState(0);
@@ -865,10 +921,30 @@ export default function Index() {
         <Text style={styles.devStatus}>
           {accessToken ? `token: live (${accessToken.slice(0, 8)}…)` : 'token: none — tap Connect Gmail to re-authorise'}
         </Text>
-        {feedCards.map((feedCard, i) => (
+        {/* ── Surface toggle ──────────────────────────────────────── */}
+        <View style={styles.toggle}>
+          <Pressable
+            style={[styles.toggleBtn, activeTab === 'feed' && styles.toggleBtnActive]}
+            onPress={() => handleTabChange('feed')}
+          >
+            <Text style={[styles.toggleLabel, activeTab === 'feed' && styles.toggleLabelActive]}>
+              Mail Feed
+            </Text>
+          </Pressable>
+          <Pressable
+            style={[styles.toggleBtn, activeTab === 'allMail' && styles.toggleBtnActive]}
+            onPress={() => handleTabChange('allMail')}
+          >
+            <Text style={[styles.toggleLabel, activeTab === 'allMail' && styles.toggleLabelActive]}>
+              All Mail
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* ── Mail Feed ───────────────────────────────────────────── */}
+        {activeTab === 'feed' && feedCards.map((feedCard, i) => (
           <View key={feedCard.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
             {!feedCard.senderName ? (
-              // True skeleton: static fields not yet received (should be rare)
               <EmailCardSkeleton />
             ) : (
               <EmailCard
@@ -896,6 +972,37 @@ export default function Index() {
                 actions={{ aiSuggestionCount: 0 }}
               />
             )}
+          </View>
+        ))}
+
+        {/* ── All Mail ────────────────────────────────────────────── */}
+        {activeTab === 'allMail' && loadingAllMail && <EmailCardSkeleton />}
+        {activeTab === 'allMail' && !loadingAllMail && allMailCards.map((card, i) => (
+          <View key={card.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
+            <EmailCard
+              sender={{
+                name: card.senderName,
+                email: card.senderEmail,
+                avatarUri: card.avatarUri ?? undefined,
+                avatarFallbackText: card.avatarFallbackText,
+              }}
+              content={{
+                contentType: 'structured',
+                // Interpreted: show AI quote + summary. Raw: show Gmail snippet as headline.
+                headline: card.interpreted ? card.quote : card.snippet,
+                subtitle: card.subject,
+                body: card.interpreted ? card.summary : null,
+                cta: card.interpreted && card.action && card.actionUrl
+                  ? { label: card.action, onPress: () => Linking.openURL(card.actionUrl!) }
+                  : undefined,
+                actionLabel: card.interpreted && card.action && !card.actionUrl
+                  ? card.action
+                  : undefined,
+              }}
+              loading={false}
+              timestamp={formatRelativeTime(card.date)}
+              actions={{ aiSuggestionCount: 0 }}
+            />
           </View>
         ))}
       </ScrollView>
@@ -932,6 +1039,31 @@ const styles = StyleSheet.create({
     color: Colors.light.textSecondary,
     textAlign: 'center',
     marginBottom: Spacing.lg,
+  },
+  toggle: {
+    flexDirection: 'row',
+    backgroundColor: Colors.light.surface,
+    borderRadius: Radius.md,
+    padding: 2,
+    marginBottom: Spacing.lg,
+  },
+  toggleBtn: {
+    flex: 1,
+    paddingVertical: Spacing.sm,
+    alignItems: 'center',
+    borderRadius: Radius.md,
+  },
+  toggleBtnActive: {
+    backgroundColor: Colors.light.background,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+  },
+  toggleLabel: {
+    ...Typography.bodySm,
+    color: Colors.light.textSecondary,
+  },
+  toggleLabelActive: {
+    color: Colors.light.textPrimary,
   },
   connectLabel: {
     ...Typography.bodySm,
