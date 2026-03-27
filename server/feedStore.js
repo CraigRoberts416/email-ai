@@ -22,11 +22,23 @@ function _cards(userId) {
 /**
  * Add a new email card in the pending state for a user.
  * Called immediately when an email notification arrives — before AI processing.
- * @param {string} userId  Stable Google sub claim
- * @param {string} id      Unique card ID
+ * @param {string} userId      Stable Google sub claim
+ * @param {string} id          Unique card ID
+ * @param {string} emailDate   Gmail internalDate (epoch ms as string) — the email's
+ *                             real received timestamp. Used for feed ordering so the
+ *                             card occupies its correct chronological position from
+ *                             the moment it is inserted, and does not move when it
+ *                             resolves from pending to ready.
  */
-function addPending(userId, id) {
-  _cards(userId).set(id, { id, status: 'pending', data: null, createdAt: Date.now() });
+function addPending(userId, id, emailDate) {
+  const emailMs = Number(emailDate);
+  _cards(userId).set(id, {
+    id,
+    status: 'pending',
+    data: null,
+    createdAt: Date.now(),
+    emailDate: Number.isFinite(emailMs) ? emailMs : Date.now(),
+  });
 }
 
 /**
@@ -61,7 +73,14 @@ function setRecap(userId, recap) {
  */
 function getFeed(userId) {
   const sorted = Array.from(_cards(userId).values())
-    .sort((a, b) => b.createdAt - a.createdAt);
+    .sort((a, b) => {
+      // Order by when the email was actually received, not when it was ingested.
+      // emailDate is set at addPending time and does not change on resolution,
+      // so the card holds its position when it transitions from pending to ready.
+      // createdAt is the tiebreaker for emails with identical timestamps.
+      const diff = b.emailDate - a.emailDate;
+      return diff !== 0 ? diff : b.createdAt - a.createdAt;
+    });
   return { cards: sorted, recap: userRecaps.get(userId) ?? null };
 }
 

@@ -269,7 +269,7 @@ app.post('/dev/ingest', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'email required' });
 
   const id = `dev-${Date.now()}`;
-  feedStore.addPending(userId, id);
+  feedStore.addPending(userId, id, email.date);
   console.log(`[dev/ingest] pending → ${id} (user: ${userId.slice(0, 8)}…)`);
 
   // Respond immediately — card is now visible as a skeleton on the client

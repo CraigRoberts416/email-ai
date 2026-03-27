@@ -28,6 +28,7 @@ type FeedCard = {
   status: 'pending' | 'ready';
   data: any | null;
   createdAt: number;
+  emailDate: number; // epoch ms — real received time, drives feed order
 };
 
 async function fetchFeed(accessToken: string): Promise<{ cards: FeedCard[]; recap: any | null }> {
@@ -356,7 +357,10 @@ export default function Index() {
       setFeedCards(prev => {
         const map = new Map(prev.map(c => [c.id, c]));
         for (const card of incoming) map.set(card.id, card);
-        return Array.from(map.values()).sort((a, b) => b.createdAt - a.createdAt);
+        return Array.from(map.values()).sort((a, b) => {
+          const diff = b.emailDate - a.emailDate;
+          return diff !== 0 ? diff : b.createdAt - a.createdAt;
+        });
       });
       // Recap is user-scoped and returned from the same feed state.
       // It is a session intro — set it once and do not update it mid-session.
