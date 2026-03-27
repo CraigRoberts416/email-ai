@@ -52,15 +52,14 @@ type AllMailCard = {
   senderName: string;
   senderEmail: string;
   subject: string;
-  snippetHeadline: string; // first sentence, decoded — for the 28px slot
-  snippetBody: string;     // remainder + "...See More" — for the 16px slot
+  snippet: string;       // decoded Gmail preview — always present, used as fallback
   date: string;
   threadId: string | null;
   avatarUri: string | null;
   avatarFallbackText: string;
   interpreted: boolean;
-  quote: string | null;
-  summary: string | null;
+  quote: string | null;   // AI-selected quote — null if not yet processed or AI found none
+  summary: string | null; // AI summary — null if not yet processed
   action: string | null;
   actionUrl: string | null;
   requiresAttention: boolean;
@@ -355,6 +354,25 @@ function cleanEmailForAI(msg: any) {
       hasAttachments,
     },
   };
+}
+
+// ─── Snippet splitter ─────────────────────────────────────────────────────
+// Splits a decoded Gmail snippet into a short 28px headline and a 16px body.
+// Headline: ≤52 chars, cut at a word boundary — a quick teaser.
+// Body: the remainder + " ...See More" so the user knows there is more.
+// Both slots are always populated, making the non-interpreted card always readable.
+
+function splitSnippet(snippet: string): { headline: string; body: string } {
+  if (!snippet) return { headline: '', body: '...See More' };
+
+  const MAX = 52;
+  if (snippet.length <= MAX) return { headline: snippet, body: '...See More' };
+
+  const cut = snippet.slice(0, MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  const headline = lastSpace > 10 ? cut.slice(0, lastSpace) : cut;
+  const rest = snippet.slice(headline.length).trim();
+  return { headline, body: rest + ' ...See More' };
 }
 
 // ─── Relative time formatter ──────────────────────────────────────────────
@@ -978,33 +996,38 @@ export default function Index() {
 
         {/* ── All Mail ────────────────────────────────────────────── */}
         {activeTab === 'allMail' && loadingAllMail && <EmailCardSkeleton />}
-        {activeTab === 'allMail' && !loadingAllMail && allMailCards.map((card, i) => (
-          <View key={card.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
-            <EmailCard
-              sender={{
-                name: card.senderName,
-                email: card.senderEmail,
-                avatarUri: card.avatarUri ?? undefined,
-                avatarFallbackText: card.avatarFallbackText,
-              }}
-              content={{
-                contentType: 'structured',
-                headline: card.interpreted ? card.quote : card.snippetHeadline,
-                subtitle: card.subject,
-                body: card.interpreted ? card.summary : card.snippetBody,
-                cta: card.interpreted && card.action && card.actionUrl
-                  ? { label: card.action, onPress: () => Linking.openURL(card.actionUrl!) }
-                  : undefined,
-                actionLabel: card.interpreted && card.action && !card.actionUrl
-                  ? card.action
-                  : undefined,
-              }}
-              loading={false}
-              timestamp={formatRelativeTime(card.date)}
-              actions={{ aiSuggestionCount: 0 }}
-            />
-          </View>
-        ))}
+        {activeTab === 'allMail' && !loadingAllMail && allMailCards.map((card, i) => {
+          const { headline: snippetHeadline, body: snippetBody } = splitSnippet(card.snippet);
+          // AI fields take priority when present; snippet is always the fallback.
+          // This means the card always has readable content regardless of AI state.
+          const headline = card.quote    ?? snippetHeadline;
+          const body     = card.summary  ?? snippetBody;
+          return (
+            <View key={card.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
+              <EmailCard
+                sender={{
+                  name: card.senderName,
+                  email: card.senderEmail,
+                  avatarUri: card.avatarUri ?? undefined,
+                  avatarFallbackText: card.avatarFallbackText,
+                }}
+                content={{
+                  contentType: 'structured',
+                  headline,
+                  subtitle: card.subject,
+                  body,
+                  cta: card.action && card.actionUrl
+                    ? { label: card.action, onPress: () => Linking.openURL(card.actionUrl!) }
+                    : undefined,
+                  actionLabel: card.action && !card.actionUrl ? card.action : undefined,
+                }}
+                loading={false}
+                timestamp={formatRelativeTime(card.date)}
+                actions={{ aiSuggestionCount: 0 }}
+              />
+            </View>
+          );
+        })}
       </ScrollView>
     </SafeAreaView>
   );

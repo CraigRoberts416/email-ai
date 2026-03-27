@@ -37,35 +37,6 @@ function decodeHtmlEntities(text) {
     .trim();
 }
 
-/**
- * Split a decoded snippet into a short headline and a body for the non-interpreted card.
- *
- * Headline: capped at 52 chars, cut at the nearest word boundary. Short enough
- * to read as a quick teaser at 28px without wrapping excessively.
- * Body: the remainder of the snippet, trimmed, followed by "...See More" so
- * the user knows tapping the card will show the full email.
- */
-function splitSnippet(rawSnippet) {
-  const text = decodeHtmlEntities(rawSnippet);
-  if (!text) return { snippetHeadline: '', snippetBody: '...See More' };
-
-  const MAX = 52;
-
-  if (text.length <= MAX) {
-    return { snippetHeadline: text, snippetBody: '...See More' };
-  }
-
-  // Cut at the last word boundary within MAX chars
-  const cut       = text.slice(0, MAX);
-  const lastSpace = cut.lastIndexOf(' ');
-  const headline  = lastSpace > 10 ? cut.slice(0, lastSpace) : cut;
-  const rest      = text.slice(headline.length).trim();
-
-  return {
-    snippetHeadline: headline,
-    snippetBody:     rest + ' ...See More',
-  };
-}
 
 // ─── Sender parser ────────────────────────────────────────────────────────
 
@@ -693,7 +664,6 @@ app.get('/all-mail', async (req, res) => {
       // resolveAvatarUri and resolveAvatarFallbackText expect { sender: { domain, name, email } }
       const emailShell = { sender };
       const interp     = feedStore.getInterpretation(userId, msg.id);
-      const { snippetHeadline, snippetBody } = splitSnippet(msg.snippet ?? '');
 
       return {
         id:                msg.id,
@@ -701,8 +671,7 @@ app.get('/all-mail', async (req, res) => {
         senderName:        sender.name,
         senderEmail:       sender.email,
         subject,
-        snippetHeadline,
-        snippetBody,
+        snippet:           decodeHtmlEntities(msg.snippet ?? ''),
         date:              msg.internalDate ?? String(Date.now()),
         threadId:          msg.threadId   ?? null,
         avatarUri:         resolveAvatarUri(emailShell),
