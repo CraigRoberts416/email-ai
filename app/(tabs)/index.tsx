@@ -746,6 +746,10 @@ export default function Index() {
             {loadingDevIngest ? 'Injecting…' : '[DEV] Ingest Latest Email'}
           </Text>
         </Pressable>
+        {/* DEV ONLY — auth state diagnostic, remove before launch */}
+        <Text style={styles.devStatus}>
+          {accessToken ? `token: live (${accessToken.slice(0, 8)}…)` : 'token: none — tap Connect Gmail to re-authorise'}
+        </Text>
         {feedCards.map((feedCard, i) => (
           <View key={feedCard.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
             {feedCard.status === 'pending' || !feedCard.data ? (
@@ -805,6 +809,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.light.textSecondary,
     borderStyle: 'dashed',
+  },
+  devStatus: {
+    ...Typography.bodySm,
+    color: Colors.light.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
   },
   connectLabel: {
     ...Typography.bodySm,
