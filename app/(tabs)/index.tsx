@@ -736,17 +736,16 @@ export default function Index() {
         >
           <Text style={styles.connectLabel}>{loadingEmails ? 'Loading…' : 'Get Emails'}</Text>
         </Pressable>
-        {__DEV__ && (
-          <Pressable
-            style={({ pressed }) => [styles.connectBtn, styles.devBtn, pressed && styles.connectBtnPressed]}
-            onPress={handleDevIngest}
-            disabled={!accessToken || loadingDevIngest}
-          >
-            <Text style={styles.connectLabel}>
-              {loadingDevIngest ? 'Injecting…' : '[DEV] Ingest Latest Email'}
-            </Text>
-          </Pressable>
-        )}
+        {/* DEV ONLY — remove before launch */}
+        <Pressable
+          style={({ pressed }) => [styles.connectBtn, styles.devBtn, pressed && styles.connectBtnPressed]}
+          onPress={handleDevIngest}
+          disabled={!accessToken || loadingDevIngest}
+        >
+          <Text style={styles.connectLabel}>
+            {loadingDevIngest ? 'Injecting…' : '[DEV] Ingest Latest Email'}
+          </Text>
+        </Pressable>
         {feedCards.map((feedCard, i) => (
           <View key={feedCard.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
             {feedCard.status === 'pending' || !feedCard.data ? (
