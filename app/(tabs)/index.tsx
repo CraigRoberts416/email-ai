@@ -26,9 +26,24 @@ const FEED_BASE_URL = 'https://email-ai-server.onrender.com';
 type FeedCard = {
   id: string;
   status: 'pending' | 'ready';
-  data: any | null;
   createdAt: number;
-  emailDate: number; // epoch ms — real received time, drives feed order
+  emailDate: number;        // epoch ms — real received time, drives feed order
+  // Static fields — available immediately when card is added
+  emailId: string | null;
+  senderName: string;
+  senderEmail: string;
+  subject: string;
+  date: string;
+  threadId: string | null;
+  threadMessageCount: number;
+  avatarUri: string | null;
+  avatarFallbackText: string;
+  // AI fields — null until streamed in
+  quote: string | null;
+  summary: string | null;
+  action: string | null;
+  actionUrl: string | null;
+  requiresAttention: boolean;
 };
 
 async function fetchFeed(accessToken: string): Promise<{ cards: FeedCard[]; recap: any | null }> {
@@ -378,13 +393,109 @@ export default function Index() {
     return () => clearInterval(id);
   }, [pollFeed]);
 
+  // SSE connection — receives real-time card events while the user is in the app.
+  // Handles: pending (new card with static fields), chunk (streaming token),
+  //          field-complete (field resolved), ready (all AI fields done).
+  useEffect(() => {
+    if (!accessToken) return;
+
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const response = await fetch(`${FEED_BASE_URL}/feed/events`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal: controller.signal,
+        });
+        if (!response.ok) { console.warn('[sse] connect failed:', response.status); return; }
+
+        const reader = response.body?.getReader();
+        if (!reader) return;
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const event = JSON.parse(line.slice(6));
+              const { cardId, type: evtType } = event;
+
+              setFeedCards(prev => {
+                const map = new Map(prev.map(c => [c.id, c]));
+
+                if (evtType === 'pending') {
+                  map.set(cardId, {
+                    id: cardId,
+                    status: 'pending',
+                    createdAt: Date.now(),
+                    emailDate: Number(event.emailDate) || Date.now(),
+                    emailId:            event.emailId            ?? null,
+                    senderName:         event.senderName         ?? '',
+                    senderEmail:        event.senderEmail        ?? '',
+                    subject:            event.subject            ?? '',
+                    date:               event.date               ?? '',
+                    threadId:           event.threadId           ?? null,
+                    threadMessageCount: event.threadMessageCount ?? 1,
+                    avatarUri:          event.avatarUri          ?? null,
+                    avatarFallbackText: event.avatarFallbackText ?? '',
+                    quote:              null,
+                    summary:            null,
+                    action:             null,
+                    actionUrl:          null,
+                    requiresAttention:  false,
+                  });
+                } else if (evtType === 'chunk') {
+                  const existing = map.get(cardId);
+                  if (existing) {
+                    const field = event.field as keyof FeedCard;
+                    const prev_val = existing[field];
+                    const appended = (typeof prev_val === 'string' ? prev_val : '') + event.chunk;
+                    map.set(cardId, { ...existing, [field]: appended });
+                  }
+                } else if (evtType === 'field-complete') {
+                  const existing = map.get(cardId);
+                  if (existing) {
+                    map.set(cardId, { ...existing, [event.field]: event.value });
+                  }
+                } else if (evtType === 'ready') {
+                  const existing = map.get(cardId);
+                  if (existing) {
+                    map.set(cardId, { ...existing, status: 'ready' });
+                  }
+                }
+
+                return Array.from(map.values()).sort((a, b) => {
+                  const diff = b.emailDate - a.emailDate;
+                  return diff !== 0 ? diff : b.createdAt - a.createdAt;
+                });
+              });
+            } catch { /* skip malformed event */ }
+          }
+        }
+      } catch (err: any) {
+        if (err.name !== 'AbortError') console.warn('[sse] error:', err.message);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [accessToken]);
+
   // DEV ONLY — handler for the in-app ingestion trigger button
   const handleDevIngest = useCallback(async () => {
     if (!accessToken) return;
     // Build the set of Gmail message IDs already visible in the feed,
     // so the trigger prefers a fresh email on each tap.
     const knownEmailIds = new Set<string>(
-      feedCards.flatMap(c => (c.data?.emailId ? [c.data.emailId as string] : []))
+      feedCards.flatMap(c => (c.emailId ? [c.emailId] : []))
     );
     setLoadingDevIngest(true);
     try {
@@ -756,30 +867,32 @@ export default function Index() {
         </Text>
         {feedCards.map((feedCard, i) => (
           <View key={feedCard.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
-            {feedCard.status === 'pending' || !feedCard.data ? (
+            {!feedCard.senderName ? (
+              // True skeleton: static fields not yet received (should be rare)
               <EmailCardSkeleton />
             ) : (
               <EmailCard
                 sender={{
-                  name: feedCard.data.senderName,
-                  email: feedCard.data.senderEmail,
-                  avatarUri: feedCard.data.avatarUri ?? undefined,
-                  avatarFallbackText: feedCard.data.avatarFallbackText,
+                  name: feedCard.senderName,
+                  email: feedCard.senderEmail,
+                  avatarUri: feedCard.avatarUri ?? undefined,
+                  avatarFallbackText: feedCard.avatarFallbackText,
                 }}
                 content={{
                   contentType: 'structured',
-                  headline: feedCard.data.quote,
-                  subtitle: feedCard.data.subject,
-                  body: feedCard.data.summary,
-                  cta: feedCard.data.action && feedCard.data.actionUrl
-                    ? { label: feedCard.data.action, onPress: () => Linking.openURL(feedCard.data.actionUrl) }
+                  headline: feedCard.quote,
+                  subtitle: feedCard.subject,
+                  body: feedCard.summary,
+                  cta: feedCard.action && feedCard.actionUrl
+                    ? { label: feedCard.action, onPress: () => Linking.openURL(feedCard.actionUrl!) }
                     : undefined,
-                  actionLabel: feedCard.data.action && !feedCard.data.actionUrl
-                    ? feedCard.data.action
+                  actionLabel: feedCard.action && !feedCard.actionUrl
+                    ? feedCard.action
                     : undefined,
                 }}
-                timestamp={formatRelativeTime(feedCard.data.date)}
-                threadMessageCount={feedCard.data.threadMessageCount}
+                loading={feedCard.status === 'pending'}
+                timestamp={formatRelativeTime(feedCard.date)}
+                threadMessageCount={feedCard.threadMessageCount}
                 actions={{ aiSuggestionCount: 0 }}
               />
             )}

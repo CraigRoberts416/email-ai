@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   Image,
   StyleSheet,
   Text,
@@ -20,9 +21,9 @@ type Sender = {
 
 type StructuredContent = {
   contentType: 'structured';
-  headline: string;
-  subtitle: string;    // subject line — 12px gray, truncated
-  body: string;        // summary — 16px
+  headline: string | null;  // AI quote — null while streaming
+  subtitle: string;         // subject line — 12px gray, truncated (static)
+  body: string | null;      // AI summary — null while streaming
   cta?: { label: string; onPress: () => void };
   actionLabel?: string;
 };
@@ -50,7 +51,30 @@ type EmailCardProps = {
   onOptionsPress?: () => void;
   timestamp?: string;          // e.g. "2 hours ago"
   threadMessageCount?: number; // e.g. 2
+  loading?: boolean;           // true while AI fields are still streaming in
 };
+
+// ─── ShimmerBar ───────────────────────────────────────────────────────────
+// Animated placeholder shown in place of AI fields while they stream in.
+
+function ShimmerBar({ width, height = 14 }: { width: number | `${number}%`; height?: number }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.4, duration: 700, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1,   duration: 700, useNativeDriver: true }),
+      ])
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [opacity]);
+  return (
+    <Animated.View
+      style={[{ backgroundColor: Colors.light.surface, borderRadius: Radius.md, width, height }, { opacity }]}
+    />
+  );
+}
 
 // ─── CardTag ──────────────────────────────────────────────────────────────
 
@@ -72,6 +96,7 @@ export default function EmailCard({
   onOptionsPress,
   timestamp,
   threadMessageCount,
+  loading = false,
 }: EmailCardProps) {
   const [imageError, setImageError] = useState(false);
   useEffect(() => { setImageError(false); }, [sender.avatarUri]);
@@ -132,12 +157,26 @@ export default function EmailCard({
       {content.contentType === 'structured' ? (
         <View style={styles.body}>
           <View style={styles.bodyTop}>
-            <Text style={styles.headline}>{content.headline}</Text>
+            {content.headline !== null ? (
+              <Text style={styles.headline}>{content.headline}</Text>
+            ) : loading ? (
+              <View style={styles.headlineShimmer}>
+                <ShimmerBar width="82%" height={24} />
+                <ShimmerBar width="58%" height={24} />
+              </View>
+            ) : null}
             <Text style={styles.subtitleGray} numberOfLines={1} ellipsizeMode="tail">
               {content.subtitle}
             </Text>
           </View>
-          <Text style={styles.bodyText}>{content.body}</Text>
+          {content.body !== null ? (
+            <Text style={styles.bodyText}>{content.body}</Text>
+          ) : loading ? (
+            <View style={styles.bodyShimmer}>
+              <ShimmerBar width="95%" height={14} />
+              <ShimmerBar width="78%" height={14} />
+            </View>
+          ) : null}
           {content.cta && (
             <TouchableOpacity
               style={styles.ctaBtn}
@@ -309,6 +348,12 @@ const styles = StyleSheet.create({
   },
   bodyTop: {
     gap: 12,
+  },
+  headlineShimmer: {
+    gap: Spacing.sm,
+  },
+  bodyShimmer: {
+    gap: Spacing.sm,
   },
   headline: {
     ...Typography.displayLg,

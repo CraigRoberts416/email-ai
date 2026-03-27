@@ -39,7 +39,6 @@ function cleanLinks(links) {
   });
 }
 
-// Priority: person photo (not yet wired) → company logo → null
 function resolveAvatarUri(email) {
   const domain = rootDomain(email.sender.domain?.toLowerCase() ?? '');
   if (!domain || FREE_MAIL_DOMAINS.has(domain)) return null;
@@ -69,7 +68,248 @@ const PROMPTS = {
   sessionRecap: loadPrompt('session-recap'),
 };
 
-// ─── AI helper ────────────────────────────────────────────────────────────
+// ─── XML helpers ─────────────────────────────────────────────────────────
+//
+// Prompts now output XML-tagged fields instead of JSON, making streaming
+// field boundary detection robust and unambiguous.
+
+/**
+ * Extract a named field from XML-tagged output (non-streaming).
+ * Returns the trimmed content between <fieldName> and </fieldName>, or null.
+ */
+function parseXmlField(text, fieldName) {
+  const open  = `<${fieldName}>`;
+  const close = `</${fieldName}>`;
+  const start = text.indexOf(open);
+  if (start === -1) return null;
+  const end = text.indexOf(close, start + open.length);
+  if (end === -1) return null;
+  return text.slice(start + open.length, end).trim();
+}
+
+/**
+ * Extract streaming content for a named field from the accumulated output.
+ * Returns null if the field's opening tag has not yet appeared.
+ * Returns { newChunk, complete, value } otherwise.
+ *
+ * To avoid emitting partial closing tags as content, we hold back the last
+ * (close.length - 1) bytes of the safe window until we know it isn't the
+ * start of </fieldName>.
+ *
+ * @param {string} accum       Full accumulated output so far
+ * @param {string} fieldName   XML field name (e.g. "quote")
+ * @param {number} alreadySent Number of field-content bytes already sent as chunks
+ * @returns {{ newChunk: string|null, complete: boolean, value: string }|null}
+ */
+function extractStreamingField(accum, fieldName, alreadySent) {
+  const open  = `<${fieldName}>`;
+  const close = `</${fieldName}>`;
+
+  const startIdx = accum.indexOf(open);
+  if (startIdx === -1) return null;
+
+  const contentStart = startIdx + open.length;
+  const closeIdx     = accum.indexOf(close, contentStart);
+
+  if (closeIdx !== -1) {
+    const value    = accum.slice(contentStart, closeIdx);
+    const newChunk = value.slice(alreadySent);
+    return { newChunk: newChunk || null, complete: true, value };
+  }
+
+  // Field started but closing tag not yet seen.
+  // Don't send the last (close.length - 1) chars in case they start the closing tag.
+  const safeEnd  = Math.max(contentStart, accum.length - (close.length - 1));
+  const available = accum.slice(contentStart, safeEnd);
+  const newChunk  = available.slice(alreadySent);
+  return { newChunk: newChunk || null, complete: false, value: null };
+}
+
+// ─── SSE helpers ──────────────────────────────────────────────────────────
+
+// sseClients: userId → Set<res>
+const sseClients = new Map();
+
+function getSseClients(userId) {
+  if (!sseClients.has(userId)) sseClients.set(userId, new Set());
+  return sseClients.get(userId);
+}
+
+function emitSSE(userId, data) {
+  const clients  = getSseClients(userId);
+  const payload  = `data: ${JSON.stringify(data)}\n\n`;
+  for (const res of clients) {
+    try { res.write(payload); } catch {}
+  }
+}
+
+// ─── Per-user serial processing queue ────────────────────────────────────
+//
+// Cards are processed one at a time per user. This keeps the streaming model
+// simple — no concurrent SSE multiplexing needed within a single user's feed.
+// The normal case (pre-app-open processing) does not use this queue; it is
+// the exception path for emails arriving while the user is in the app.
+
+const userQueues = new Map(); // userId → Promise (tail of chain)
+
+function enqueueProcessing(userId, fn) {
+  const tail = userQueues.get(userId) ?? Promise.resolve();
+  const next  = tail.then(fn).catch(err => {
+    console.error(`[queue] error for user ${userId.slice(0, 8)}…:`, err.message);
+  });
+  userQueues.set(userId, next);
+}
+
+// ─── Streaming AI functions ───────────────────────────────────────────────
+
+/**
+ * Stream interpretEmail output for one card.
+ * Emits SSE chunk events as tokens arrive, then field-complete when each tag closes.
+ * Updates feedStore AI fields as each field completes.
+ */
+async function streamInterpretEmail(email, cardId, userId) {
+  const prompt = renderPrompt(PROMPTS.interpretEmail, {
+    senderName:             email.sender.name,
+    senderEmail:            email.sender.email,
+    senderDomain:           email.sender.domain,
+    subject:                email.subject,
+    snippet:                email.snippet,
+    plainText:              email.body.plainText?.slice(0, 1500) ?? '',
+    htmlText:               email.body.htmlText?.slice(0, 1500) ?? '',
+    links:                  cleanLinks(email.signals.structuredLinks ?? []).length,
+    unsubscribePresent:     email.signals.unsubscribePresent,
+    freeMailDomain:         email.signals.freeMailDomain,
+    replyToMismatch:        email.signals.replyToMismatch,
+    suspiciousSubjectHints: JSON.stringify(email.signals.suspiciousSubjectHints),
+    greetingGeneric:        email.signals.greetingGeneric,
+    hasAttachments:         email.signals.hasAttachments,
+  });
+
+  const stream = await openai.responses.create({
+    model:  'gpt-5',
+    input:  prompt,
+    stream: true,
+  });
+
+  let accum       = '';
+  const sentUpTo  = { quote: 0, summary: 0 };
+  const fieldsDone = { quote: false, summary: false };
+
+  for await (const event of stream) {
+    if (event.type !== 'response.output_text.delta') continue;
+    accum += event.delta;
+
+    for (const field of ['quote', 'summary']) {
+      if (fieldsDone[field]) continue;
+      const result = extractStreamingField(accum, field, sentUpTo[field]);
+      if (!result) continue;
+
+      if (result.newChunk) {
+        emitSSE(userId, { cardId, type: 'chunk', field, chunk: result.newChunk });
+        sentUpTo[field] += result.newChunk.length;
+      }
+
+      if (result.complete) {
+        fieldsDone[field] = true;
+        const value = result.value.trim() || null;
+        feedStore.updateAiField(userId, cardId, field, value);
+        emitSSE(userId, { cardId, type: 'field-complete', field, value });
+      }
+    }
+  }
+
+  // Finalize fields whose closing tags were missing (model truncation safety)
+  for (const field of ['quote', 'summary']) {
+    if (fieldsDone[field]) continue;
+    const open     = `<${field}>`;
+    const startIdx = accum.indexOf(open);
+    const value    = startIdx !== -1 ? accum.slice(startIdx + open.length).trim() || null : null;
+    feedStore.updateAiField(userId, cardId, field, value);
+    emitSSE(userId, { cardId, type: 'field-complete', field, value });
+  }
+}
+
+/**
+ * Stream decideActionSurface output for one card.
+ * Runs after streamInterpretEmail to enforce deterministic reveal order.
+ */
+async function streamDecideActionSurface(email, cardId, userId) {
+  const prompt = renderPrompt(PROMPTS.decideActionSurface, {
+    senderName:         email.sender.name,
+    senderEmail:        email.sender.email,
+    senderDomain:       email.sender.domain,
+    subject:            email.subject,
+    snippet:            email.snippet,
+    plainText:          email.body.plainText?.slice(0, 1500) ?? '',
+    htmlText:           email.body.htmlText?.slice(0, 1500) ?? '',
+    links:              cleanLinks(email.signals.structuredLinks ?? [])
+                          .map(l => l.context
+                            ? `${l.text} | context: ${l.context} | url: ${l.url}`
+                            : `${l.text} | url: ${l.url}`)
+                          .join('\n') || '(none)',
+    unsubscribePresent: email.signals.unsubscribePresent,
+    hasAttachments:     email.signals.hasAttachments,
+  });
+
+  const stream = await openai.responses.create({
+    model:  'gpt-5',
+    input:  prompt,
+    stream: true,
+  });
+
+  let accum        = '';
+  const sentUpTo   = { action: 0, actionUrl: 0, requiresAttention: 0 };
+  const fieldsDone = { action: false, actionUrl: false, requiresAttention: false };
+
+  for await (const event of stream) {
+    if (event.type !== 'response.output_text.delta') continue;
+    accum += event.delta;
+
+    for (const field of ['action', 'actionUrl', 'requiresAttention']) {
+      if (fieldsDone[field]) continue;
+      const result = extractStreamingField(accum, field, sentUpTo[field]);
+      if (!result) continue;
+
+      if (result.newChunk) {
+        emitSSE(userId, { cardId, type: 'chunk', field, chunk: result.newChunk });
+        sentUpTo[field] += result.newChunk.length;
+      }
+
+      if (result.complete) {
+        fieldsDone[field] = true;
+        let value;
+        if (field === 'requiresAttention') {
+          value = result.value.trim().toLowerCase() === 'true';
+        } else {
+          value = result.value.trim() || null;
+        }
+        feedStore.updateAiField(userId, cardId, field, value);
+        emitSSE(userId, { cardId, type: 'field-complete', field, value });
+      }
+    }
+  }
+
+  // Finalize fields whose closing tags were missing
+  for (const field of ['action', 'actionUrl', 'requiresAttention']) {
+    if (fieldsDone[field]) continue;
+    const open     = `<${field}>`;
+    const startIdx = accum.indexOf(open);
+    let value;
+    if (startIdx !== -1) {
+      const raw = accum.slice(startIdx + open.length).trim();
+      value = field === 'requiresAttention' ? raw.toLowerCase() === 'true' : raw || null;
+    } else {
+      value = field === 'requiresAttention' ? false : null;
+    }
+    feedStore.updateAiField(userId, cardId, field, value);
+    emitSSE(userId, { cardId, type: 'field-complete', field, value });
+  }
+}
+
+// ─── Non-streaming AI helpers (for /interpret-single) ────────────────────
+//
+// These parse the XML-tagged output synchronously, keeping the existing
+// /interpret-single endpoint functional for the legacy runSync flow.
 
 async function interpretEmail(email) {
   const prompt = renderPrompt(PROMPTS.interpretEmail, {
@@ -89,12 +329,12 @@ async function interpretEmail(email) {
     hasAttachments:         email.signals.hasAttachments,
   });
 
-  const response = await openai.responses.create({
-    model: 'gpt-5',
-    input: prompt,
-  });
-
-  return JSON.parse(response.output_text);
+  const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+  const text = response.output_text;
+  return {
+    quote:   parseXmlField(text, 'quote') || null,
+    summary: parseXmlField(text, 'summary') ?? 'Unable to summarize email.',
+  };
 }
 
 async function decideActionSurface(email) {
@@ -115,21 +355,20 @@ async function decideActionSurface(email) {
     hasAttachments:     email.signals.hasAttachments,
   });
 
-  const response = await openai.responses.create({
-    model: 'gpt-5',
-    input: prompt,
-  });
-
-  return JSON.parse(response.output_text);
+  const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+  const text     = response.output_text;
+  const requiresAttentionStr = parseXmlField(text, 'requiresAttention') ?? 'false';
+  return {
+    action:             parseXmlField(text, 'action') || null,
+    actionUrl:          parseXmlField(text, 'actionUrl') || null,
+    requiresAttention:  requiresAttentionStr.trim().toLowerCase() === 'true',
+  };
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────
-// Validates the Google access token sent by the client and returns a stable
-// userId (the Google `sub` claim). One userinfo call per request — acceptable
-// for Step 1. Add server-side token caching in Step 2.
 
 async function resolveUserId(req) {
-  const auth = req.headers['authorization'] ?? '';
+  const auth  = req.headers['authorization'] ?? '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!token) return null;
   try {
@@ -151,9 +390,9 @@ app.post('/interpret-single', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'email required' });
   console.log(`[interpret-single] processing ${email.id} "${email.subject}"`);
 
-  let quote = '';
+  let quote   = '';
   let summary = 'Unable to summarize email.';
-  let action = null;
+  let action  = null;
   let actionUrl = null;
   let requiresAttention = false;
 
@@ -163,15 +402,15 @@ app.post('/interpret-single', async (req, res) => {
   ]);
 
   if (interpretResult.status === 'fulfilled') {
-    quote = interpretResult.value.quote ?? '';
+    quote   = interpretResult.value.quote   ?? '';
     summary = interpretResult.value.summary ?? 'Unable to summarize email.';
   } else {
     console.error(`[interpret-single] interpretEmail failed for ${email.id}:`, interpretResult.reason?.message);
   }
 
   if (actionResult.status === 'fulfilled') {
-    action = actionResult.value.action ?? null;
-    actionUrl = actionResult.value.actionUrl ?? null;
+    action            = actionResult.value.action            ?? null;
+    actionUrl         = actionResult.value.actionUrl         ?? null;
     requiresAttention = actionResult.value.requiresAttention === true;
   } else {
     console.error(`[interpret-single] decideActionSurface failed for ${email.id}:`, actionResult.reason?.message);
@@ -201,8 +440,7 @@ app.post('/session-recap', async (req, res) => {
   const { cards, userName, timeOfDay } = req.body;
   if (!Array.isArray(cards)) return res.status(400).json({ error: 'cards required' });
 
-  // Single source: all three values derived from the same cards array
-  const totalInView = cards.length;
+  const totalInView    = cards.length;
   const attentionCards = cards.filter(c => c.requiresAttention === true);
   const requireAttention = attentionCards.length;
 
@@ -212,18 +450,18 @@ app.post('/session-recap', async (req, res) => {
     ).join('\n') || '(none)';
 
   const prompt = renderPrompt(PROMPTS.sessionRecap, {
-    timeOfDay: timeOfDay ?? 'morning',
-    userName: userName ?? '',
+    timeOfDay:    timeOfDay ?? 'morning',
+    userName:     userName  ?? '',
     totalInView,
     requireAttention,
     attentionCards: formatCards(attentionCards),
-    contextCards: formatCards(cards),
+    contextCards:   formatCards(cards),
   });
 
   try {
     const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
-    const recap = JSON.parse(response.output_text);
-    recap.totalInView = totalInView;
+    const recap    = JSON.parse(response.output_text);
+    recap.totalInView    = totalInView;
     recap.requireAttention = requireAttention;
     res.json({ recap });
   } catch (err) {
@@ -233,10 +471,6 @@ app.post('/session-recap', async (req, res) => {
 });
 
 // ─── Feed ─────────────────────────────────────────────────────────────────
-//
-// SLICE: Step 1 — Render-backed, user-scoped feed.
-// Returns all cards for the user (pending + ready) plus their session recap.
-// Seen-state filtering (unseen-only feed) is not yet implemented — Step 3.
 
 app.get('/feed', async (req, res) => {
   const userId = await resolveUserId(req);
@@ -244,22 +478,39 @@ app.get('/feed', async (req, res) => {
   res.json(feedStore.getFeed(userId));
 });
 
+// ─── SSE endpoint ─────────────────────────────────────────────────────────
+//
+// Clients connect once and receive real-time card events:
+//   { cardId, type: 'pending', ...staticFields }  — new card added
+//   { cardId, type: 'chunk',  field, chunk }       — streaming token for a field
+//   { cardId, type: 'field-complete', field, value } — field fully resolved
+//   { cardId, type: 'ready' }                      — all AI fields done
+
+app.get('/feed/events', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).end();
+
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders();
+
+  getSseClients(userId).add(res);
+  console.log(`[sse] client connected (user: ${userId.slice(0, 8)}…) total: ${getSseClients(userId).size}`);
+
+  req.on('close', () => {
+    getSseClients(userId).delete(res);
+    console.log(`[sse] client disconnected (user: ${userId.slice(0, 8)}…) remaining: ${getSseClients(userId).size}`);
+  });
+});
+
 // ─── Dev ingestion bridge ──────────────────────────────────────────────────
 //
-// DEV ONLY. This endpoint exists solely to test the skeleton → ready flow
-// against the real Render backend without needing Gmail Pub/Sub wired up.
-//
-// Usage (curl):
-//   curl -X POST https://email-ai-server.onrender.com/dev/ingest \
-//     -H "Authorization: Bearer <google_access_token>" \
-//     -H "Content-Type: application/json" \
-//     -d '{"email": { <cleaned email object> }}'
+// DEV ONLY. Accepts a cleaned email object and runs it through the full
+// streaming pipeline: addPending (SSE → client shows static card immediately),
+// then serial AI processing (SSE → client fields stream in as tokens arrive).
 //
 // Production ingestion path (Step 2): Gmail Pub/Sub push → POST /pubsub-push
-// This endpoint should be removed or gated behind NODE_ENV before launch.
-//
-// TODO (Step 2): Extract buildRecap() as a direct function so this no longer
-// calls /session-recap over HTTP. The self-call below is a temporary bridge.
 
 app.post('/dev/ingest', async (req, res) => {
   const userId = await resolveUserId(req);
@@ -269,51 +520,46 @@ app.post('/dev/ingest', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'email required' });
 
   const id = `dev-${Date.now()}`;
-  feedStore.addPending(userId, id, email.date);
+
+  const staticFields = {
+    emailDate:          email.date,
+    emailId:            email.id,
+    senderName:         email.sender.name,
+    senderEmail:        email.sender.email,
+    subject:            email.subject,
+    date:               email.date ?? String(Date.now()),
+    threadId:           email.threadId ?? null,
+    threadMessageCount: 1,
+    avatarUri:          resolveAvatarUri(email),
+    avatarFallbackText: resolveAvatarFallbackText(email),
+  };
+
+  feedStore.addPending(userId, id, staticFields);
+
+  // Notify SSE clients: card exists with static fields — show partial card immediately
+  emitSSE(userId, { cardId: id, type: 'pending', ...staticFields });
+
   console.log(`[dev/ingest] pending → ${id} (user: ${userId.slice(0, 8)}…)`);
 
-  // Respond immediately — card is now visible as a skeleton on the client
+  // Respond immediately — client has everything it needs to show the card
   res.json({ id, status: 'pending' });
 
-  // Async: run real AI processing, then resolve the card
-  (async () => {
+  // Enqueue AI processing — serial per user, so only one card streams at a time
+  enqueueProcessing(userId, async () => {
     try {
-      const [interpretResult, actionResult] = await Promise.allSettled([
-        interpretEmail(email),
-        decideActionSurface(email),
-      ]);
+      // interpretEmail first → quote + summary stream in
+      await streamInterpretEmail(email, id, userId);
+      // decideActionSurface second → action fields stream in after quote/summary
+      await streamDecideActionSurface(email, id, userId);
 
-      const quote   = interpretResult.status === 'fulfilled' ? (interpretResult.value.quote   ?? '') : '';
-      const summary = interpretResult.status === 'fulfilled' ? (interpretResult.value.summary ?? '') : '';
-      const action          = actionResult.status === 'fulfilled' ? (actionResult.value.action          ?? null)  : null;
-      const actionUrl       = actionResult.status === 'fulfilled' ? (actionResult.value.actionUrl       ?? null)  : null;
-      const requiresAttention = actionResult.status === 'fulfilled' ? (actionResult.value.requiresAttention === true) : false;
-
-      const card = {
-        id,
-        emailId:            email.id,   // original Gmail message ID — used by client to avoid re-ingesting the same email
-        senderName:         email.sender.name,
-        senderEmail:        email.sender.email,
-        subject:            email.subject,
-        date:               email.date ?? String(Date.now()),
-        threadId:           email.threadId ?? null,
-        threadMessageCount: 1,
-        avatarUri:          resolveAvatarUri(email),
-        avatarFallbackText: resolveAvatarFallbackText(email),
-        quote,
-        summary,
-        action,
-        actionUrl,
-        requiresAttention,
-      };
-
-      feedStore.markReady(userId, id, card);
+      feedStore.markReady(userId, id);
+      emitSSE(userId, { cardId: id, type: 'ready' });
       console.log(`[dev/ingest] ready   → ${id}`);
 
-      // Update the user's recap from their current ready cards.
-      // TODO (Step 2): replace this HTTP self-call with a direct buildRecap() function.
+      // Update the session recap from all current ready cards
+      // TODO (Step 2): extract buildRecap() to avoid this HTTP self-call
       const { cards: currentCards } = feedStore.getFeed(userId);
-      const readyCards = currentCards.filter(c => c.status === 'ready' && c.data);
+      const readyCards = currentCards.filter(c => c.status === 'ready');
       if (readyCards.length > 0) {
         try {
           const recapRes = await fetch(`http://localhost:${PORT}/session-recap`, {
@@ -321,14 +567,14 @@ app.post('/dev/ingest', async (req, res) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               cards: readyCards.map(c => ({
-                senderName: c.data.senderName,
-                subject:    c.data.subject,
-                summary:    c.data.summary,
-                action:     c.data.action,
-                requiresAttention: c.data.requiresAttention,
+                senderName:         c.senderName,
+                subject:            c.subject,
+                summary:            c.summary,
+                action:             c.action,
+                requiresAttention:  c.requiresAttention,
               })),
-              userName:   '',
-              timeOfDay:  (() => { const h = new Date().getHours(); return h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening'; })(),
+              userName:  '',
+              timeOfDay: (() => { const h = new Date().getHours(); return h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening'; })(),
             }),
           });
           const { recap } = await recapRes.json();
@@ -338,9 +584,9 @@ app.post('/dev/ingest', async (req, res) => {
         }
       }
     } catch (err) {
-      console.error('[dev/ingest] AI processing failed:', err.message);
+      console.error(`[dev/ingest] AI processing failed for ${id}:`, err.message);
     }
-  })();
+  });
 });
 
 app.get('/test-ai', async (req, res) => {
@@ -358,6 +604,4 @@ app.get('/test-ai', async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  // Mock ingestion removed. Ingestion is now triggered via POST /dev/ingest
-  // during this transition slice, and will be replaced by Gmail Pub/Sub in Step 2.
 });
