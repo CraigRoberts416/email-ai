@@ -52,7 +52,8 @@ type AllMailCard = {
   senderName: string;
   senderEmail: string;
   subject: string;
-  snippet: string;
+  snippetHeadline: string; // first sentence, decoded — for the 28px slot
+  snippetBody: string;     // remainder + "...See More" — for the 16px slot
   date: string;
   threadId: string | null;
   avatarUri: string | null;
@@ -988,10 +989,9 @@ export default function Index() {
               }}
               content={{
                 contentType: 'structured',
-                // Interpreted: show AI quote + summary. Raw: show Gmail snippet as headline.
-                headline: card.interpreted ? card.quote : card.snippet,
+                headline: card.interpreted ? card.quote : card.snippetHeadline,
                 subtitle: card.subject,
-                body: card.interpreted ? card.summary : null,
+                body: card.interpreted ? card.summary : card.snippetBody,
                 cta: card.interpreted && card.action && card.actionUrl
                   ? { label: card.action, onPress: () => Linking.openURL(card.actionUrl!) }
                   : undefined,

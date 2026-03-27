@@ -16,6 +16,53 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+// ─── Snippet helpers ──────────────────────────────────────────────────────
+//
+// Gmail snippet fields are HTML-entity-encoded and unsplit.
+// These helpers produce the two text slots for non-interpreted cards:
+//   snippetHeadline → 28px display slot (first sentence)
+//   snippetBody     → 16px body slot (remainder + "...See More")
+
+function decodeHtmlEntities(text) {
+  return text
+    .replace(/&#39;/g,  "'")
+    .replace(/&#x27;/g, "'")
+    .replace(/&amp;/g,  '&')
+    .replace(/&lt;/g,   '<')
+    .replace(/&gt;/g,   '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g,    ' ')
+    .trim();
+}
+
+/**
+ * Split a decoded snippet into headline and body for the non-interpreted card.
+ * Headline = first sentence (up to 100 chars). Body = remainder + "...See More".
+ */
+function splitSnippet(rawSnippet) {
+  const text = decodeHtmlEntities(rawSnippet);
+  if (!text) return { snippetHeadline: '', snippetBody: '...See More' };
+
+  // Find the first sentence boundary (.  !  ?)
+  const match = text.match(/^(.{10,}?[.!?])\s+(.+)$/s);
+  if (match) {
+    const headline = match[1].slice(0, 100);
+    const rest     = match[2].trim();
+    return {
+      snippetHeadline: headline,
+      snippetBody:     (rest.slice(0, 120) + '...See More'),
+    };
+  }
+
+  // No sentence break — use the full snippet as headline
+  return {
+    snippetHeadline: text.slice(0, 100),
+    snippetBody:     '...See More',
+  };
+}
+
 // ─── Sender parser ────────────────────────────────────────────────────────
 
 function parseSenderServer(from) {
@@ -642,6 +689,7 @@ app.get('/all-mail', async (req, res) => {
       // resolveAvatarUri and resolveAvatarFallbackText expect { sender: { domain, name, email } }
       const emailShell = { sender };
       const interp     = feedStore.getInterpretation(userId, msg.id);
+      const { snippetHeadline, snippetBody } = splitSnippet(msg.snippet ?? '');
 
       return {
         id:                msg.id,
@@ -649,7 +697,8 @@ app.get('/all-mail', async (req, res) => {
         senderName:        sender.name,
         senderEmail:       sender.email,
         subject,
-        snippet:           msg.snippet ?? '',
+        snippetHeadline,
+        snippetBody,
         date:              msg.internalDate ?? String(Date.now()),
         threadId:          msg.threadId   ?? null,
         avatarUri:         resolveAvatarUri(emailShell),
