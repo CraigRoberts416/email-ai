@@ -38,28 +38,32 @@ function decodeHtmlEntities(text) {
 }
 
 /**
- * Split a decoded snippet into headline and body for the non-interpreted card.
- * Headline = first sentence (up to 100 chars). Body = remainder + "...See More".
+ * Split a decoded snippet into a short headline and a body for the non-interpreted card.
+ *
+ * Headline: capped at 52 chars, cut at the nearest word boundary. Short enough
+ * to read as a quick teaser at 28px without wrapping excessively.
+ * Body: the remainder of the snippet, trimmed, followed by "...See More" so
+ * the user knows tapping the card will show the full email.
  */
 function splitSnippet(rawSnippet) {
   const text = decodeHtmlEntities(rawSnippet);
   if (!text) return { snippetHeadline: '', snippetBody: '...See More' };
 
-  // Find the first sentence boundary (.  !  ?)
-  const match = text.match(/^(.{10,}?[.!?])\s+(.+)$/s);
-  if (match) {
-    const headline = match[1].slice(0, 100);
-    const rest     = match[2].trim();
-    return {
-      snippetHeadline: headline,
-      snippetBody:     (rest.slice(0, 120) + '...See More'),
-    };
+  const MAX = 52;
+
+  if (text.length <= MAX) {
+    return { snippetHeadline: text, snippetBody: '...See More' };
   }
 
-  // No sentence break — use the full snippet as headline
+  // Cut at the last word boundary within MAX chars
+  const cut       = text.slice(0, MAX);
+  const lastSpace = cut.lastIndexOf(' ');
+  const headline  = lastSpace > 10 ? cut.slice(0, lastSpace) : cut;
+  const rest      = text.slice(headline.length).trim();
+
   return {
-    snippetHeadline: text.slice(0, 100),
-    snippetBody:     '...See More',
+    snippetHeadline: headline,
+    snippetBody:     rest + ' ...See More',
   };
 }
 
