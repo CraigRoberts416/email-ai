@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors, InterFonts, Radius, Spacing, Typography } from '@/constants/theme';
+import { Colors, Fonts, InterFonts, Radius, Spacing, Typography } from '@/constants/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -22,10 +22,11 @@ type Sender = {
 type StructuredContent = {
   contentType: 'structured';
   headline: string | null;  // AI quote — null while streaming
-  subtitle: string;         // subject line — 12px gray, truncated (static)
+  subtitle: string | null;  // subject line — 12px gray; null = hidden (non-AI cards)
   body: string | null;      // AI summary — null while streaming
   cta?: { label: string; onPress: () => void };
   actionLabel?: string;
+  bodySummary?: boolean;    // true = gray box + monospace (AI summary style)
 };
 
 type HtmlContent = {
@@ -165,12 +166,20 @@ export default function EmailCard({
                 <ShimmerBar width="58%" height={24} />
               </View>
             ) : null}
-            <Text style={styles.subtitleGray} numberOfLines={1} ellipsizeMode="tail">
-              {content.subtitle}
-            </Text>
+            {content.subtitle !== null && (
+              <Text style={styles.subtitleGray} numberOfLines={1} ellipsizeMode="tail">
+                {content.subtitle}
+              </Text>
+            )}
           </View>
           {content.body !== null ? (
-            <Text style={styles.bodyText}>{content.body}</Text>
+            content.bodySummary ? (
+              <View style={styles.summaryBox}>
+                <Text style={styles.summaryText}>{content.body}</Text>
+              </View>
+            ) : (
+              <Text style={styles.bodyText}>{content.body}</Text>
+            )
           ) : loading ? (
             <View style={styles.bodyShimmer}>
               <ShimmerBar width="95%" height={14} />
@@ -374,6 +383,18 @@ const styles = StyleSheet.create({
     color: Colors.light.textPrimary,
     lineHeight: 22,      // 16 × 1.4
     letterSpacing: -0.32,
+  },
+  summaryBox: {
+    backgroundColor: '#F8F8F8',
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+  },
+  summaryText: {
+    fontFamily: Fonts?.mono ?? 'monospace',
+    fontSize: 16,
+    fontWeight: '400' as const,
+    color: Colors.light.textPrimary,
+    lineHeight: 22,
   },
   ctaBtn: {
     borderWidth: 1,

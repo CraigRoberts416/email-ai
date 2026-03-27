@@ -16,36 +16,11 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// ─── Email body extraction ────────────────────────────────────────────────
-//
-// Used by /all-mail to produce a clean preview of the actual email body
-// instead of the unreliable Gmail snippet.
-//
-// Returns { bodyHeadline, bodyContinuation } for the two card text slots.
+// ─── HTML entity decoder ──────────────────────────────────────────────────
+// Used to clean Gmail snippet text before sending to the client.
 
-/** Decode a base64url-encoded Gmail body part. */
-function decodeBase64Url(data) {
-  return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
-}
-
-/** Recursively find the first part matching mimeType in a Gmail payload. */
-function extractPart(payload, mimeType) {
-  if (!payload) return '';
-  if (payload.mimeType === mimeType && payload.body?.data) {
-    return decodeBase64Url(payload.body.data);
-  }
-  for (const part of payload.parts ?? []) {
-    const result = extractPart(part, mimeType);
-    if (result) return result;
-  }
-  return '';
-}
-
-/** Strip HTML tags and decode common entities. */
-function stripHtml(html) {
-  return html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
+function decodeHtmlEntities(text) {
+  return text
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi,  '&')
     .replace(/&lt;/gi,   '<')
@@ -55,90 +30,6 @@ function stripHtml(html) {
     .replace(/\s+/g,     ' ')
     .trim();
 }
-
-/**
- * Strip garbage from raw email body text before extracting the preview.
- * Rules applied in order:
- *   1. Quoted reply content ("> " lines, "On ... wrote:" blocks)
- *   2. Forwarded message headers
- *   3. Signature separator (-- on its own line — RFC standard, hard cutoff)
- *   4. Sign-off heuristic (conservative — only fires if 50+ chars precede it)
- */
-function cleanEmailBody(raw) {
-  // 1. Remove "On [date], [name] wrote:" reply intro and everything after
-  raw = raw.replace(/\n?On .{10,200}\bwrote:\s*\n[\s\S]*/i, '');
-  // Remove lines starting with > (quoted text)
-  raw = raw.replace(/(\n|^)>+[^\n]*/g, '');
-
-  // 2. Remove forwarded message blocks
-  raw = raw.replace(/\n?-{5,}\s*(Forwarded|Original) message[\s\S]*/i, '');
-  // Remove the From/To/Date/Subject block that typically follows a forward
-  raw = raw.replace(/\n(From|To|Cc|Date|Subject):[^\n]+(\n[^\n]+){0,4}/gi, '');
-
-  // 3. Signature separator — hard cutoff (RFC 3676 standard)
-  raw = raw.replace(/\n--[ \t]*\n[\s\S]*/m, '');
-
-  // 4. Conservative sign-off: only strip if the match is 50+ chars into the body
-  //    so short "Thanks, Craig" emails aren't gutted entirely
-  const signOff = raw.match(/\n(best|thanks|regards|cheers|sincerely|warm regards|kind regards)[,.]?\s*\n/i);
-  if (signOff && signOff.index > 50) {
-    raw = raw.slice(0, signOff.index);
-  }
-
-  return raw.replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Split cleaned body text into headline and continuation for the card.
- * Headline: first sentence ≥ 20 chars, or word-boundary cut at ~60 chars.
- * Continuation: remainder up to ~150 chars + " ...See More".
- * Fallback: uses subject when body is effectively empty.
- */
-function splitEmailBody(text, subject) {
-  if (!text || text.length < 10) {
-    return {
-      bodyHeadline:     subject || '(no preview)',
-      bodyContinuation: '...See More',
-    };
-  }
-
-  // Find first sentence (at least 20 chars, ends in .!?)
-  const sentenceMatch = text.match(/^(.{20,}?[.!?])(?:\s+|$)/s);
-  if (sentenceMatch) {
-    const headline = sentenceMatch[1].trim();
-    const rest     = text.slice(sentenceMatch[0].length).trim();
-    return {
-      bodyHeadline:     headline,
-      bodyContinuation: rest ? rest.slice(0, 150) + ' ...See More' : '...See More',
-    };
-  }
-
-  // No sentence break — cut at word boundary around 60 chars
-  if (text.length <= 60) return { bodyHeadline: text, bodyContinuation: '...See More' };
-  const cut       = text.slice(0, 60);
-  const lastSpace = cut.lastIndexOf(' ');
-  const headline  = lastSpace > 10 ? cut.slice(0, lastSpace) : cut;
-  const rest      = text.slice(headline.length).trim();
-  return {
-    bodyHeadline:     headline,
-    bodyContinuation: rest ? rest.slice(0, 150) + ' ...See More' : '...See More',
-  };
-}
-
-/**
- * Top-level helper: extract, clean, and split the email body for a raw card preview.
- * Prefer plain text; fall back to stripped HTML; fall back to subject if body is empty.
- */
-function getEmailBodyPreview(payload, subject) {
-  let raw = extractPart(payload, 'text/plain');
-  if (!raw || raw.trim().length < 20) {
-    const html = extractPart(payload, 'text/html');
-    raw = html ? stripHtml(html) : '';
-  }
-  const cleaned = cleanEmailBody(raw);
-  return splitEmailBody(cleaned, subject);
-}
-
 
 // ─── Sender parser ────────────────────────────────────────────────────────
 
@@ -727,10 +618,8 @@ app.post('/dev/ingest', async (req, res) => {
 //
 // Returns the user's most recent Gmail messages as a flat card list.
 // For each message, checks if it has been AI-interpreted via Mail Feed.
-// Cards with an interpretation get AI fields; unprocessed cards get raw data.
-// The client renders the appropriate card variant based on the `interpreted` flag.
-//
-// Uses format=full to get the real email body for a reliable card preview.
+// Cards with an interpretation get AI fields; unprocessed cards fall back to
+// subject (28px slot) + Gmail snippet (16px slot).
 
 app.get('/all-mail', async (req, res) => {
   const auth        = req.headers['authorization'] ?? '';
@@ -748,10 +637,10 @@ app.get('/all-mail', async (req, res) => {
     const messageIds = (listJson.messages ?? []).map(m => m.id);
     if (messageIds.length === 0) return res.json({ cards: [] });
 
-    // Fetch full messages in parallel to get actual body text for the card preview
+    // format=metadata gives headers + snippet without fetching the full body
     const messages = await Promise.all(messageIds.map(async (id) => {
       const r = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
       return r.json();
@@ -763,28 +652,27 @@ app.get('/all-mail', async (req, res) => {
       const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value ?? '(no subject)';
       const sender  = parseSenderServer(fromRaw);
 
-      const emailShell                  = { sender };
-      const interp                      = feedStore.getInterpretation(userId, msg.id);
-      const { bodyHeadline, bodyContinuation } = getEmailBodyPreview(msg.payload, subject);
+      const emailShell = { sender };
+      const interp     = feedStore.getInterpretation(userId, msg.id);
+      const snippet    = decodeHtmlEntities(msg.snippet ?? '');
 
       return {
-        id:                msg.id,
-        emailId:           msg.id,
-        senderName:        sender.name,
-        senderEmail:       sender.email,
+        id:                 msg.id,
+        emailId:            msg.id,
+        senderName:         sender.name,
+        senderEmail:        sender.email,
         subject,
-        bodyHeadline,
-        bodyContinuation,
-        date:              msg.internalDate ?? String(Date.now()),
-        threadId:          msg.threadId   ?? null,
-        avatarUri:         resolveAvatarUri(emailShell),
+        snippet,
+        date:               msg.internalDate ?? String(Date.now()),
+        threadId:           msg.threadId   ?? null,
+        avatarUri:          resolveAvatarUri(emailShell),
         avatarFallbackText: resolveAvatarFallbackText(emailShell),
-        interpreted:       !!interp,
-        quote:             interp?.quote             ?? null,
-        summary:           interp?.summary           ?? null,
-        action:            interp?.action            ?? null,
-        actionUrl:         interp?.actionUrl         ?? null,
-        requiresAttention: interp?.requiresAttention ?? false,
+        interpreted:        !!interp,
+        quote:              interp?.quote             ?? null,
+        summary:            interp?.summary           ?? null,
+        action:             interp?.action            ?? null,
+        actionUrl:          interp?.actionUrl         ?? null,
+        requiresAttention:  interp?.requiresAttention ?? false,
       };
     });
 

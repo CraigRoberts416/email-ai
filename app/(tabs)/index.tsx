@@ -52,15 +52,14 @@ type AllMailCard = {
   senderName: string;
   senderEmail: string;
   subject: string;
-  bodyHeadline: string;     // first clean sentence of actual email body — for 28px slot
-  bodyContinuation: string; // remainder + "...See More" — for 16px slot
+  snippet: string;          // Gmail snippet — fallback body text for non-AI cards
   date: string;
   threadId: string | null;
   avatarUri: string | null;
   avatarFallbackText: string;
   interpreted: boolean;
-  quote: string | null;     // AI quote — takes priority over bodyHeadline when present
-  summary: string | null;   // AI summary — takes priority over bodyContinuation when present
+  quote: string | null;
+  summary: string | null;
   action: string | null;
   actionUrl: string | null;
   requiresAttention: boolean;
@@ -960,6 +959,7 @@ export default function Index() {
                   headline: feedCard.quote,
                   subtitle: feedCard.subject,
                   body: feedCard.summary,
+                  bodySummary: true,
                   cta: feedCard.action && feedCard.actionUrl
                     ? { label: feedCard.action, onPress: () => Linking.openURL(feedCard.actionUrl!) }
                     : undefined,
@@ -979,9 +979,9 @@ export default function Index() {
         {/* ── All Mail ────────────────────────────────────────────── */}
         {activeTab === 'allMail' && loadingAllMail && <EmailCardSkeleton />}
         {activeTab === 'allMail' && !loadingAllMail && allMailCards.map((card, i) => {
-          // AI fields take priority when present; body preview is always the fallback.
-          const headline = card.quote   ?? card.bodyHeadline;
-          const body     = card.summary ?? card.bodyContinuation;
+          // AI fields take priority; subject + snippet are the non-interpreted fallback.
+          const headline = card.quote   || card.subject || null;
+          const body     = card.summary || (card.snippet ? card.snippet + ' See more...' : null);
           return (
             <View key={card.id} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
               <EmailCard
@@ -994,8 +994,9 @@ export default function Index() {
                 content={{
                   contentType: 'structured',
                   headline,
-                  subtitle: card.subject,
+                  subtitle: card.interpreted ? card.subject : null,
                   body,
+                  bodySummary: card.interpreted,
                   cta: card.action && card.actionUrl
                     ? { label: card.action, onPress: () => Linking.openURL(card.actionUrl!) }
                     : undefined,

@@ -97,8 +97,8 @@ export const Typography = {
     fontFamily: InterFonts.regular,
     fontSize: 28,
     fontWeight: '400' as const,
-    lineHeight: 27,        // 28 × 0.97
-    letterSpacing: -1.68,  // -6% of 28px
+    lineHeight: 31,        // 28 × 1.1
+    letterSpacing: -0.84,  // -3% of 28px
   },
   bodyMd: {
     fontFamily: InterFonts.regular,
