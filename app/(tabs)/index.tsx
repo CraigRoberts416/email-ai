@@ -736,11 +736,11 @@ export default function Index() {
         >
           <Text style={styles.connectLabel}>{loadingEmails ? 'Loading…' : 'Get Emails'}</Text>
         </Pressable>
-        {__DEV__ && !!accessToken && (
+        {__DEV__ && (
           <Pressable
             style={({ pressed }) => [styles.connectBtn, styles.devBtn, pressed && styles.connectBtnPressed]}
             onPress={handleDevIngest}
-            disabled={loadingDevIngest}
+            disabled={!accessToken || loadingDevIngest}
           >
             <Text style={styles.connectLabel}>
               {loadingDevIngest ? 'Injecting…' : '[DEV] Ingest Latest Email'}
