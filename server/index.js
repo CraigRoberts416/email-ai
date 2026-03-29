@@ -1,42 +1,39 @@
 require('dotenv').config();
 
-const fs = require('fs');
-const path = require('path');
+const fs      = require('fs');
+const path    = require('path');
 const express = require('express');
-const cors = require('cors');
-const OpenAI = require('openai');
-const feedStore = require('./feedStore');
+const cors    = require('cors');
+const OpenAI  = require('openai');
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const userStore        = require('./userStore');
+const messageStore     = require('./messageStore');
+const gmailSync        = require('./gmailSync');
+const processingWorker = require('./processingWorker');
+const watchManager     = require('./watchManager');
+const { cleanEmailForAI } = require('./emailCleaner');
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const app = express();
-
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // ─── HTML entity decoder ──────────────────────────────────────────────────
-// Used to clean Gmail snippet text before sending to the client.
 
 function decodeHtmlEntities(text) {
   return text
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi,  '&')
-    .replace(/&lt;/gi,   '<')
-    .replace(/&gt;/gi,   '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi,  "'")
-    .replace(/\s+/g,     ' ')
-    .trim();
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>').replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ').trim();
 }
 
 // ─── Sender parser ────────────────────────────────────────────────────────
 
 function parseSenderServer(from) {
-  const match = from.match(/^(.*?)\s*<([^>]+)>$/);
-  const email = match ? match[2].trim() : from.trim();
-  const name  = match ? match[1].replace(/^"|"$/g, '').trim() : email;
+  const match  = from.match(/^(.*?)\s*<([^>]+)>$/);
+  const email  = match ? match[2].trim() : from.trim();
+  const name   = match ? match[1].replace(/^"|"$/g, '').trim() : email;
   const domain = email.split('@')[1] ?? '';
   return { name, email, domain };
 }
@@ -88,20 +85,13 @@ function renderPrompt(template, vars) {
 }
 
 const PROMPTS = {
-  interpretEmail: loadPrompt('interpret-email'),
-  decideActionSurface: loadPrompt('decide-action-surface'),
-  sessionRecap: loadPrompt('session-recap'),
+  interpretEmail:       loadPrompt('interpret-email'),
+  decideActionSurface:  loadPrompt('decide-action-surface'),
+  sessionRecap:         loadPrompt('session-recap'),
 };
 
-// ─── XML helpers ─────────────────────────────────────────────────────────
-//
-// Prompts now output XML-tagged fields instead of JSON, making streaming
-// field boundary detection robust and unambiguous.
+// ─── XML helpers ──────────────────────────────────────────────────────────
 
-/**
- * Extract a named field from XML-tagged output (non-streaming).
- * Returns the trimmed content between <fieldName> and </fieldName>, or null.
- */
 function parseXmlField(text, fieldName) {
   const open  = `<${fieldName}>`;
   const close = `</${fieldName}>`;
@@ -112,20 +102,6 @@ function parseXmlField(text, fieldName) {
   return text.slice(start + open.length, end).trim();
 }
 
-/**
- * Extract streaming content for a named field from the accumulated output.
- * Returns null if the field's opening tag has not yet appeared.
- * Returns { newChunk, complete, value } otherwise.
- *
- * To avoid emitting partial closing tags as content, we hold back the last
- * (close.length - 1) bytes of the safe window until we know it isn't the
- * start of </fieldName>.
- *
- * @param {string} accum       Full accumulated output so far
- * @param {string} fieldName   XML field name (e.g. "quote")
- * @param {number} alreadySent Number of field-content bytes already sent as chunks
- * @returns {{ newChunk: string|null, complete: boolean, value: string }|null}
- */
 function extractStreamingField(accum, fieldName, alreadySent) {
   const open  = `<${fieldName}>`;
   const close = `</${fieldName}>`;
@@ -142,9 +118,7 @@ function extractStreamingField(accum, fieldName, alreadySent) {
     return { newChunk: newChunk || null, complete: true, value };
   }
 
-  // Field started but closing tag not yet seen.
-  // Don't send the last (close.length - 1) chars in case they start the closing tag.
-  const safeEnd  = Math.max(contentStart, accum.length - (close.length - 1));
+  const safeEnd   = Math.max(contentStart, accum.length - (close.length - 1));
   const available = accum.slice(contentStart, safeEnd);
   const newChunk  = available.slice(alreadySent);
   return { newChunk: newChunk || null, complete: false, value: null };
@@ -152,8 +126,7 @@ function extractStreamingField(accum, fieldName, alreadySent) {
 
 // ─── SSE helpers ──────────────────────────────────────────────────────────
 
-// sseClients: userId → Set<res>
-const sseClients = new Map();
+const sseClients = new Map(); // userId → Set<res>
 
 function getSseClients(userId) {
   if (!sseClients.has(userId)) sseClients.set(userId, new Set());
@@ -161,38 +134,17 @@ function getSseClients(userId) {
 }
 
 function emitSSE(userId, data) {
-  const clients  = getSseClients(userId);
-  const payload  = `data: ${JSON.stringify(data)}\n\n`;
+  const clients = getSseClients(userId);
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) {
     try { res.write(payload); } catch {}
   }
 }
 
-// ─── Per-user serial processing queue ────────────────────────────────────
-//
-// Cards are processed one at a time per user. This keeps the streaming model
-// simple — no concurrent SSE multiplexing needed within a single user's feed.
-// The normal case (pre-app-open processing) does not use this queue; it is
-// the exception path for emails arriving while the user is in the app.
-
-const userQueues = new Map(); // userId → Promise (tail of chain)
-
-function enqueueProcessing(userId, fn) {
-  const tail = userQueues.get(userId) ?? Promise.resolve();
-  const next  = tail.then(fn).catch(err => {
-    console.error(`[queue] error for user ${userId.slice(0, 8)}…:`, err.message);
-  });
-  userQueues.set(userId, next);
-}
-
 // ─── Streaming AI functions ───────────────────────────────────────────────
+// These update messageStore incrementally as each field streams in.
 
-/**
- * Stream interpretEmail output for one card.
- * Emits SSE chunk events as tokens arrive, then field-complete when each tag closes.
- * Updates feedStore AI fields as each field completes.
- */
-async function streamInterpretEmail(email, cardId, userId) {
+async function streamInterpretEmail(email, messageId, userId) {
   const prompt = renderPrompt(PROMPTS.interpretEmail, {
     senderName:             email.sender.name,
     senderEmail:            email.sender.email,
@@ -210,14 +162,10 @@ async function streamInterpretEmail(email, cardId, userId) {
     hasAttachments:         email.signals.hasAttachments,
   });
 
-  const stream = await openai.responses.create({
-    model:  'gpt-5',
-    input:  prompt,
-    stream: true,
-  });
+  const stream = await openai.responses.create({ model: 'gpt-5', input: prompt, stream: true });
 
-  let accum       = '';
-  const sentUpTo  = { quote: 0, summary: 0 };
+  let accum        = '';
+  const sentUpTo   = { quote: 0, summary: 0 };
   const fieldsDone = { quote: false, summary: false };
 
   for await (const event of stream) {
@@ -230,35 +178,30 @@ async function streamInterpretEmail(email, cardId, userId) {
       if (!result) continue;
 
       if (result.newChunk) {
-        emitSSE(userId, { cardId, type: 'chunk', field, chunk: result.newChunk });
+        emitSSE(userId, { messageId, type: 'chunk', field, chunk: result.newChunk });
         sentUpTo[field] += result.newChunk.length;
       }
 
       if (result.complete) {
         fieldsDone[field] = true;
         const value = result.value.trim() || null;
-        feedStore.updateAiField(userId, cardId, field, value);
-        emitSSE(userId, { cardId, type: 'field-complete', field, value });
+        await messageStore.setAiField(userId, messageId, field, value);
+        emitSSE(userId, { messageId, type: 'field-complete', field, value });
       }
     }
   }
 
-  // Finalize fields whose closing tags were missing (model truncation safety)
   for (const field of ['quote', 'summary']) {
     if (fieldsDone[field]) continue;
     const open     = `<${field}>`;
     const startIdx = accum.indexOf(open);
     const value    = startIdx !== -1 ? accum.slice(startIdx + open.length).trim() || null : null;
-    feedStore.updateAiField(userId, cardId, field, value);
-    emitSSE(userId, { cardId, type: 'field-complete', field, value });
+    await messageStore.setAiField(userId, messageId, field, value);
+    emitSSE(userId, { messageId, type: 'field-complete', field, value });
   }
 }
 
-/**
- * Stream decideActionSurface output for one card.
- * Runs after streamInterpretEmail to enforce deterministic reveal order.
- */
-async function streamDecideActionSurface(email, cardId, userId) {
+async function streamDecideActionSurface(email, messageId, userId) {
   const prompt = renderPrompt(PROMPTS.decideActionSurface, {
     senderName:         email.sender.name,
     senderEmail:        email.sender.email,
@@ -276,11 +219,7 @@ async function streamDecideActionSurface(email, cardId, userId) {
     hasAttachments:     email.signals.hasAttachments,
   });
 
-  const stream = await openai.responses.create({
-    model:  'gpt-5',
-    input:  prompt,
-    stream: true,
-  });
+  const stream = await openai.responses.create({ model: 'gpt-5', input: prompt, stream: true });
 
   let accum        = '';
   const sentUpTo   = { action: 0, actionUrl: 0, requiresAttention: 0 };
@@ -296,7 +235,7 @@ async function streamDecideActionSurface(email, cardId, userId) {
       if (!result) continue;
 
       if (result.newChunk) {
-        emitSSE(userId, { cardId, type: 'chunk', field, chunk: result.newChunk });
+        emitSSE(userId, { messageId, type: 'chunk', field, chunk: result.newChunk });
         sentUpTo[field] += result.newChunk.length;
       }
 
@@ -308,13 +247,12 @@ async function streamDecideActionSurface(email, cardId, userId) {
         } else {
           value = result.value.trim() || null;
         }
-        feedStore.updateAiField(userId, cardId, field, value);
-        emitSSE(userId, { cardId, type: 'field-complete', field, value });
+        await messageStore.setAiField(userId, messageId, field, value);
+        emitSSE(userId, { messageId, type: 'field-complete', field, value });
       }
     }
   }
 
-  // Finalize fields whose closing tags were missing
   for (const field of ['action', 'actionUrl', 'requiresAttention']) {
     if (fieldsDone[field]) continue;
     const open     = `<${field}>`;
@@ -326,68 +264,9 @@ async function streamDecideActionSurface(email, cardId, userId) {
     } else {
       value = field === 'requiresAttention' ? false : null;
     }
-    feedStore.updateAiField(userId, cardId, field, value);
-    emitSSE(userId, { cardId, type: 'field-complete', field, value });
+    await messageStore.setAiField(userId, messageId, field, value);
+    emitSSE(userId, { messageId, type: 'field-complete', field, value });
   }
-}
-
-// ─── Non-streaming AI helpers (for /interpret-single) ────────────────────
-//
-// These parse the XML-tagged output synchronously, keeping the existing
-// /interpret-single endpoint functional for the legacy runSync flow.
-
-async function interpretEmail(email) {
-  const prompt = renderPrompt(PROMPTS.interpretEmail, {
-    senderName:             email.sender.name,
-    senderEmail:            email.sender.email,
-    senderDomain:           email.sender.domain,
-    subject:                email.subject,
-    snippet:                email.snippet,
-    plainText:              email.body.plainText?.slice(0, 1500) ?? '',
-    htmlText:               email.body.htmlText?.slice(0, 1500) ?? '',
-    links:                  cleanLinks(email.signals.structuredLinks ?? []).length,
-    unsubscribePresent:     email.signals.unsubscribePresent,
-    freeMailDomain:         email.signals.freeMailDomain,
-    replyToMismatch:        email.signals.replyToMismatch,
-    suspiciousSubjectHints: JSON.stringify(email.signals.suspiciousSubjectHints),
-    greetingGeneric:        email.signals.greetingGeneric,
-    hasAttachments:         email.signals.hasAttachments,
-  });
-
-  const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
-  const text = response.output_text;
-  return {
-    quote:   parseXmlField(text, 'quote') || null,
-    summary: parseXmlField(text, 'summary') ?? 'Unable to summarize email.',
-  };
-}
-
-async function decideActionSurface(email) {
-  const prompt = renderPrompt(PROMPTS.decideActionSurface, {
-    senderName:         email.sender.name,
-    senderEmail:        email.sender.email,
-    senderDomain:       email.sender.domain,
-    subject:            email.subject,
-    snippet:            email.snippet,
-    plainText:          email.body.plainText?.slice(0, 1500) ?? '',
-    htmlText:           email.body.htmlText?.slice(0, 1500) ?? '',
-    links:              cleanLinks(email.signals.structuredLinks ?? [])
-                          .map(l => l.context
-                            ? `${l.text} | context: ${l.context} | url: ${l.url}`
-                            : `${l.text} | url: ${l.url}`)
-                          .join('\n') || '(none)',
-    unsubscribePresent: email.signals.unsubscribePresent,
-    hasAttachments:     email.signals.hasAttachments,
-  });
-
-  const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
-  const text     = response.output_text;
-  const requiresAttentionStr = parseXmlField(text, 'requiresAttention') ?? 'false';
-  return {
-    action:             parseXmlField(text, 'action') || null,
-    actionUrl:          parseXmlField(text, 'actionUrl') || null,
-    requiresAttention:  requiresAttentionStr.trim().toLowerCase() === 'true',
-  };
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────
@@ -410,107 +289,89 @@ async function resolveUserId(req) {
 
 // ─── Routes ───────────────────────────────────────────────────────────────
 
-app.post('/interpret-single', async (req, res) => {
-  const email = req.body.email;
-  if (!email) return res.status(400).json({ error: 'email required' });
-  console.log(`[interpret-single] processing ${email.id} "${email.subject}"`);
+// Register user — stores tokens, starts initial sync + worker + watch
+app.post('/auth/register', async (req, res) => {
+  const auth        = req.headers['authorization'] ?? '';
+  const accessToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!accessToken) return res.status(401).json({ error: 'unauthorized' });
 
-  let quote   = '';
-  let summary = 'Unable to summarize email.';
-  let action  = null;
-  let actionUrl = null;
-  let requiresAttention = false;
-
-  const [interpretResult, actionResult] = await Promise.allSettled([
-    interpretEmail(email),
-    decideActionSurface(email),
-  ]);
-
-  if (interpretResult.status === 'fulfilled') {
-    quote   = interpretResult.value.quote   ?? '';
-    summary = interpretResult.value.summary ?? 'Unable to summarize email.';
-  } else {
-    console.error(`[interpret-single] interpretEmail failed for ${email.id}:`, interpretResult.reason?.message);
-  }
-
-  if (actionResult.status === 'fulfilled') {
-    action            = actionResult.value.action            ?? null;
-    actionUrl         = actionResult.value.actionUrl         ?? null;
-    requiresAttention = actionResult.value.requiresAttention === true;
-  } else {
-    console.error(`[interpret-single] decideActionSurface failed for ${email.id}:`, actionResult.reason?.message);
-  }
-
-  const card = {
-    id: email.id,
-    senderName: email.sender.name,
-    senderEmail: email.sender.email,
-    subject: email.subject,
-    date: email.date,
-    threadId: email.threadId,
-    avatarUri: resolveAvatarUri(email),
-    avatarFallbackText: resolveAvatarFallbackText(email),
-    quote,
-    summary,
-    action,
-    actionUrl,
-    requiresAttention,
-  };
-
-  console.log(`[interpret-single] done ${email.id}`);
-  res.json({ card });
-});
-
-app.post('/session-recap', async (req, res) => {
-  const { cards, userName, timeOfDay } = req.body;
-  if (!Array.isArray(cards)) return res.status(400).json({ error: 'cards required' });
-
-  const totalInView    = cards.length;
-  const attentionCards = cards.filter(c => c.requiresAttention === true);
-  const requireAttention = attentionCards.length;
-
-  const formatCards = (arr) =>
-    arr.map(c =>
-      `- From: ${c.senderName} | Subject: ${c.subject} | Summary: ${c.summary}${c.action ? ` | Action: ${c.action}` : ''}`
-    ).join('\n') || '(none)';
-
-  const prompt = renderPrompt(PROMPTS.sessionRecap, {
-    timeOfDay:    timeOfDay ?? 'morning',
-    userName:     userName  ?? '',
-    totalInView,
-    requireAttention,
-    attentionCards: formatCards(attentionCards),
-    contextCards:   formatCards(cards),
-  });
+  const { refreshToken, expiresAt } = req.body;
+  if (!refreshToken) return res.status(400).json({ error: 'refreshToken required' });
 
   try {
-    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
-    const recap    = JSON.parse(response.output_text);
-    recap.totalInView    = totalInView;
-    recap.requireAttention = requireAttention;
-    res.json({ recap });
+    // Resolve userId and email from Google
+    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!userinfoRes.ok) return res.status(401).json({ error: 'invalid token' });
+    const { sub: userId, email } = await userinfoRes.json();
+
+    // Get current Gmail historyId for the onboarding cutoff
+    const profileRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const profileJson = await profileRes.json();
+    const onboardingHistoryId = profileJson.historyId ?? null;
+
+    // Store user + tokens in DB
+    await userStore.upsertUser(userId, {
+      email,
+      accessToken,
+      refreshToken,
+      tokenExpiry: expiresAt ?? (Date.now() + 3600_000),
+      onboardingHistoryId,
+    });
+
+    // Store the onboarding historyId as the starting point for incremental sync
+    if (onboardingHistoryId) {
+      const { query } = require('./db');
+      await query(
+        'UPDATE users SET history_id = $2 WHERE user_id = $1 AND history_id IS NULL',
+        [userId, onboardingHistoryId]
+      );
+    }
+
+    console.log(`[register] user ${userId.slice(0, 8)}… registered, historyId: ${onboardingHistoryId}`);
+
+    // Fire and forget: initial sync + worker + watch
+    gmailSync.initialSync(userId).catch(err =>
+      console.error('[register] initialSync error:', err.message)
+    );
+    processingWorker.startWorker(userId);
+    watchManager.registerWatch(userId).catch(err =>
+      console.warn('[register] watch registration error:', err.message)
+    );
+
+    res.json({ success: true, userId });
   } catch (err) {
-    console.error('[session-recap] failed:', err.message);
-    res.status(500).json({ error: 'recap failed' });
+    console.error('[register] error:', err.message);
+    res.status(500).json({ error: 'registration failed' });
   }
 });
 
-// ─── Feed ─────────────────────────────────────────────────────────────────
-
+// Mail Feed — unread messages, prioritized
 app.get('/feed', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
-  res.json(feedStore.getFeed(userId));
+
+  try {
+    const messages = await messageStore.getUnread(userId);
+
+    // Attach avatar fields (computed server-side)
+    const cards = messages.map(m => ({
+      ...m,
+      avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
+      avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+    }));
+
+    res.json({ cards });
+  } catch (err) {
+    console.error('[feed] error:', err.message);
+    res.status(500).json({ error: 'feed failed' });
+  }
 });
 
-// ─── SSE endpoint ─────────────────────────────────────────────────────────
-//
-// Clients connect once and receive real-time card events:
-//   { cardId, type: 'pending', ...staticFields }  — new card added
-//   { cardId, type: 'chunk',  field, chunk }       — streaming token for a field
-//   { cardId, type: 'field-complete', field, value } — field fully resolved
-//   { cardId, type: 'ready' }                      — all AI fields done
-
+// SSE endpoint
 app.get('/feed/events', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).end();
@@ -521,179 +382,257 @@ app.get('/feed/events', async (req, res) => {
   res.flushHeaders();
 
   getSseClients(userId).add(res);
-  console.log(`[sse] client connected (user: ${userId.slice(0, 8)}…) total: ${getSseClients(userId).size}`);
+  console.log(`[sse] connected (user: ${userId.slice(0, 8)}…) total: ${getSseClients(userId).size}`);
 
   req.on('close', () => {
     getSseClients(userId).delete(res);
-    console.log(`[sse] client disconnected (user: ${userId.slice(0, 8)}…) remaining: ${getSseClients(userId).size}`);
+    console.log(`[sse] disconnected (user: ${userId.slice(0, 8)}…) remaining: ${getSseClients(userId).size}`);
   });
 });
 
-// ─── Dev ingestion bridge ──────────────────────────────────────────────────
-//
-// DEV ONLY. Accepts a cleaned email object and runs it through the full
-// streaming pipeline: addPending (SSE → client shows static card immediately),
-// then serial AI processing (SSE → client fields stream in as tokens arrive).
-//
-// Production ingestion path (Step 2): Gmail Pub/Sub push → POST /pubsub-push
-
-app.post('/dev/ingest', async (req, res) => {
+// All Mail — full paginated inventory
+app.get('/all-mail', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'email required' });
-
-  const id = `dev-${Date.now()}`;
-
-  const staticFields = {
-    emailDate:          email.date,
-    emailId:            email.id,
-    senderName:         email.sender.name,
-    senderEmail:        email.sender.email,
-    subject:            email.subject,
-    date:               email.date ?? String(Date.now()),
-    threadId:           email.threadId ?? null,
-    threadMessageCount: 1,
-    avatarUri:          resolveAvatarUri(email),
-    avatarFallbackText: resolveAvatarFallbackText(email),
-  };
-
-  feedStore.addPending(userId, id, staticFields);
-
-  // Notify SSE clients: card exists with static fields — show partial card immediately
-  emitSSE(userId, { cardId: id, type: 'pending', ...staticFields });
-
-  console.log(`[dev/ingest] pending → ${id} (user: ${userId.slice(0, 8)}…)`);
-
-  // Respond immediately — client has everything it needs to show the card
-  res.json({ id, status: 'pending' });
-
-  // Enqueue AI processing — serial per user, so only one card streams at a time
-  enqueueProcessing(userId, async () => {
-    try {
-      // interpretEmail first → quote + summary stream in
-      await streamInterpretEmail(email, id, userId);
-      // decideActionSurface second → action fields stream in after quote/summary
-      await streamDecideActionSurface(email, id, userId);
-
-      feedStore.markReady(userId, id);
-      emitSSE(userId, { cardId: id, type: 'ready' });
-      console.log(`[dev/ingest] ready   → ${id}`);
-
-      // Update the session recap from all current ready cards
-      // TODO (Step 2): extract buildRecap() to avoid this HTTP self-call
-      const { cards: currentCards } = feedStore.getFeed(userId);
-      const readyCards = currentCards.filter(c => c.status === 'ready');
-      if (readyCards.length > 0) {
-        try {
-          const recapRes = await fetch(`http://localhost:${PORT}/session-recap`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              cards: readyCards.map(c => ({
-                senderName:         c.senderName,
-                subject:            c.subject,
-                summary:            c.summary,
-                action:             c.action,
-                requiresAttention:  c.requiresAttention,
-              })),
-              userName:  '',
-              timeOfDay: (() => { const h = new Date().getHours(); return h < 12 ? 'morning' : h < 17 ? 'afternoon' : 'evening'; })(),
-            }),
-          });
-          const { recap } = await recapRes.json();
-          feedStore.setRecap(userId, recap);
-        } catch (err) {
-          console.warn('[dev/ingest] recap update failed:', err.message);
-        }
-      }
-    } catch (err) {
-      console.error(`[dev/ingest] AI processing failed for ${id}:`, err.message);
-    }
-  });
-});
-
-// ─── All Mail ─────────────────────────────────────────────────────────────
-//
-// Returns the user's most recent Gmail messages as a flat card list.
-// For each message, checks if it has been AI-interpreted via Mail Feed.
-// Cards with an interpretation get AI fields; unprocessed cards fall back to
-// subject (28px slot) + Gmail snippet (16px slot).
-
-app.get('/all-mail', async (req, res) => {
-  const auth        = req.headers['authorization'] ?? '';
-  const accessToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const userId      = await resolveUserId(req);
-  if (!userId || !accessToken) return res.status(401).json({ error: 'unauthorized' });
-
   try {
-    const listRes = await fetch(
-      'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20',
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (!listRes.ok) return res.status(502).json({ error: 'Gmail list failed' });
-    const listJson  = await listRes.json();
-    const messageIds = (listJson.messages ?? []).map(m => m.id);
-    if (messageIds.length === 0) return res.json({ cards: [] });
+    const cursor = req.query.cursor ? Number(req.query.cursor) : undefined;
+    const { records, nextCursor } = await messageStore.getAll(userId, { limit: 50, cursor });
 
-    // format=metadata gives headers + snippet without fetching the full body
-    const messages = await Promise.all(messageIds.map(async (id) => {
-      const r = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
-      );
-      return r.json();
+    const cards = records.map(m => ({
+      ...m,
+      avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
+      avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+      interpreted:        m.aiStatus === 'done',
     }));
 
-    const cards = messages.map(msg => {
-      const headers = msg.payload?.headers ?? [];
-      const fromRaw = headers.find(h => h.name.toLowerCase() === 'from')?.value ?? '';
-      const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value ?? '(no subject)';
-      const sender  = parseSenderServer(fromRaw);
-
-      const emailShell = { sender };
-      const interp     = feedStore.getInterpretation(userId, msg.id);
-      const snippet    = decodeHtmlEntities(msg.snippet ?? '');
-
-      return {
-        id:                 msg.id,
-        emailId:            msg.id,
-        senderName:         sender.name,
-        senderEmail:        sender.email,
-        subject,
-        snippet,
-        date:               msg.internalDate ?? String(Date.now()),
-        threadId:           msg.threadId   ?? null,
-        avatarUri:          resolveAvatarUri(emailShell),
-        avatarFallbackText: resolveAvatarFallbackText(emailShell),
-        interpreted:        !!interp,
-        quote:              interp?.quote             ?? null,
-        summary:            interp?.summary           ?? null,
-        action:             interp?.action            ?? null,
-        actionUrl:          interp?.actionUrl         ?? null,
-        requiresAttention:  interp?.requiresAttention ?? false,
-      };
-    });
-
-    res.json({ cards });
+    res.json({ cards, nextCursor });
   } catch (err) {
-    console.error('[all-mail] failed:', err.message);
+    console.error('[all-mail] error:', err.message);
     res.status(500).json({ error: 'all-mail failed' });
+  }
+});
+
+// Mark message as read — removes UNREAD label via Gmail API + updates DB
+app.patch('/messages/:messageId/read', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { messageId } = req.params;
+
+  try {
+    const accessToken = await userStore.getValidAccessToken(userId);
+
+    // Call Gmail API to remove UNREAD label
+    const gmailRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
+      {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ removeLabelIds: ['UNREAD'] }),
+      }
+    );
+
+    if (!gmailRes.ok) {
+      const err = await gmailRes.json().catch(() => ({}));
+      console.error('[read] Gmail modify failed:', JSON.stringify(err));
+      return res.status(502).json({ error: 'Gmail modify failed' });
+    }
+
+    // Update local DB
+    const existing = await messageStore.getMessage(userId, messageId);
+    if (existing) {
+      const newLabels = existing.labelIds.filter(l => l !== 'UNREAD');
+      await messageStore.updateLabelIds(userId, messageId, newLabels);
+    }
+
+    // Notify SSE clients
+    emitSSE(userId, { type: 'message-read', messageId });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[read] error:', err.message);
+    res.status(500).json({ error: 'mark-read failed' });
+  }
+});
+
+// Pub/Sub push webhook — receives Gmail push notifications
+app.post('/webhooks/gmail', async (req, res) => {
+  // Respond 200 immediately so Pub/Sub doesn't retry
+  res.sendStatus(200);
+
+  try {
+    // Verify JWT from Google (Authorization: Bearer <token>)
+    const authHeader = req.headers['authorization'] ?? '';
+    const jwt        = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (jwt && process.env.GOOGLE_PUBSUB_AUDIENCE) {
+      try {
+        const { OAuth2Client } = require('google-auth-library');
+        const client = new OAuth2Client();
+        await client.verifyIdToken({
+          idToken:  jwt,
+          audience: process.env.GOOGLE_PUBSUB_AUDIENCE,
+        });
+      } catch (verifyErr) {
+        console.warn('[webhook] JWT verification failed:', verifyErr.message);
+        return; // drop unverified push
+      }
+    }
+
+    // Decode the Pub/Sub message
+    const messageData = req.body?.message?.data;
+    if (!messageData) return;
+
+    const decoded = JSON.parse(Buffer.from(messageData, 'base64').toString('utf8'));
+    const { emailAddress, historyId } = decoded;
+
+    if (!emailAddress) return;
+
+    // Look up user by email
+    const user = await userStore.getUserByEmail(emailAddress);
+    if (!user) {
+      console.log(`[webhook] unknown email: ${emailAddress}`);
+      return;
+    }
+
+    const userId = user.user_id;
+    console.log(`[webhook] push for user ${userId.slice(0, 8)}… historyId: ${historyId}`);
+
+    // Run incremental sync
+    const { newUnreadIds } = await gmailSync.incrementalSync(userId);
+
+    // Emit SSE for newly arrived messages
+    for (const messageId of newUnreadIds) {
+      const record = await messageStore.getMessage(userId, messageId);
+      if (record) {
+        emitSSE(userId, {
+          type:               'message-added',
+          messageId:          record.messageId,
+          threadId:           record.threadId,
+          labelIds:           record.labelIds,
+          subject:            record.subject,
+          fromName:           record.fromName,
+          fromEmail:          record.fromEmail,
+          snippet:            record.snippet,
+          internalDate:       record.internalDate,
+          postCutoff:         record.postCutoff,
+          aiStatus:           record.aiStatus,
+          avatarUri:          resolveAvatarUri({ sender: { domain: record.fromEmail.split('@')[1] ?? '' } }),
+          avatarFallbackText: (record.fromName || record.fromEmail || '?').charAt(0).toUpperCase(),
+        });
+      }
+    }
+
+    // Wake the worker immediately for new unread mail
+    if (newUnreadIds.length > 0) {
+      processingWorker.wakeWorker(userId);
+    }
+  } catch (err) {
+    console.error('[webhook] processing error:', err.message);
+  }
+});
+
+// Legacy endpoints kept for compatibility
+app.post('/interpret-single', async (req, res) => {
+  const email = req.body.email;
+  if (!email) return res.status(400).json({ error: 'email required' });
+
+  const [interpretResult, actionResult] = await Promise.allSettled([
+    (async () => {
+      const prompt = renderPrompt(PROMPTS.interpretEmail, {
+        senderName: email.sender.name, senderEmail: email.sender.email,
+        senderDomain: email.sender.domain, subject: email.subject,
+        snippet: email.snippet,
+        plainText: email.body.plainText?.slice(0, 1500) ?? '',
+        htmlText: email.body.htmlText?.slice(0, 1500) ?? '',
+        links: cleanLinks(email.signals.structuredLinks ?? []).length,
+        unsubscribePresent: email.signals.unsubscribePresent,
+        freeMailDomain: email.signals.freeMailDomain,
+        replyToMismatch: email.signals.replyToMismatch,
+        suspiciousSubjectHints: JSON.stringify(email.signals.suspiciousSubjectHints),
+        greetingGeneric: email.signals.greetingGeneric,
+        hasAttachments: email.signals.hasAttachments,
+      });
+      const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+      const text = response.output_text;
+      return { quote: parseXmlField(text, 'quote') || null, summary: parseXmlField(text, 'summary') ?? '' };
+    })(),
+    (async () => {
+      const prompt = renderPrompt(PROMPTS.decideActionSurface, {
+        senderName: email.sender.name, senderEmail: email.sender.email,
+        senderDomain: email.sender.domain, subject: email.subject,
+        snippet: email.snippet,
+        plainText: email.body.plainText?.slice(0, 1500) ?? '',
+        htmlText: email.body.htmlText?.slice(0, 1500) ?? '',
+        links: cleanLinks(email.signals.structuredLinks ?? []).map(l => l.context ? `${l.text} | context: ${l.context} | url: ${l.url}` : `${l.text} | url: ${l.url}`).join('\n') || '(none)',
+        unsubscribePresent: email.signals.unsubscribePresent,
+        hasAttachments: email.signals.hasAttachments,
+      });
+      const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+      const text = response.output_text;
+      return {
+        action: parseXmlField(text, 'action') || null,
+        actionUrl: parseXmlField(text, 'actionUrl') || null,
+        requiresAttention: (parseXmlField(text, 'requiresAttention') ?? 'false').trim().toLowerCase() === 'true',
+      };
+    })(),
+  ]);
+
+  const interp = interpretResult.status === 'fulfilled' ? interpretResult.value : { quote: null, summary: '' };
+  const action = actionResult.status  === 'fulfilled' ? actionResult.value  : { action: null, actionUrl: null, requiresAttention: false };
+
+  res.json({ card: {
+    id: email.id,
+    senderName: email.sender.name, senderEmail: email.sender.email,
+    subject: email.subject, date: email.date, threadId: email.threadId,
+    avatarUri: resolveAvatarUri(email), avatarFallbackText: resolveAvatarFallbackText(email),
+    ...interp, ...action,
+  }});
+});
+
+app.post('/session-recap', async (req, res) => {
+  const { cards, userName, timeOfDay } = req.body;
+  if (!Array.isArray(cards)) return res.status(400).json({ error: 'cards required' });
+
+  const totalInView    = cards.length;
+  const attentionCards = cards.filter(c => c.requiresAttention === true);
+  const requireAttention = attentionCards.length;
+  const formatCards = (arr) =>
+    arr.map(c => `- From: ${c.senderName} | Subject: ${c.subject} | Summary: ${c.summary}${c.action ? ` | Action: ${c.action}` : ''}`).join('\n') || '(none)';
+
+  const prompt = renderPrompt(PROMPTS.sessionRecap, {
+    timeOfDay: timeOfDay ?? 'morning', userName: userName ?? '',
+    totalInView, requireAttention,
+    attentionCards: formatCards(attentionCards),
+    contextCards:   formatCards(cards),
+  });
+
+  try {
+    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+    const recap    = JSON.parse(response.output_text);
+    recap.totalInView = totalInView;
+    recap.requireAttention = requireAttention;
+    res.json({ recap });
+  } catch (err) {
+    console.error('[session-recap] failed:', err.message);
+    res.status(500).json({ error: 'recap failed' });
   }
 });
 
 app.get('/test-ai', async (req, res) => {
   try {
-    const response = await openai.responses.create({
-      model: 'gpt-5',
-      input: 'Say "AI is working"',
-    });
+    const response = await openai.responses.create({ model: 'gpt-5', input: 'Say "AI is working"' });
     res.json({ success: true, output: response.output_text });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────
+
+processingWorker.init({ streamInterpretEmail, streamDecideActionSurface, emitSSE });
+watchManager.startWatchRenewalCron();
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
