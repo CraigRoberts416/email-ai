@@ -31,8 +31,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "@datadog/mobile-react-native",
-      "@datadog/mobile-react-native-session-replay",
+      "expo-datadog",
       "expo-router",
       [
         "expo-splash-screen",
