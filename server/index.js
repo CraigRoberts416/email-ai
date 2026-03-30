@@ -306,14 +306,20 @@ app.post('/auth/register', async (req, res) => {
     if (!userinfoRes.ok) return res.status(401).json({ error: 'invalid token' });
     const { sub: userId, email } = await userinfoRes.json();
 
-    // Get current Gmail historyId for the onboarding cutoff
+    // Check before upsert — presence of onboarding_history_id means this user
+    // has already been through first-time bootstrap.
+    const existingUser = await userStore.getUser(userId);
+    const isNewUser = !existingUser?.onboarding_history_id;
+
+    // Get current Gmail historyId for the onboarding cutoff (only needed for new users,
+    // but we fetch it regardless so we always have a fresh historyId to store as onboarding anchor)
     const profileRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     const profileJson = await profileRes.json();
     const onboardingHistoryId = profileJson.historyId ?? null;
 
-    // Store user + tokens in DB
+    // Store user + tokens in DB (upsert preserves existing onboarding_history_id via COALESCE)
     await userStore.upsertUser(userId, {
       email,
       accessToken,
@@ -322,7 +328,7 @@ app.post('/auth/register', async (req, res) => {
       onboardingHistoryId,
     });
 
-    // Store the onboarding historyId as the starting point for incremental sync
+    // Set history_id as incremental sync starting point, only if not already set
     if (onboardingHistoryId) {
       const { query } = require('./db');
       await query(
@@ -331,16 +337,23 @@ app.post('/auth/register', async (req, res) => {
       );
     }
 
-    console.log(`[register] user ${userId.slice(0, 8)}… registered, historyId: ${onboardingHistoryId}`);
+    if (isNewUser) {
+      // First-time bootstrap: pull backlog and register Gmail push watch.
+      // These must only run once — subsequent opens attach to the existing state.
+      console.log(`[register] new user ${userId.slice(0, 8)}… — running full bootstrap, historyId: ${onboardingHistoryId}`);
+      gmailSync.initialSync(userId).catch(err =>
+        console.error('[register] initialSync error:', err.message)
+      );
+      watchManager.registerWatch(userId).catch(err =>
+        console.warn('[register] watch registration error:', err.message)
+      );
+    } else {
+      console.log(`[register] returning user ${userId.slice(0, 8)}… — tokens updated, attaching to existing state`);
+    }
 
-    // Fire and forget: initial sync + worker + watch
-    gmailSync.initialSync(userId).catch(err =>
-      console.error('[register] initialSync error:', err.message)
-    );
+    // Always ensure the worker is running. startWorker is a no-op if the worker
+    // is already active for this user (guarded by the in-memory activeWorkers Map).
     processingWorker.startWorker(userId);
-    watchManager.registerWatch(userId).catch(err =>
-      console.warn('[register] watch registration error:', err.message)
-    );
 
     res.json({ success: true, userId });
   } catch (err) {
@@ -637,4 +650,17 @@ watchManager.startWatchRenewalCron();
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+
+  // Resume workers for all existing users. This ensures that after a server
+  // restart, processing continues without waiting for an app open to trigger
+  // /auth/register again.
+  userStore.getAllUsers().then(users => {
+    if (users.length === 0) return;
+    console.log(`[startup] resuming workers for ${users.length} user(s)`);
+    for (const user of users) {
+      processingWorker.startWorker(user.user_id);
+    }
+  }).catch(err => {
+    console.error('[startup] worker resume failed:', err.message);
+  });
 });

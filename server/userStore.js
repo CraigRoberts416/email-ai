@@ -73,4 +73,9 @@ async function getValidAccessToken(userId) {
   return data.access_token;
 }
 
-module.exports = { upsertUser, getUser, getUserByEmail, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken };
+async function getAllUsers() {
+  const { rows } = await query('SELECT * FROM users');
+  return rows;
+}
+
+module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken };
