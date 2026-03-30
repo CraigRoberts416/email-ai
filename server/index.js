@@ -1,5 +1,14 @@
 require('dotenv').config();
 
+require('dd-trace').init({
+  llmobs: {
+    mlApp: process.env.DD_LLMOBS_ML_APP,
+    agentlessEnabled: true,
+  },
+  site: process.env.DD_SITE,
+  env: process.env.DD_ENV || 'dev',
+});
+
 const fs      = require('fs');
 const path    = require('path');
 const express = require('express');

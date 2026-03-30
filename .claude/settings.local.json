@@ -18,7 +18,10 @@
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "Bash(node:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "mcp__datadog-onboarding-us5__llm_observability_onboarding",
+      "Bash(xxd /Users/craigroberts/email-ai/server/.env)",
+      "Bash(printf:*)"
     ]
   }
 }
