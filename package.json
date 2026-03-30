@@ -11,12 +11,15 @@
     "lint": "expo lint"
   },
   "dependencies": {
+    "@datadog/mobile-react-native": "^3.2.0",
+    "@datadog/mobile-react-native-session-replay": "^3.2.0",
     "@expo-google-fonts/inter": "^0.4.2",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.4.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
+    "dd-trace": "^5.93.0",
     "expo": "~54.0.33",
     "expo-auth-session": "~7.0.10",
     "expo-constants": "~18.0.13",

@@ -21,7 +21,10 @@
       "Bash(npx tsc:*)",
       "mcp__datadog-onboarding-us5__llm_observability_onboarding",
       "Bash(xxd /Users/craigroberts/email-ai/server/.env)",
-      "Bash(printf:*)"
+      "Bash(printf:*)",
+      "mcp__datadog-onboarding-us5__devices_onboarding",
+      "Bash(npm list:*)",
+      "Bash(grep -r \"addViewAttribute\\\\|addAttribute\\\\|DatadogProviderConfiguration\" /Users/craigroberts/email-ai/node_modules/@datadog/mobile-react-native/src --include=*.ts -l)"
     ]
   }
 }

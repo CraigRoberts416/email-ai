@@ -8,6 +8,7 @@ import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 
 // ─── Feed ─────────────────────────────────────────────────────────────────
 
@@ -291,18 +292,26 @@ export default function Index() {
   }, [accessToken, loadFeed]);
 
   const handleTabChange = useCallback(async (tab: 'feed' | 'allMail') => {
+    const screen = tab === 'feed' ? 'inbox' : 'all_mail';
+    DdRum.addAction(RumActionType.TAP, 'tab_tapped', { feed_mode: tab, current_screen: screen });
+    DdRum.addViewAttribute('feed_mode', tab);
+    DdRum.addViewAttribute('current_screen', screen);
     setActiveTab(tab);
     if (tab === 'allMail' && !allMailFetched && accessToken) {
+      DdRum.addViewAttribute('sync_in_progress', true);
       setLoadingAllMail(true);
       try {
         const { cards, nextCursor } = await fetchAllMail(accessToken);
         setAllMailMessages(cards);
         setAllMailCursor(nextCursor);
         setAllMailFetched(true);
+        DdRum.addAction(RumActionType.CUSTOM, 'all_mail_loaded', { card_count: cards.length, feed_mode: 'all_mail' });
+        DdRum.addViewAttribute('card_count', cards.length);
       } catch (err) {
         console.error('[all-mail] fetch failed:', err);
       } finally {
         setLoadingAllMail(false);
+        DdRum.addViewAttribute('sync_in_progress', false);
       }
     }
   }, [allMailFetched, accessToken]);
@@ -371,6 +380,21 @@ export default function Index() {
   useEffect(() => {
     loadUserName().then(n => { if (n) setUserName(n); });
   }, []);
+
+  // Set initial RUM attributes when the screen mounts.
+  useEffect(() => {
+    DdRum.addViewAttribute('current_screen', 'inbox');
+    DdRum.addViewAttribute('feed_mode', 'feed');
+    DdRum.addViewAttribute('overlay_visible', false);
+    DdRum.addViewAttribute('card_count', 0);
+    DdRum.addViewAttribute('sync_in_progress', false);
+  }, []);
+
+  // Keep sync_in_progress and card_count current as feed state changes.
+  useEffect(() => {
+    DdRum.addViewAttribute('sync_in_progress', feedMessages.some(m => m.aiStatus === 'processing'));
+    DdRum.addViewAttribute('card_count', feedMessages.length);
+  }, [feedMessages]);
 
   const [request, response, promptAsync] = Google.useAuthRequest({
     iosClientId: GOOGLE_IOS_CLIENT_ID,
@@ -490,7 +514,15 @@ export default function Index() {
 
         {/* ── Mail Feed ───────────────────────────────────────────── */}
         {activeTab === 'feed' && feedMessages.map((m, i) => (
-          <View key={m.messageId} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
+          <Pressable
+            key={m.messageId}
+            style={i > 0 ? { marginTop: Spacing.sm } : undefined}
+            onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
+              feed_mode: 'feed',
+              current_screen: 'inbox',
+              ai_status: m.aiStatus,
+            })}
+          >
             {!m.fromName ? (
               <EmailCardSkeleton />
             ) : (
@@ -518,6 +550,14 @@ export default function Index() {
                 timestamp={formatRelativeTime(String(m.internalDate))}
                 actions={{
                   aiSuggestionCount: 0,
+                  onReply: () => DdRum.addAction(RumActionType.TAP, 'reply_tapped', {
+                    feed_mode: 'feed',
+                    current_screen: 'inbox',
+                  }),
+                  onAI: () => DdRum.addAction(RumActionType.TAP, 'discuss_tapped', {
+                    feed_mode: 'feed',
+                    current_screen: 'inbox',
+                  }),
                   onDelete: accessToken
                     ? () => markAsRead(accessToken, m.messageId).catch(err =>
                         console.error('[read] markAsRead failed:', err)
@@ -526,7 +566,7 @@ export default function Index() {
                 }}
               />
             )}
-          </View>
+          </Pressable>
         ))}
 
         {/* ── All Mail ────────────────────────────────────────────── */}
@@ -538,7 +578,15 @@ export default function Index() {
           const headline = m.quote   || m.subject || null;
           const body     = m.summary || (m.snippet ? m.snippet + ' See more...' : null);
           return (
-            <View key={m.messageId} style={i > 0 ? { marginTop: Spacing.sm } : undefined}>
+            <Pressable
+              key={m.messageId}
+              style={i > 0 ? { marginTop: Spacing.sm } : undefined}
+              onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
+                feed_mode: 'all_mail',
+                current_screen: 'all_mail',
+                interpreted: m.interpreted ?? false,
+              })}
+            >
               <EmailCard
                 sender={{
                   name: m.fromName,
@@ -559,9 +607,19 @@ export default function Index() {
                 }}
                 loading={false}
                 timestamp={formatRelativeTime(String(m.internalDate))}
-                actions={{ aiSuggestionCount: 0 }}
+                actions={{
+                  aiSuggestionCount: 0,
+                  onReply: () => DdRum.addAction(RumActionType.TAP, 'reply_tapped', {
+                    feed_mode: 'all_mail',
+                    current_screen: 'all_mail',
+                  }),
+                  onAI: () => DdRum.addAction(RumActionType.TAP, 'discuss_tapped', {
+                    feed_mode: 'all_mail',
+                    current_screen: 'all_mail',
+                  }),
+                }}
               />
-            </View>
+            </Pressable>
           );
         })}
         {activeTab === 'allMail' && allMailFetched && allMailCursor && (
