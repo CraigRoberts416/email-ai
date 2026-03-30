@@ -24,7 +24,10 @@
       "Bash(printf:*)",
       "mcp__datadog-onboarding-us5__devices_onboarding",
       "Bash(npm list:*)",
-      "Bash(grep -r \"addViewAttribute\\\\|addAttribute\\\\|DatadogProviderConfiguration\" /Users/craigroberts/email-ai/node_modules/@datadog/mobile-react-native/src --include=*.ts -l)"
+      "Bash(grep -r \"addViewAttribute\\\\|addAttribute\\\\|DatadogProviderConfiguration\" /Users/craigroberts/email-ai/node_modules/@datadog/mobile-react-native/src --include=*.ts -l)",
+      "Bash(grep -r \"newArchEnabled\\\\|NEW_ARCH\\\\|fabric\\\\|turbo\" /Users/craigroberts/email-ai/node_modules/@datadog/mobile-react-native-session-replay/ios/*.podspec)",
+      "Bash(find /Users/craigroberts/email-ai/node_modules/@datadog/mobile-react-native-session-replay -name *.podspec)",
+      "Bash(find /Users/craigroberts/email-ai/node_modules/@datadog/mobile-react-native -name *.podspec)"
     ]
   }
 }
