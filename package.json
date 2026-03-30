@@ -24,7 +24,7 @@
     "expo-auth-session": "~7.0.10",
     "expo-constants": "~18.0.13",
     "expo-crypto": "~15.0.8",
-    "expo-datadog": "^55.0.0",
+    "expo-datadog": "^54.0.1",
     "expo-dev-client": "~6.0.20",
     "expo-font": "~14.0.11",
     "expo-haptics": "~15.0.8",
