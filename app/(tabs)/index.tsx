@@ -260,15 +260,6 @@ export default function Index() {
                 setFeedMessages(prev => prev.map(m =>
                   m.messageId === messageId ? { ...m, aiStatus: 'processing' } : m
                 ));
-              } else if (evtType === 'chunk') {
-                // Streaming token — append to appropriate field
-                const field = event.field as keyof MessageRecord;
-                setFeedMessages(prev => prev.map(m => {
-                  if (m.messageId !== messageId) return m;
-                  const prev_val = m[field];
-                  const appended = (typeof prev_val === 'string' ? prev_val : '') + event.chunk;
-                  return { ...m, [field]: appended };
-                }));
               } else if (evtType === 'field-complete') {
                 // Field fully resolved — set final value
                 setFeedMessages(prev => prev.map(m =>
