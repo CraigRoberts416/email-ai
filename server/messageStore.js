@@ -24,13 +24,28 @@ function rowToRecord(row) {
 
 async function upsertMessages(userId, records) {
   if (!records.length) return;
-  for (const r of records) {
+  const CHUNK = 100;
+  for (let i = 0; i < records.length; i += CHUNK) {
+    const slice = records.slice(i, i + CHUNK);
+    const values = [];
+    const params = [];
+    let p = 1;
+    for (const r of slice) {
+      values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},NOW(),$${p+10},$${p+11})`);
+      params.push(
+        userId, r.messageId, r.threadId ?? null, r.labelIds ?? [],
+        r.subject ?? '', r.fromName ?? '', r.fromEmail ?? '',
+        r.snippet ?? '', r.internalDate ?? 0, r.historyId ?? null,
+        r.aiStatus ?? 'none', r.postCutoff ?? false,
+      );
+      p += 12;
+    }
     await query(`
       INSERT INTO messages (
         user_id, message_id, thread_id, label_ids, subject,
         from_name, from_email, snippet, internal_date, history_id, synced_at,
         ai_status, post_cutoff
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),$11,$12)
+      ) VALUES ${values.join(',')}
       ON CONFLICT (user_id, message_id) DO UPDATE SET
         thread_id     = EXCLUDED.thread_id,
         label_ids     = EXCLUDED.label_ids,
@@ -41,12 +56,7 @@ async function upsertMessages(userId, records) {
         internal_date = EXCLUDED.internal_date,
         history_id    = EXCLUDED.history_id,
         synced_at     = NOW()
-    `, [
-      userId, r.messageId, r.threadId ?? null, r.labelIds ?? [],
-      r.subject ?? '', r.fromName ?? '', r.fromEmail ?? '',
-      r.snippet ?? '', r.internalDate ?? 0, r.historyId ?? null,
-      r.aiStatus ?? 'none', r.postCutoff ?? false,
-    ]);
+    `, params);
   }
 }
 

@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Linking, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Linking, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 
 // ─── Feed ─────────────────────────────────────────────────────────────────
@@ -37,8 +37,18 @@ type MessageRecord = {
   interpreted?:      boolean;
 };
 
+const FETCH_TIMEOUT_MS = 15_000;
+
+function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
+    clearTimeout(timer)
+  );
+}
+
 async function fetchFeed(accessToken: string): Promise<{ cards: MessageRecord[] }> {
-  const res = await fetch(`${FEED_BASE_URL}/feed`, {
+  const res = await fetchWithTimeout(`${FEED_BASE_URL}/feed`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) throw new Error(`/feed returned ${res.status}`);
@@ -52,7 +62,7 @@ async function fetchAllMail(
   const url = cursor
     ? `${FEED_BASE_URL}/all-mail?cursor=${cursor}`
     : `${FEED_BASE_URL}/all-mail`;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) throw new Error(`/all-mail returned ${res.status}`);
@@ -204,10 +214,12 @@ export default function Index() {
 
     (async () => {
       try {
+        const connectTimer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
         const response = await fetch(`${FEED_BASE_URL}/feed/events`, {
           headers: { Authorization: `Bearer ${accessToken}` },
           signal: controller.signal,
         });
+        clearTimeout(connectTimer);
         if (!response.ok) { console.warn('[sse] connect failed:', response.status); return; }
 
         const reader = response.body?.getReader();
@@ -477,110 +489,128 @@ export default function Index() {
     exchangeToken();
   }, [response]);
 
+  const listHeader = (
+    <>
+      {recap && <InboxRecapHeader recap={recap} />}
+      <Pressable
+        style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
+        onPress={() => promptAsync()}
+        disabled={!request}
+      >
+        <Text style={styles.connectLabel}>Connect Gmail</Text>
+      </Pressable>
+      {/* DEV ONLY — auth state diagnostic, remove before launch */}
+      <Text style={styles.devStatus}>
+        {accessToken ? `token: live (${accessToken.slice(0, 8)}…)` : 'token: none — tap Connect Gmail to re-authorise'}
+      </Text>
+      {/* ── Surface toggle ──────────────────────────────────────── */}
+      <View style={styles.toggle}>
+        <Pressable
+          style={[styles.toggleBtn, activeTab === 'feed' && styles.toggleBtnActive]}
+          onPress={() => handleTabChange('feed')}
+        >
+          <Text style={[styles.toggleLabel, activeTab === 'feed' && styles.toggleLabelActive]}>
+            Mail Feed
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[styles.toggleBtn, activeTab === 'allMail' && styles.toggleBtnActive]}
+          onPress={() => handleTabChange('allMail')}
+        >
+          <Text style={[styles.toggleLabel, activeTab === 'allMail' && styles.toggleLabelActive]}>
+            All Mail
+          </Text>
+        </Pressable>
+      </View>
+      {activeTab === 'allMail' && loadingAllMail && allMailMessages.length === 0 && (
+        <EmailCardSkeleton />
+      )}
+    </>
+  );
+
+  const activeMessages = activeTab === 'feed' ? feedMessages : allMailMessages;
+
   return (
     <SafeAreaView style={styles.safe}>
-      <ScrollView contentContainerStyle={styles.content}>
-        {recap && <InboxRecapHeader recap={recap} />}
-        <Pressable
-          style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
-          onPress={() => promptAsync()}
-          disabled={!request}
-        >
-          <Text style={styles.connectLabel}>Connect Gmail</Text>
-        </Pressable>
-        {/* DEV ONLY — auth state diagnostic, remove before launch */}
-        <Text style={styles.devStatus}>
-          {accessToken ? `token: live (${accessToken.slice(0, 8)}…)` : 'token: none — tap Connect Gmail to re-authorise'}
-        </Text>
-        {/* ── Surface toggle ──────────────────────────────────────── */}
-        <View style={styles.toggle}>
-          <Pressable
-            style={[styles.toggleBtn, activeTab === 'feed' && styles.toggleBtnActive]}
-            onPress={() => handleTabChange('feed')}
-          >
-            <Text style={[styles.toggleLabel, activeTab === 'feed' && styles.toggleLabelActive]}>
-              Mail Feed
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[styles.toggleBtn, activeTab === 'allMail' && styles.toggleBtnActive]}
-            onPress={() => handleTabChange('allMail')}
-          >
-            <Text style={[styles.toggleLabel, activeTab === 'allMail' && styles.toggleLabelActive]}>
-              All Mail
-            </Text>
-          </Pressable>
-        </View>
+      <FlatList
+        data={activeMessages}
+        keyExtractor={m => m.messageId}
+        contentContainerStyle={styles.content}
+        ListHeaderComponent={listHeader}
+        ItemSeparatorComponent={() => <View style={{ height: Spacing.sm }} />}
+        onEndReached={activeTab === 'allMail' ? handleLoadMoreAllMail : undefined}
+        onEndReachedThreshold={0.3}
+        ListFooterComponent={
+          activeTab === 'allMail' && allMailFetched && allMailCursor ? (
+            <Pressable
+              style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed, { marginTop: Spacing.sm }]}
+              onPress={handleLoadMoreAllMail}
+              disabled={loadingAllMail}
+            >
+              <Text style={styles.connectLabel}>{loadingAllMail ? 'Loading…' : 'Load More'}</Text>
+            </Pressable>
+          ) : null
+        }
+        renderItem={({ item: m }) => {
+          if (activeTab === 'feed') {
+            return (
+              <Pressable
+                onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
+                  feed_mode: 'feed',
+                  current_screen: 'inbox',
+                  ai_status: m.aiStatus,
+                })}
+              >
+                {!m.fromName ? (
+                  <EmailCardSkeleton />
+                ) : (
+                  <EmailCard
+                    sender={{
+                      name: m.fromName,
+                      email: m.fromEmail,
+                      avatarUri: m.avatarUri ?? undefined,
+                      avatarFallbackText: m.avatarFallbackText,
+                    }}
+                    content={{
+                      contentType: 'structured',
+                      headline: m.quote,
+                      subtitle: m.subject,
+                      body: m.summary,
+                      bodySummary: true,
+                      cta: m.action && m.actionUrl
+                        ? { label: m.action, onPress: () => Linking.openURL(m.actionUrl!) }
+                        : undefined,
+                      actionLabel: m.action && !m.actionUrl ? m.action : undefined,
+                    }}
+                    loading={m.aiStatus !== 'done'}
+                    timestamp={formatRelativeTime(String(m.internalDate))}
+                    actions={{
+                      aiSuggestionCount: 0,
+                      onReply: () => DdRum.addAction(RumActionType.TAP, 'reply_tapped', {
+                        feed_mode: 'feed',
+                        current_screen: 'inbox',
+                      }),
+                      onAI: () => DdRum.addAction(RumActionType.TAP, 'discuss_tapped', {
+                        feed_mode: 'feed',
+                        current_screen: 'inbox',
+                      }),
+                      onDelete: accessToken
+                        ? () => markAsRead(accessToken, m.messageId).catch(err =>
+                            console.error('[read] markAsRead failed:', err)
+                          )
+                        : undefined,
+                    }}
+                  />
+                )}
+              </Pressable>
+            );
+          }
 
-        {/* ── Mail Feed ───────────────────────────────────────────── */}
-        {activeTab === 'feed' && feedMessages.map((m, i) => (
-          <Pressable
-            key={m.messageId}
-            style={i > 0 ? { marginTop: Spacing.sm } : undefined}
-            onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
-              feed_mode: 'feed',
-              current_screen: 'inbox',
-              ai_status: m.aiStatus,
-            })}
-          >
-            {!m.fromName ? (
-              <EmailCardSkeleton />
-            ) : (
-              <EmailCard
-                sender={{
-                  name: m.fromName,
-                  email: m.fromEmail,
-                  avatarUri: m.avatarUri ?? undefined,
-                  avatarFallbackText: m.avatarFallbackText,
-                }}
-                content={{
-                  contentType: 'structured',
-                  headline: m.quote,
-                  subtitle: m.subject,
-                  body: m.summary,
-                  bodySummary: true,
-                  cta: m.action && m.actionUrl
-                    ? { label: m.action, onPress: () => Linking.openURL(m.actionUrl!) }
-                    : undefined,
-                  actionLabel: m.action && !m.actionUrl
-                    ? m.action
-                    : undefined,
-                }}
-                loading={m.aiStatus !== 'done'}
-                timestamp={formatRelativeTime(String(m.internalDate))}
-                actions={{
-                  aiSuggestionCount: 0,
-                  onReply: () => DdRum.addAction(RumActionType.TAP, 'reply_tapped', {
-                    feed_mode: 'feed',
-                    current_screen: 'inbox',
-                  }),
-                  onAI: () => DdRum.addAction(RumActionType.TAP, 'discuss_tapped', {
-                    feed_mode: 'feed',
-                    current_screen: 'inbox',
-                  }),
-                  onDelete: accessToken
-                    ? () => markAsRead(accessToken, m.messageId).catch(err =>
-                        console.error('[read] markAsRead failed:', err)
-                      )
-                    : undefined,
-                }}
-              />
-            )}
-          </Pressable>
-        ))}
-
-        {/* ── All Mail ────────────────────────────────────────────── */}
-        {activeTab === 'allMail' && loadingAllMail && allMailMessages.length === 0 && (
-          <EmailCardSkeleton />
-        )}
-        {activeTab === 'allMail' && allMailMessages.map((m, i) => {
-          // AI fields take priority; subject + snippet are the non-interpreted fallback.
+          // All Mail
           const headline = m.quote   || m.subject || null;
           const body     = m.summary || (m.snippet ? m.snippet + ' See more...' : null);
           return (
             <Pressable
-              key={m.messageId}
-              style={i > 0 ? { marginTop: Spacing.sm } : undefined}
               onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
                 feed_mode: 'all_mail',
                 current_screen: 'all_mail',
@@ -621,17 +651,8 @@ export default function Index() {
               />
             </Pressable>
           );
-        })}
-        {activeTab === 'allMail' && allMailFetched && allMailCursor && (
-          <Pressable
-            style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed, { marginTop: Spacing.sm }]}
-            onPress={handleLoadMoreAllMail}
-            disabled={loadingAllMail}
-          >
-            <Text style={styles.connectLabel}>{loadingAllMail ? 'Loading…' : 'Load More'}</Text>
-          </Pressable>
-        )}
-      </ScrollView>
+        }}
+      />
     </SafeAreaView>
   );
 }

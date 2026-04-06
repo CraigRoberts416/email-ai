@@ -280,17 +280,28 @@ async function streamDecideActionSurface(email, messageId, userId) {
 
 // ─── Auth ─────────────────────────────────────────────────────────────────
 
+// Cache token → { userId, expiresAt } to avoid hitting Google on every request.
+// TTL is 5 minutes — well within OAuth token lifetimes.
+const tokenCache = new Map();
+const TOKEN_CACHE_TTL = 5 * 60 * 1000;
+
 async function resolveUserId(req) {
   const auth  = req.headers['authorization'] ?? '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!token) return null;
+
+  const cached = tokenCache.get(token);
+  if (cached && Date.now() < cached.expiresAt) return cached.userId;
+
   try {
     const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!r.ok) return null;
     const { sub } = await r.json();
-    return sub ?? null;
+    if (!sub) return null;
+    tokenCache.set(token, { userId: sub, expiresAt: Date.now() + TOKEN_CACHE_TTL });
+    return sub;
   } catch {
     return null;
   }
