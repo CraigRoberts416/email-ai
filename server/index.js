@@ -369,35 +369,37 @@ app.post('/auth/register', async (req, res) => {
       );
     } else {
       console.log(`[register] returning user ${userId.slice(0, 8)}… — tokens updated, catching up on missed mail`);
-      // Run incremental sync to pick up any emails that arrived while the server
-      // was sleeping (Render free tier spins down between requests).
-      gmailSync.incrementalSync(userId).then(({ newUnreadIds }) => {
-        if (newUnreadIds.length === 0) return;
-        // Emit SSE for each newly discovered unread message and wake the worker.
-        Promise.all(newUnreadIds.map(messageId => messageStore.getMessage(userId, messageId)))
-          .then(records => {
-            for (const record of records) {
-              if (!record) continue;
-              emitSSE(userId, {
-                type:               'message-added',
-                messageId:          record.messageId,
-                threadId:           record.threadId,
-                labelIds:           record.labelIds,
-                subject:            record.subject,
-                fromName:           record.fromName,
-                fromEmail:          record.fromEmail,
-                snippet:            record.snippet,
-                internalDate:       record.internalDate,
-                postCutoff:         record.postCutoff,
-                aiStatus:           record.aiStatus,
-                avatarUri:          resolveAvatarUri({ sender: { domain: record.fromEmail.split('@')[1] ?? '' } }),
-                avatarFallbackText: (record.fromName || record.fromEmail || '?').charAt(0).toUpperCase(),
-              });
-            }
-            if (newUnreadIds.length > 0) processingWorker.wakeWorker(userId);
-          })
-          .catch(err => console.error('[register] SSE emit error:', err.message));
-      }).catch(err => console.error('[register] incrementalSync error:', err.message));
+      // Catch up before returning so All Mail reflects the current mailbox
+      // when the app loads after downtime or an expired history cursor.
+      let newUnreadIds = [];
+      try {
+        ({ newUnreadIds } = await gmailSync.incrementalSync(userId));
+      } catch (syncErr) {
+        console.error('[register] incrementalSync error:', syncErr.message);
+      }
+
+      if (newUnreadIds.length > 0) {
+        const records = await Promise.all(newUnreadIds.map(messageId => messageStore.getMessage(userId, messageId)));
+        for (const record of records) {
+          if (!record) continue;
+          emitSSE(userId, {
+            type:               'message-added',
+            messageId:          record.messageId,
+            threadId:           record.threadId,
+            labelIds:           record.labelIds,
+            subject:            record.subject,
+            fromName:           record.fromName,
+            fromEmail:          record.fromEmail,
+            snippet:            record.snippet,
+            internalDate:       record.internalDate,
+            postCutoff:         record.postCutoff,
+            aiStatus:           record.aiStatus,
+            avatarUri:          resolveAvatarUri({ sender: { domain: record.fromEmail.split('@')[1] ?? '' } }),
+            avatarFallbackText: (record.fromName || record.fromEmail || '?').charAt(0).toUpperCase(),
+          });
+        }
+        processingWorker.wakeWorker(userId);
+      }
 
       // Re-register watch if it has expired or is about to.
       watchManager.renewAllExpiring().catch(err =>

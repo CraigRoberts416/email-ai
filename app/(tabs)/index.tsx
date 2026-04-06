@@ -181,11 +181,9 @@ export default function Index() {
   const [allMailMessages, setAllMailMessages] = useState<MessageRecord[]>([]);
   const [allMailCursor, setAllMailCursor] = useState<number | null>(null);
   const [loadingAllMail, setLoadingAllMail] = useState(false);
-  const [allMailFetched, setAllMailFetched] = useState(false);
 
   // Reset All Mail cache when auth changes so a new user gets a fresh fetch
   useEffect(() => {
-    setAllMailFetched(false);
     setAllMailMessages([]);
     setAllMailCursor(null);
   }, [accessToken]);
@@ -309,14 +307,13 @@ export default function Index() {
     DdRum.addViewAttribute('feed_mode', tab);
     DdRum.addViewAttribute('current_screen', screen);
     setActiveTab(tab);
-    if (tab === 'allMail' && !allMailFetched && accessToken) {
+    if (tab === 'allMail' && accessToken) {
       DdRum.addViewAttribute('sync_in_progress', true);
       setLoadingAllMail(true);
       try {
         const { cards, nextCursor } = await fetchAllMail(accessToken);
         setAllMailMessages(cards);
         setAllMailCursor(nextCursor);
-        setAllMailFetched(true);
         DdRum.addAction(RumActionType.CUSTOM, 'all_mail_loaded', { card_count: cards.length, feed_mode: 'all_mail' });
         DdRum.addViewAttribute('card_count', cards.length);
       } catch (err) {
@@ -326,7 +323,7 @@ export default function Index() {
         DdRum.addViewAttribute('sync_in_progress', false);
       }
     }
-  }, [allMailFetched, accessToken]);
+  }, [accessToken]);
 
   const handleLoadMoreAllMail = useCallback(async () => {
     if (!accessToken || !allMailCursor || loadingAllMail) return;
@@ -454,7 +451,6 @@ export default function Index() {
         }
 
         const newAccessToken = json.access_token;
-        setAccessToken(newAccessToken);
         const existingAuth = await loadAuth();
         const refreshToken = json.refresh_token ?? existingAuth?.refreshToken ?? null;
         const expiresAt = Date.now() + json.expires_in * 1000;
@@ -466,6 +462,7 @@ export default function Index() {
         if (refreshToken) {
           await registerWithBackend(newAccessToken, refreshToken, expiresAt);
         }
+        setAccessToken(newAccessToken);
 
         console.log('[gmail] fetching profile with access_token:', newAccessToken);
 
@@ -541,7 +538,7 @@ export default function Index() {
         onEndReached={activeTab === 'allMail' ? handleLoadMoreAllMail : undefined}
         onEndReachedThreshold={0.3}
         ListFooterComponent={
-          activeTab === 'allMail' && allMailFetched && allMailCursor ? (
+          activeTab === 'allMail' && allMailCursor ? (
             <Pressable
               style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed, { marginTop: Spacing.sm }]}
               onPress={handleLoadMoreAllMail}

@@ -38,6 +38,33 @@ async function authedFetch(url, accessToken) {
   return fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
 }
 
+async function fetchMailboxProfile(accessToken) {
+  const res = await authedFetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', accessToken);
+  if (!res.ok) {
+    throw new Error(`fetchMailboxProfile failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+async function listMessagesPage(accessToken, { pageToken = null, maxResults = 500 } = {}) {
+  const params = new URLSearchParams({ maxResults: String(maxResults) });
+  if (pageToken) params.set('pageToken', pageToken);
+
+  const res = await authedFetch(
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`,
+    accessToken
+  );
+  if (!res.ok) {
+    throw new Error(`listMessagesPage failed: ${res.status}`);
+  }
+
+  const data = await res.json();
+  return {
+    messageIds: (data.messages ?? []).map(m => m.id),
+    nextPageToken: data.nextPageToken ?? null,
+  };
+}
+
 async function fetchMetadataBatch(messageIds, accessToken) {
   // Fetch in parallel groups of 20 to respect rate limits
   const results = [];
@@ -59,6 +86,19 @@ async function fetchMetadataBatch(messageIds, accessToken) {
   return results;
 }
 
+async function syncMailboxHead(userId, { maxResults = 100 } = {}) {
+  const accessToken = await userStore.getValidAccessToken(userId);
+  const { messageIds } = await listMessagesPage(accessToken, { maxResults });
+  if (!messageIds.length) return [];
+
+  const msgs = await fetchMetadataBatch(messageIds, accessToken);
+  const records = msgs.map(m => metadataToRecord(m, false));
+  await messageStore.upsertMessages(userId, records);
+
+  console.log(`[sync] mailbox head refreshed: ${records.length} messages`);
+  return records;
+}
+
 /**
  * Full paginated sync — fetches all messages, stores with post_cutoff=false.
  * Non-blocking caller: fires and forgets after returning on first page.
@@ -71,17 +111,14 @@ async function initialSync(userId) {
 
   do {
     const accessToken = await userStore.getValidAccessToken(userId); // refresh between pages if needed
-    const url = pageToken
-      ? `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=500&pageToken=${pageToken}`
-      : `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=500`;
-
-    const listRes = await authedFetch(url, accessToken);
-    if (!listRes.ok) {
-      console.error(`[sync] list failed (page ${pageCount}): ${listRes.status}`);
+    let listPage;
+    try {
+      listPage = await listMessagesPage(accessToken, { pageToken, maxResults: 500 });
+    } catch (err) {
+      console.error(`[sync] list failed (page ${pageCount}): ${err.message}`);
       break;
     }
-    const listJson   = await listRes.json();
-    const messageIds = (listJson.messages ?? []).map(m => m.id);
+    const messageIds = listPage.messageIds;
     if (!messageIds.length) break;
 
     const msgs    = await fetchMetadataBatch(messageIds, accessToken);
@@ -90,7 +127,7 @@ async function initialSync(userId) {
 
     total += records.length;
     pageCount++;
-    pageToken = listJson.nextPageToken ?? null;
+    pageToken = listPage.nextPageToken;
     console.log(`[sync] page ${pageCount}: ${records.length} messages (running total: ${total})`);
   } while (pageToken);
 
@@ -114,8 +151,29 @@ async function incrementalSync(userId) {
   const res = await authedFetch(url, accessToken);
   if (!res.ok) {
     if (res.status === 404) {
-      console.warn(`[sync] historyId expired for ${userId.slice(0, 8)}…, triggering full re-sync`);
+      console.warn(`[sync] historyId expired for ${userId.slice(0, 8)}…, refreshing mailbox head and resetting historyId`);
+      try {
+        const profile = await fetchMailboxProfile(accessToken);
+        if (profile.historyId) {
+          await userStore.updateHistoryId(userId, profile.historyId);
+        }
+      } catch (profileErr) {
+        console.error('[sync] profile refresh failed:', profileErr.message);
+      }
+
+      let headRecords = [];
+      try {
+        headRecords = await syncMailboxHead(userId, { maxResults: 100 });
+      } catch (headErr) {
+        console.error('[sync] mailbox head refresh failed:', headErr.message);
+      }
       initialSync(userId).catch(err => console.error('[sync] re-sync error:', err.message));
+
+      return {
+        newUnreadIds: headRecords
+          .filter(record => record.labelIds.includes('UNREAD'))
+          .map(record => record.messageId),
+      };
     } else {
       console.error(`[sync] history list failed: ${res.status}`);
     }
