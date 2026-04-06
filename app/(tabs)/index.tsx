@@ -365,22 +365,22 @@ export default function Index() {
             const refreshed = await refreshAccessToken(stored.refreshToken);
             if (refreshed) {
               await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
-              setAccessToken(refreshed.accessToken);
               console.log('[auth] session restored via refresh');
-              // Re-register with backend so worker is running
-              registerWithBackend(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+              // Register first so incremental sync runs before loadFeed fires
+              await registerWithBackend(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+              setAccessToken(refreshed.accessToken);
             } else {
               await SecureStore.deleteItemAsync(AUTH_STORAGE_KEY);
               console.log('[auth] refresh failed, cleared stored session');
             }
           }
         } else {
-          setAccessToken(stored.accessToken);
           console.log('[auth] session restored from storage');
-          // Re-register with backend so worker is running (idempotent)
+          // Register first so incremental sync runs before loadFeed fires
           if (stored.refreshToken) {
-            registerWithBackend(stored.accessToken, stored.refreshToken, stored.expiresAt);
+            await registerWithBackend(stored.accessToken, stored.refreshToken, stored.expiresAt);
           }
+          setAccessToken(stored.accessToken);
         }
       } catch (err) {
         console.error('[auth] restore error:', err);

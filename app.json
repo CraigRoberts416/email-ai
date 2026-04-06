@@ -31,7 +31,15 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-datadog",
+      [
+        "expo-datadog",
+        {
+          "errorTracking": {
+            "iosDsyms": false,
+            "iosSourcemaps": false
+          }
+        }
+      ],
       "expo-router",
       [
         "expo-splash-screen",

@@ -368,7 +368,41 @@ app.post('/auth/register', async (req, res) => {
         console.warn('[register] watch registration error:', err.message)
       );
     } else {
-      console.log(`[register] returning user ${userId.slice(0, 8)}… — tokens updated, attaching to existing state`);
+      console.log(`[register] returning user ${userId.slice(0, 8)}… — tokens updated, catching up on missed mail`);
+      // Run incremental sync to pick up any emails that arrived while the server
+      // was sleeping (Render free tier spins down between requests).
+      gmailSync.incrementalSync(userId).then(({ newUnreadIds }) => {
+        if (newUnreadIds.length === 0) return;
+        // Emit SSE for each newly discovered unread message and wake the worker.
+        Promise.all(newUnreadIds.map(messageId => messageStore.getMessage(userId, messageId)))
+          .then(records => {
+            for (const record of records) {
+              if (!record) continue;
+              emitSSE(userId, {
+                type:               'message-added',
+                messageId:          record.messageId,
+                threadId:           record.threadId,
+                labelIds:           record.labelIds,
+                subject:            record.subject,
+                fromName:           record.fromName,
+                fromEmail:          record.fromEmail,
+                snippet:            record.snippet,
+                internalDate:       record.internalDate,
+                postCutoff:         record.postCutoff,
+                aiStatus:           record.aiStatus,
+                avatarUri:          resolveAvatarUri({ sender: { domain: record.fromEmail.split('@')[1] ?? '' } }),
+                avatarFallbackText: (record.fromName || record.fromEmail || '?').charAt(0).toUpperCase(),
+              });
+            }
+            if (newUnreadIds.length > 0) processingWorker.wakeWorker(userId);
+          })
+          .catch(err => console.error('[register] SSE emit error:', err.message));
+      }).catch(err => console.error('[register] incrementalSync error:', err.message));
+
+      // Re-register watch if it has expired or is about to.
+      watchManager.renewAllExpiring().catch(err =>
+        console.warn('[register] watch renewal error:', err.message)
+      );
     }
 
     // Always ensure the worker is running. startWorker is a no-op if the worker
@@ -671,16 +705,19 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 
-  // Resume workers for all existing users. This ensures that after a server
-  // restart, processing continues without waiting for an app open to trigger
-  // /auth/register again.
+  // Resume workers and renew expiring watches for all existing users.
+  // This ensures that after a cold start, processing and push notifications
+  // are restored without waiting for an app open to trigger /auth/register.
   userStore.getAllUsers().then(users => {
     if (users.length === 0) return;
     console.log(`[startup] resuming workers for ${users.length} user(s)`);
     for (const user of users) {
       processingWorker.startWorker(user.user_id);
     }
+    watchManager.renewAllExpiring().catch(err =>
+      console.error('[startup] watch renewal failed:', err.message)
+    );
   }).catch(err => {
-    console.error('[startup] worker resume failed:', err.message);
+    console.error('[startup] startup resume failed:', err.message);
   });
 });
