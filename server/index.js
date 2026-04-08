@@ -338,6 +338,23 @@ async function resolveUserId(req) {
   }
 }
 
+async function resolveUserProfile(req) {
+  const auth  = req.headers['authorization'] ?? '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!token) return null;
+
+  try {
+    const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return null;
+    const profile = await r.json();
+    return { token, profile };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Routes ───────────────────────────────────────────────────────────────
 
 // Register user — stores tokens, starts initial sync + worker + watch
@@ -748,19 +765,33 @@ app.post('/unsubscribe', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
-  const { messageId } = req.body;
+  const { messageId, unsubscribeUrl: directUnsubscribeUrl, senderName: directSenderName } = req.body;
   if (!messageId) return res.status(400).json({ error: 'messageId required' });
 
-  const record = await messageStore.getMessage(userId, messageId);
-  if (!record) return res.status(404).json({ error: 'message not found' });
-  if (!record.unsubscribeUrl) return res.status(400).json({ error: 'no unsubscribe URL for this message' });
+  let record = null;
+  try {
+    record = await messageStore.getMessage(userId, messageId);
+  } catch (err) {
+    console.warn('[unsubscribe] message lookup failed, falling back to request payload:', err.message);
+  }
+
+  const unsubscribeUrl = record?.unsubscribeUrl || directUnsubscribeUrl;
+  const senderName = directSenderName || record?.fromName || record?.fromEmail || 'Sender';
+  if (!unsubscribeUrl) return res.status(400).json({ error: 'no unsubscribe URL for this message' });
 
   // Acknowledge immediately — status updates flow via SSE
   res.json({ success: true });
 
-  const { unsubscribeUrl } = record;
-  const senderName = record.fromName || record.fromEmail;
-  const user = await userStore.getUser(userId);
+  let user = null;
+  try {
+    user = await userStore.getUser(userId);
+  } catch (err) {
+    console.warn('[unsubscribe] user lookup failed, continuing without DB user:', err.message);
+  }
+
+  const authProfile = await resolveUserProfile(req);
+  const requestAccessToken = authProfile?.token ?? null;
+  const userEmail = authProfile?.profile?.email || user?.email || '';
 
   const emit = (status, message) =>
     emitUnsubscribeStatus(userId, { messageId, senderName, status, message });
@@ -769,7 +800,7 @@ app.post('/unsubscribe', async (req, res) => {
   if (unsubscribeUrl.startsWith('mailto:')) {
     emit('navigating', 'Sending unsubscribe request…');
     try {
-      const accessToken = await userStore.getValidAccessToken(userId);
+      const accessToken = requestAccessToken || await userStore.getValidAccessToken(userId);
       const mailto = new URL(unsubscribeUrl);
       const to     = mailto.pathname;
       const subject = mailto.searchParams.get('subject') ?? 'Unsubscribe';
@@ -803,7 +834,7 @@ app.post('/unsubscribe', async (req, res) => {
     const result = await runUnsubscribeAgent({
       browser,
       unsubscribeUrl,
-      userEmail: user?.email ?? '',
+      userEmail,
       emit,
       openai,
     });

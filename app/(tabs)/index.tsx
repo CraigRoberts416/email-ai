@@ -14,6 +14,7 @@ import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 // ─── Feed ─────────────────────────────────────────────────────────────────
 
 const FEED_BASE_URL = process.env.EXPO_PUBLIC_FEED_BASE_URL || 'https://email-ai-server.onrender.com';
+const UNSUBSCRIBE_BASE_URL = process.env.EXPO_PUBLIC_UNSUBSCRIBE_BASE_URL || FEED_BASE_URL;
 
 type MessageRecord = {
   messageId:         string;
@@ -71,12 +72,17 @@ async function fetchAllMail(
   return res.json();
 }
 
-async function requestUnsubscribe(accessToken: string, messageId: string): Promise<{ ok: boolean; error?: string }> {
+async function requestUnsubscribe(
+  accessToken: string,
+  messageId: string,
+  unsubscribeUrl: string,
+  senderName: string
+): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${FEED_BASE_URL}/unsubscribe`, {
+    const res = await fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe`, {
       method:  'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ messageId }),
+      body:    JSON.stringify({ messageId, unsubscribeUrl, senderName }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -368,6 +374,88 @@ export default function Index() {
 
     return () => controller.abort();
   }, [accessToken, loadFeed]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    if (UNSUBSCRIBE_BASE_URL === FEED_BASE_URL) return;
+
+    const controller = new AbortController();
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+    (async () => {
+      let retryDelay = 1000;
+
+      while (!controller.signal.aborted) {
+        let connectTimer: ReturnType<typeof setTimeout> | null = null;
+        const attemptController = new AbortController();
+        const abortAttempt = () => attemptController.abort();
+        controller.signal.addEventListener('abort', abortAttempt);
+
+        try {
+          connectTimer = setTimeout(() => attemptController.abort(), FETCH_TIMEOUT_MS);
+          const response = await fetch(`${UNSUBSCRIBE_BASE_URL}/feed/events`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal: attemptController.signal,
+          });
+          clearTimeout(connectTimer);
+          connectTimer = null;
+
+          if (!response.ok) throw new Error(`unsubscribe SSE failed: ${response.status}`);
+
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('unsubscribe SSE response body unavailable');
+
+          retryDelay = 1000;
+
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (!controller.signal.aborted) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const event = JSON.parse(line.slice(6));
+                if (event.type !== 'unsubscribe-status') continue;
+
+                setUnsubscribeJobs(prev => {
+                  const exists = prev.find(j => j.messageId === event.messageId);
+                  const job: UnsubscribeJob = {
+                    messageId: event.messageId,
+                    senderName: event.senderName ?? '',
+                    status: event.status,
+                    message: event.message ?? '',
+                  };
+                  if (exists) return prev.map(j => j.messageId === event.messageId ? job : j);
+                  return [...prev, job];
+                });
+              } catch {
+                // Skip malformed events.
+              }
+            }
+          }
+
+          if (!controller.signal.aborted) await wait(1000);
+        } catch (err: any) {
+          if (err.name !== 'AbortError') console.warn('[unsubscribe-sse] error:', err.message);
+          if (controller.signal.aborted) break;
+          await wait(retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 10_000);
+        } finally {
+          if (connectTimer) clearTimeout(connectTimer);
+          controller.signal.removeEventListener('abort', abortAttempt);
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [accessToken]);
 
   const handleTabChange = useCallback(async (tab: 'feed' | 'allMail') => {
     const screen = tab === 'feed' ? 'inbox' : 'all_mail';
@@ -672,7 +760,12 @@ export default function Index() {
                               if (prev.find(j => j.messageId === m.messageId)) return prev;
                               return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
                             });
-                            requestUnsubscribe(accessToken, m.messageId).then(result => {
+                            requestUnsubscribe(
+                              accessToken,
+                              m.messageId,
+                              m.unsubscribeUrl!,
+                              m.fromName || m.fromEmail
+                            ).then(result => {
                               if (!result.ok) {
                                 setUnsubscribeJobs(prev => prev.map(j =>
                                   j.messageId === m.messageId
@@ -738,7 +831,12 @@ export default function Index() {
                           if (prev.find(j => j.messageId === m.messageId)) return prev;
                           return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
                         });
-                        requestUnsubscribe(accessToken, m.messageId).then(result => {
+                        requestUnsubscribe(
+                          accessToken,
+                          m.messageId,
+                          m.unsubscribeUrl!,
+                          m.fromName || m.fromEmail
+                        ).then(result => {
                           if (!result.ok) {
                             setUnsubscribeJobs(prev => prev.map(j =>
                               j.messageId === m.messageId
