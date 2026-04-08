@@ -232,6 +232,7 @@ export default function Index() {
       while (Date.now() < deadline) {
         const status = await fetchUnsubscribeStatus(token, messageId);
         if (status) {
+          console.log('[unsubscribe] polled status:', JSON.stringify(status));
           setUnsubscribeJobs(prev => {
             const exists = prev.find(j => j.messageId === messageId);
             if (exists) return prev.map(j => j.messageId === messageId ? status : j);
@@ -254,13 +255,22 @@ export default function Index() {
     }
   }, []);
 
-  // Clear terminal jobs (done/error) 3s after they finish
+  // Clear successful jobs quickly, but leave errors around longer so we can read them.
   useEffect(() => {
-    const terminal = unsubscribeJobs.filter(j => j.status === 'done' || j.status === 'error');
-    if (terminal.length === 0) return;
+    const doneJobs = unsubscribeJobs.filter(j => j.status === 'done');
+    if (doneJobs.length === 0) return;
     const timer = setTimeout(() => {
-      setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'done' && j.status !== 'error'));
+      setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'done'));
     }, 3000);
+    return () => clearTimeout(timer);
+  }, [unsubscribeJobs]);
+
+  useEffect(() => {
+    const errorJobs = unsubscribeJobs.filter(j => j.status === 'error');
+    if (errorJobs.length === 0) return;
+    const timer = setTimeout(() => {
+      setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'error'));
+    }, 12000);
     return () => clearTimeout(timer);
   }, [unsubscribeJobs]);
 

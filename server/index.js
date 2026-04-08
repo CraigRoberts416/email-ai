@@ -173,6 +173,13 @@ function emitUnsubscribeStatus(userId, data) {
   emitSSE(userId, { type: 'unsubscribe-status', ...data });
 }
 
+function formatUnsubscribeError(err, fallback) {
+  const message = String(err?.message ?? '').replace(/\s+/g, ' ').trim();
+  if (!message) return fallback;
+  if (message.length <= 140) return `${fallback}: ${message}`;
+  return `${fallback}: ${message.slice(0, 139)}…`;
+}
+
 function emitSSE(userId, data) {
   const clients = getSseClients(userId);
   const payload = `data: ${JSON.stringify(data)}\n\n`;
@@ -823,7 +830,7 @@ app.post('/unsubscribe', async (req, res) => {
       emit('done', 'Unsubscribe email sent ✓');
     } catch (err) {
       console.error('[unsubscribe] mailto error:', err.message);
-      emit('error', 'Failed to send unsubscribe email');
+      emit('error', formatUnsubscribeError(err, 'Failed to send unsubscribe email'));
     }
     return;
   }
@@ -843,7 +850,7 @@ app.post('/unsubscribe', async (req, res) => {
     emit(result.status, result.message);
   } catch (err) {
     console.error('[unsubscribe] browser error:', err.message);
-    emit('error', 'Could not complete unsubscribe');
+    emit('error', formatUnsubscribeError(err, 'Could not complete unsubscribe'));
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
