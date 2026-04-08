@@ -11,6 +11,7 @@ require('dd-trace').init({
 
 const fs      = require('fs');
 const path    = require('path');
+const { spawn } = require('child_process');
 const express = require('express');
 const cors    = require('cors');
 const OpenAI  = require('openai');
@@ -180,6 +181,52 @@ function formatUnsubscribeError(err, fallback) {
   if (!message) return fallback;
   if (message.length <= 140) return `${fallback}: ${message}`;
   return `${fallback}: ${message.slice(0, 139)}…`;
+}
+
+let playwrightInstallPromise = null;
+
+async function ensurePlaywrightChromium() {
+  const { chromium } = require('playwright');
+  const executablePath = chromium.executablePath();
+
+  if (fs.existsSync(executablePath)) return;
+  if (playwrightInstallPromise) return playwrightInstallPromise;
+
+  const cliPath = path.join(__dirname, 'node_modules', '.bin', 'playwright');
+  const env = {
+    ...process.env,
+    PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH,
+  };
+
+  playwrightInstallPromise = new Promise((resolve, reject) => {
+    console.warn(`[playwright] browser missing at ${executablePath} — installing chromium`);
+
+    const child = spawn(cliPath, ['install', 'chromium'], {
+      cwd: __dirname,
+      env,
+      stdio: 'pipe',
+    });
+
+    let stderr = '';
+    child.stdout.on('data', chunk => process.stdout.write(chunk));
+    child.stderr.on('data', chunk => {
+      stderr += chunk.toString();
+      process.stderr.write(chunk);
+    });
+
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code === 0 && fs.existsSync(executablePath)) {
+        resolve();
+      } else {
+        reject(new Error(stderr.trim() || `playwright install exited with code ${code}`));
+      }
+    });
+  }).finally(() => {
+    playwrightInstallPromise = null;
+  });
+
+  return playwrightInstallPromise;
 }
 
 function emitSSE(userId, data) {
@@ -840,6 +887,7 @@ app.post('/unsubscribe', async (req, res) => {
   // Handle https: unsubscribe via Playwright
   let browser;
   try {
+    await ensurePlaywrightChromium();
     const { chromium } = require('playwright');
     browser = await chromium.launch({ headless: true });
     const result = await runUnsubscribeAgent({
