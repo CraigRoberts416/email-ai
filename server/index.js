@@ -779,6 +779,8 @@ app.post('/unsubscribe', async (req, res) => {
   const senderName = directSenderName || record?.fromName || record?.fromEmail || 'Sender';
   if (!unsubscribeUrl) return res.status(400).json({ error: 'no unsubscribe URL for this message' });
 
+  emitUnsubscribeStatus(userId, { messageId, senderName, status: 'queued', message: 'Queued…' });
+
   // Acknowledge immediately — status updates flow via SSE
   res.json({ success: true });
 
@@ -845,6 +847,18 @@ app.post('/unsubscribe', async (req, res) => {
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
+});
+
+app.get('/unsubscribe/:messageId/status', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { messageId } = req.params;
+  const status = pruneUnsubscribeStatuses(userId).get(messageId);
+  if (!status) return res.status(404).json({ error: 'status not found' });
+
+  const { updatedAt, ...payload } = status;
+  res.json(payload);
 });
 
 // ─── Unsubscribe URL backfill ─────────────────────────────────────────────

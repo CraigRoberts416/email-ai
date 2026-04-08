@@ -7,7 +7,7 @@ import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Linking, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 
@@ -91,6 +91,23 @@ async function requestUnsubscribe(
     return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err.message ?? 'network error' };
+  }
+}
+
+async function fetchUnsubscribeStatus(
+  accessToken: string,
+  messageId: string
+): Promise<UnsubscribeJob | null> {
+  try {
+    const res = await fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe/${encodeURIComponent(messageId)}/status`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`status returned ${res.status}`);
+    return res.json();
+  } catch (err) {
+    console.warn('[unsubscribe] status poll failed:', err);
+    return null;
   }
 }
 
@@ -197,12 +214,45 @@ export default function Index() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userName, setUserName] = useState('');
   const [recap] = useState<RecapData | null>(null);
+  const activeUnsubscribePolls = useRef(new Set<string>());
 
   // ── Feed state ────────────────────────────────────────────────────────
   const [feedMessages, setFeedMessages] = useState<MessageRecord[]>([]);
 
   // ── Unsubscribe toast state ────────────────────────────────────────────
   const [unsubscribeJobs, setUnsubscribeJobs] = useState<UnsubscribeJob[]>([]);
+
+  const pollUnsubscribeStatus = useCallback(async (token: string, messageId: string) => {
+    if (activeUnsubscribePolls.current.has(messageId)) return;
+    activeUnsubscribePolls.current.add(messageId);
+
+    try {
+      const deadline = Date.now() + 90_000;
+
+      while (Date.now() < deadline) {
+        const status = await fetchUnsubscribeStatus(token, messageId);
+        if (status) {
+          setUnsubscribeJobs(prev => {
+            const exists = prev.find(j => j.messageId === messageId);
+            if (exists) return prev.map(j => j.messageId === messageId ? status : j);
+            return [...prev, status];
+          });
+
+          if (status.status === 'done' || status.status === 'error') return;
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
+
+      setUnsubscribeJobs(prev => prev.map(j =>
+        j.messageId === messageId && (j.status === 'queued' || j.status === 'navigating' || j.status === 'analyzing' || j.status === 'filling' || j.status === 'clicking' || j.status === 'verifying')
+          ? { ...j, status: 'error', message: 'Timed out waiting for unsubscribe progress' }
+          : j
+      ));
+    } finally {
+      activeUnsubscribePolls.current.delete(messageId);
+    }
+  }, []);
 
   // Clear terminal jobs (done/error) 3s after they finish
   useEffect(() => {
@@ -213,6 +263,12 @@ export default function Index() {
     }, 3000);
     return () => clearTimeout(timer);
   }, [unsubscribeJobs]);
+
+  useEffect(() => {
+    return () => {
+      activeUnsubscribePolls.current.clear();
+    };
+  }, []);
 
   // ── All Mail state ────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'feed' | 'allMail'>('feed');
@@ -772,6 +828,10 @@ export default function Index() {
                                     ? { ...j, status: 'error', message: result.error ?? 'Failed' }
                                     : j
                                 ));
+                              } else {
+                                pollUnsubscribeStatus(accessToken, m.messageId).catch(err =>
+                                  console.warn('[unsubscribe] poll failed:', err)
+                                );
                               }
                             });
                           }
@@ -843,6 +903,10 @@ export default function Index() {
                                 ? { ...j, status: 'error', message: result.error ?? 'Failed' }
                                 : j
                             ));
+                          } else {
+                            pollUnsubscribeStatus(accessToken, m.messageId).catch(err =>
+                              console.warn('[unsubscribe] poll failed:', err)
+                            );
                           }
                         });
                       }
