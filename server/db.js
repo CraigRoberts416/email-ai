@@ -25,4 +25,15 @@ async function query(sql, params) {
   }
 }
 
+// Run lightweight migrations on startup — idempotent, safe to re-run.
+async function runMigrations() {
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS unsubscribe_url TEXT
+  `);
+}
+
+runMigrations().catch(err =>
+  console.error('[db] migration error:', err.message)
+);
+
 module.exports = { query, pool };

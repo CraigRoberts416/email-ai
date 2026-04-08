@@ -431,6 +431,7 @@ app.get('/feed', async (req, res) => {
       ...m,
       avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
       avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+      unsubscribeUrl:     m.unsubscribeUrl ?? null,
     }));
 
     res.json({ cards });
@@ -473,6 +474,7 @@ app.get('/all-mail', async (req, res) => {
       avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
       avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
       interpreted:        m.aiStatus === 'done',
+      unsubscribeUrl:     m.unsubscribeUrl ?? null,
     }));
 
     res.json({ cards, nextCursor });
@@ -695,6 +697,95 @@ app.get('/test-ai', async (req, res) => {
     res.json({ success: true, output: response.output_text });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Unsubscribe — launch headless browser to complete unsubscribe flow
+app.post('/unsubscribe', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { messageId } = req.body;
+  if (!messageId) return res.status(400).json({ error: 'messageId required' });
+
+  const record = await messageStore.getMessage(userId, messageId);
+  if (!record) return res.status(404).json({ error: 'message not found' });
+  if (!record.unsubscribeUrl) return res.status(400).json({ error: 'no unsubscribe URL for this message' });
+
+  // Acknowledge immediately — status updates flow via SSE
+  res.json({ success: true });
+
+  const { unsubscribeUrl } = record;
+  const senderName = record.fromName || record.fromEmail;
+
+  const emit = (status, message) =>
+    emitSSE(userId, { type: 'unsubscribe-status', messageId, senderName, status, message });
+
+  // Handle mailto: unsubscribe (send an email, no browser needed)
+  if (unsubscribeUrl.startsWith('mailto:')) {
+    emit('started', 'Sending unsubscribe request…');
+    try {
+      const accessToken = await userStore.getValidAccessToken(userId);
+      const mailto = new URL(unsubscribeUrl);
+      const to     = mailto.pathname;
+      const subject = mailto.searchParams.get('subject') ?? 'Unsubscribe';
+      const raw = [
+        `To: ${to}`,
+        `Subject: ${subject}`,
+        'Content-Type: text/plain',
+        '',
+        'Unsubscribe',
+      ].join('\r\n');
+      const encoded = Buffer.from(raw).toString('base64url');
+      await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+        method:  'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ raw: encoded }),
+      });
+      emit('done', 'Unsubscribe email sent ✓');
+    } catch (err) {
+      console.error('[unsubscribe] mailto error:', err.message);
+      emit('error', 'Failed to send unsubscribe email');
+    }
+    return;
+  }
+
+  // Handle https: unsubscribe via Playwright
+  const { chromium } = require('playwright');
+  let browser;
+  try {
+    emit('started', 'Opening unsubscribe page…');
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    await page.goto(unsubscribeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    emit('clicking', 'Looking for unsubscribe button…');
+
+    // Try to find and click an unsubscribe/confirm button
+    const clicked = await page.evaluate(() => {
+      const candidates = Array.from(document.querySelectorAll('button, input[type="submit"], a[href], input[type="button"]'));
+      const patterns   = [/unsubscribe/i, /confirm/i, /opt.?out/i, /remove/i];
+      for (const pattern of patterns) {
+        const el = candidates.find(c => pattern.test(c.textContent ?? '') || pattern.test(c.value ?? ''));
+        if (el) { el.click(); return true; }
+      }
+      // If this is a simple one-click unsubscribe page with only one button, click it
+      if (candidates.length === 1) { candidates[0].click(); return true; }
+      return false;
+    });
+
+    if (clicked) {
+      // Brief wait for any navigation/confirmation to settle
+      await page.waitForTimeout(2000);
+      emit('done', 'Unsubscribed ✓');
+    } else {
+      emit('done', 'Unsubscribe page opened — may need manual confirmation');
+    }
+  } catch (err) {
+    console.error('[unsubscribe] browser error:', err.message);
+    emit('error', 'Could not complete unsubscribe');
+  } finally {
+    if (browser) await browser.close().catch(() => {});
   }
 });
 

@@ -42,6 +42,7 @@ type Actions = {
   onAI?: () => void;
   onBookmark?: () => void;
   onDelete?: () => void;
+  onUnsubscribe?: () => void;
 };
 
 type EmailCardProps = {
@@ -79,11 +80,11 @@ function ShimmerBar({ width, height = 14 }: { width: number | `${number}%`; heig
 
 // ─── CardTag ──────────────────────────────────────────────────────────────
 
-function CardTag({ text }: { text: string }) {
+function CardTag({ text, onPress }: { text: string; onPress?: () => void }) {
   return (
-    <View style={styles.tag}>
+    <TouchableOpacity style={styles.tag} onPress={onPress} disabled={!onPress} hitSlop={8} activeOpacity={0.7}>
       <Text style={styles.tagLabel}>{text}</Text>
-    </View>
+    </TouchableOpacity>
   );
 }
 
@@ -110,6 +111,7 @@ export default function EmailCard({
     onAI,
     onBookmark,
     onDelete,
+    onUnsubscribe,
   } = actions;
 
   const threadLabel = threadMessageCount != null && threadMessageCount > 0
@@ -142,7 +144,7 @@ export default function EmailCard({
               <Text style={styles.senderName} numberOfLines={1} ellipsizeMode="tail">
                 {sender.name}
               </Text>
-              {tag && <CardTag text={tag} />}
+              {tag && <CardTag text={tag} onPress={onUnsubscribe} />}
             </View>
             <Text style={styles.senderEmail} numberOfLines={1} ellipsizeMode="tail">
               {sender.email}
@@ -325,15 +327,17 @@ const styles = StyleSheet.create({
   },
   tag: {
     backgroundColor: Colors.light.surface,
-    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.light.border,
+    borderRadius: Radius.lg,
     paddingHorizontal: Spacing.sm,
     paddingVertical: Spacing.xs,
     flexShrink: 0,
   },
   tagLabel: {
-    fontFamily: InterFonts.medium,
+    fontFamily: InterFonts.regular,
     fontSize: 12,
-    fontWeight: '500',
+    fontWeight: '400',
     color: Colors.light.textPrimary,
   },
   senderEmail: {

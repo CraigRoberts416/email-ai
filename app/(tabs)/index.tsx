@@ -1,6 +1,7 @@
 import EmailCard from '@/components/EmailCard';
 import EmailCardSkeleton from '@/components/EmailCardSkeleton';
 import InboxRecapHeader from '@/components/InboxRecapHeader';
+import UnsubscribeToast, { UnsubscribeJob } from '@/components/UnsubscribeToast';
 import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -30,6 +31,7 @@ type MessageRecord = {
   action:            string | null;
   actionUrl:         string | null;
   requiresAttention: boolean;
+  unsubscribeUrl:    string | null;
   // Computed server-side
   avatarUri:         string | null;
   avatarFallbackText: string;
@@ -67,6 +69,14 @@ async function fetchAllMail(
   });
   if (!res.ok) throw new Error(`/all-mail returned ${res.status}`);
   return res.json();
+}
+
+async function requestUnsubscribe(accessToken: string, messageId: string): Promise<void> {
+  await fetch(`${FEED_BASE_URL}/unsubscribe`, {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ messageId }),
+  });
 }
 
 async function markAsRead(accessToken: string, messageId: string): Promise<void> {
@@ -176,6 +186,19 @@ export default function Index() {
   // ── Feed state ────────────────────────────────────────────────────────
   const [feedMessages, setFeedMessages] = useState<MessageRecord[]>([]);
 
+  // ── Unsubscribe toast state ────────────────────────────────────────────
+  const [unsubscribeJobs, setUnsubscribeJobs] = useState<UnsubscribeJob[]>([]);
+
+  // Clear terminal jobs (done/error) 3s after they finish
+  useEffect(() => {
+    const terminal = unsubscribeJobs.filter(j => j.status === 'done' || j.status === 'error');
+    if (terminal.length === 0) return;
+    const timer = setTimeout(() => {
+      setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'done' && j.status !== 'error'));
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [unsubscribeJobs]);
+
   // ── All Mail state ────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<'feed' | 'allMail'>('feed');
   const [allMailMessages, setAllMailMessages] = useState<MessageRecord[]>([]);
@@ -258,6 +281,7 @@ export default function Index() {
                   action:             null,
                   actionUrl:          null,
                   requiresAttention:  false,
+                  unsubscribeUrl:     null,
                   avatarUri:          event.avatarUri ?? null,
                   avatarFallbackText: event.avatarFallbackText ?? '',
                 };
@@ -284,6 +308,18 @@ export default function Index() {
               } else if (evtType === 'message-read') {
                 // Message marked as read — remove from unread feed
                 setFeedMessages(prev => prev.filter(m => m.messageId !== messageId));
+              } else if (evtType === 'unsubscribe-status') {
+                setUnsubscribeJobs(prev => {
+                  const exists = prev.find(j => j.messageId === messageId);
+                  const job: UnsubscribeJob = {
+                    messageId,
+                    senderName: event.senderName ?? '',
+                    status:     event.status,
+                    message:    event.message ?? '',
+                  };
+                  if (exists) return prev.map(j => j.messageId === messageId ? job : j);
+                  return [...prev, job];
+                });
               }
             } catch { /* skip malformed event */ }
           }
@@ -529,6 +565,7 @@ export default function Index() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      <UnsubscribeToast jobs={unsubscribeJobs} />
       <FlatList
         data={activeMessages}
         keyExtractor={m => m.messageId}
@@ -579,6 +616,7 @@ export default function Index() {
                         : undefined,
                       actionLabel: m.action && !m.actionUrl ? m.action : undefined,
                     }}
+                    tag={m.unsubscribeUrl ? 'Unsubscribe' : undefined}
                     loading={m.aiStatus !== 'done'}
                     timestamp={formatRelativeTime(String(m.internalDate))}
                     actions={{
@@ -595,6 +633,17 @@ export default function Index() {
                         ? () => markAsRead(accessToken, m.messageId).catch(err =>
                             console.error('[read] markAsRead failed:', err)
                           )
+                        : undefined,
+                      onUnsubscribe: accessToken && m.unsubscribeUrl
+                        ? () => {
+                            setUnsubscribeJobs(prev => {
+                              if (prev.find(j => j.messageId === m.messageId)) return prev;
+                              return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
+                            });
+                            requestUnsubscribe(accessToken, m.messageId).catch(err =>
+                              console.error('[unsubscribe] request failed:', err)
+                            );
+                          }
                         : undefined,
                     }}
                   />
@@ -632,6 +681,7 @@ export default function Index() {
                     : undefined,
                   actionLabel: m.action && !m.actionUrl ? m.action : undefined,
                 }}
+                tag={m.unsubscribeUrl ? 'Unsubscribe' : undefined}
                 loading={false}
                 timestamp={formatRelativeTime(String(m.internalDate))}
                 actions={{
@@ -644,6 +694,17 @@ export default function Index() {
                     feed_mode: 'all_mail',
                     current_screen: 'all_mail',
                   }),
+                  onUnsubscribe: accessToken && m.unsubscribeUrl
+                    ? () => {
+                        setUnsubscribeJobs(prev => {
+                          if (prev.find(j => j.messageId === m.messageId)) return prev;
+                          return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
+                        });
+                        requestUnsubscribe(accessToken, m.messageId).catch(err =>
+                          console.error('[unsubscribe] request failed:', err)
+                        );
+                      }
+                    : undefined,
                 }}
               />
             </Pressable>

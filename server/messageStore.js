@@ -19,6 +19,7 @@ function rowToRecord(row) {
     action:            row.action ?? null,
     actionUrl:         row.action_url ?? null,
     requiresAttention: row.requires_attention ?? false,
+    unsubscribeUrl:    row.unsubscribe_url ?? null,
   };
 }
 
@@ -157,7 +158,14 @@ async function updateLabelIds(userId, messageId, labelIds) {
   );
 }
 
+async function setUnsubscribeUrl(userId, messageId, url) {
+  await query(
+    'UPDATE messages SET unsubscribe_url = $3 WHERE user_id = $1 AND message_id = $2',
+    [userId, messageId, url]
+  );
+}
+
 module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
-  getNextToProcess, setAiStatus, setAiField, setAiFields, updateLabelIds,
+  getNextToProcess, setAiStatus, setAiField, setAiFields, updateLabelIds, setUnsubscribeUrl,
 };

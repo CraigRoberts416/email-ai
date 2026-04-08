@@ -19,6 +19,7 @@
     "google-auth-library": "^9.15.1",
     "node-cron": "^4.2.1",
     "openai": "^6.32.0",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "playwright": "^1.59.1"
   }
 }

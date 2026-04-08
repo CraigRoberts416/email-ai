@@ -36,6 +36,12 @@ async function processNext(userId) {
     const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
     const email  = cleanEmailForAI(rawMsg);
 
+    // Save unsubscribe URL immediately — available before AI finishes
+    if (email.unsubscribeUrl) {
+      await messageStore.setUnsubscribeUrl(userId, messageId, email.unsubscribeUrl);
+      _emitSSE(userId, { type: 'field-complete', messageId, field: 'unsubscribeUrl', value: email.unsubscribeUrl });
+    }
+
     await _streamInterpretEmail(email, messageId, userId);
     await _streamDecideActionSurface(email, messageId, userId);
 

@@ -94,6 +94,18 @@ function parseSender(from) {
   return { name, email, domain };
 }
 
+function extractUnsubscribeUrl(headers) {
+  const raw = getHeader(headers, 'List-Unsubscribe');
+  if (!raw) return null;
+  // Header can contain multiple entries like: <https://...>, <mailto:...>
+  // Prefer the https URL; fall back to mailto
+  const httpsMatch = raw.match(/<(https?:\/\/[^>]+)>/i);
+  if (httpsMatch) return httpsMatch[1];
+  const mailtoMatch = raw.match(/<(mailto:[^>]+)>/i);
+  if (mailtoMatch) return mailtoMatch[1];
+  return null;
+}
+
 function cleanEmailForAI(msg) {
   const headers    = msg.payload?.headers ?? [];
   const from       = getHeader(headers, 'From');
@@ -109,8 +121,9 @@ function cleanEmailForAI(msg) {
   const readableText = (plainText || htmlText).trimStart();
   const links = structuredLinks.map(l => l.url);
 
+  const unsubscribeUrl     = extractUnsubscribeUrl(headers);
   const unsubscribePresent =
-    !!getHeader(headers, 'List-Unsubscribe') ||
+    !!unsubscribeUrl ||
     /unsubscribe/i.test(plainText) ||
     /unsubscribe/i.test(htmlRaw);
 
@@ -128,13 +141,14 @@ function cleanEmailForAI(msg) {
   const hasAttachments  = hasAttachmentParts(msg.payload);
 
   return {
-    id:       msg.id,
-    threadId: msg.threadId,
-    sender:   { ...sender, replyTo },
+    id:             msg.id,
+    threadId:       msg.threadId,
+    sender:         { ...sender, replyTo },
     subject,
-    date:     msg.internalDate ?? getHeader(headers, 'Date'),
-    snippet:  msg.snippet ?? '',
-    body:     { plainText, htmlText },
+    date:           msg.internalDate ?? getHeader(headers, 'Date'),
+    snippet:        msg.snippet ?? '',
+    unsubscribeUrl: unsubscribeUrl ?? null,
+    body:           { plainText, htmlText },
     signals: {
       links,
       structuredLinks,

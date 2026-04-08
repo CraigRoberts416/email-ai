@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS messages (
   action              TEXT,
   action_url          TEXT,
   requires_attention  BOOLEAN NOT NULL DEFAULT FALSE,
+  unsubscribe_url     TEXT,
   PRIMARY KEY (user_id, message_id)
 );
 
