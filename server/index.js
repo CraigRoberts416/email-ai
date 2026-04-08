@@ -136,10 +136,40 @@ function extractStreamingField(accum, fieldName, alreadySent) {
 // ─── SSE helpers ──────────────────────────────────────────────────────────
 
 const sseClients = new Map(); // userId → Set<res>
+const unsubscribeStatuses = new Map(); // userId → Map<messageId, status>
+const SSE_KEEPALIVE_MS = 25_000;
+const TERMINAL_UNSUBSCRIBE_STATUS_TTL_MS = 30_000;
 
 function getSseClients(userId) {
   if (!sseClients.has(userId)) sseClients.set(userId, new Set());
   return sseClients.get(userId);
+}
+
+function getUnsubscribeStatuses(userId) {
+  if (!unsubscribeStatuses.has(userId)) unsubscribeStatuses.set(userId, new Map());
+  return unsubscribeStatuses.get(userId);
+}
+
+function pruneUnsubscribeStatuses(userId) {
+  const statuses = getUnsubscribeStatuses(userId);
+  const now = Date.now();
+
+  for (const [messageId, status] of statuses) {
+    const isTerminal = status.status === 'done' || status.status === 'error';
+    if (isTerminal && now - status.updatedAt > TERMINAL_UNSUBSCRIBE_STATUS_TTL_MS) {
+      statuses.delete(messageId);
+    }
+  }
+
+  if (statuses.size === 0) unsubscribeStatuses.delete(userId);
+  return statuses;
+}
+
+function emitUnsubscribeStatus(userId, data) {
+  const statuses = getUnsubscribeStatuses(userId);
+  statuses.set(data.messageId, { ...data, updatedAt: Date.now() });
+  pruneUnsubscribeStatuses(userId);
+  emitSSE(userId, { type: 'unsubscribe-status', ...data });
 }
 
 function emitSSE(userId, data) {
@@ -450,11 +480,23 @@ app.get('/feed/events', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection',    'keep-alive');
   res.flushHeaders();
+  res.write(': connected\n\n');
 
   getSseClients(userId).add(res);
   console.log(`[sse] connected (user: ${userId.slice(0, 8)}…) total: ${getSseClients(userId).size}`);
 
+  for (const status of pruneUnsubscribeStatuses(userId).values()) {
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'unsubscribe-status', ...status })}\n\n`);
+    } catch {}
+  }
+
+  const heartbeat = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch {}
+  }, SSE_KEEPALIVE_MS);
+
   req.on('close', () => {
+    clearInterval(heartbeat);
     getSseClients(userId).delete(res);
     console.log(`[sse] disconnected (user: ${userId.slice(0, 8)}…) remaining: ${getSseClients(userId).size}`);
   });
@@ -719,7 +761,7 @@ app.post('/unsubscribe', async (req, res) => {
   const senderName = record.fromName || record.fromEmail;
 
   const emit = (status, message) =>
-    emitSSE(userId, { type: 'unsubscribe-status', messageId, senderName, status, message });
+    emitUnsubscribeStatus(userId, { messageId, senderName, status, message });
 
   // Handle mailto: unsubscribe (send an email, no browser needed)
   if (unsubscribeUrl.startsWith('mailto:')) {
@@ -737,11 +779,12 @@ app.post('/unsubscribe', async (req, res) => {
         'Unsubscribe',
       ].join('\r\n');
       const encoded = Buffer.from(raw).toString('base64url');
-      await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
         method:  'POST',
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
         body:    JSON.stringify({ raw: encoded }),
       });
+      if (!gmailRes.ok) throw new Error(`gmail send failed (${gmailRes.status})`);
       emit('done', 'Unsubscribe email sent ✓');
     } catch (err) {
       console.error('[unsubscribe] mailto error:', err.message);
@@ -751,9 +794,9 @@ app.post('/unsubscribe', async (req, res) => {
   }
 
   // Handle https: unsubscribe via Playwright
-  const { chromium } = require('playwright');
   let browser;
   try {
+    const { chromium } = require('playwright');
     emit('started', 'Opening unsubscribe page…');
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();

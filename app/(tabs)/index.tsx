@@ -7,7 +7,7 @@ import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
 import * as SecureStore from 'expo-secure-store';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { FlatList, Linking, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 
@@ -241,105 +241,128 @@ export default function Index() {
     if (!accessToken) return;
 
     const controller = new AbortController();
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
     (async () => {
-      try {
-        const connectTimer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-        const response = await fetch(`${FEED_BASE_URL}/feed/events`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-          signal: controller.signal,
-        });
-        clearTimeout(connectTimer);
-        if (!response.ok) { console.warn('[sse] connect failed:', response.status); return; }
+      let retryDelay = 1000;
 
-        const reader = response.body?.getReader();
-        if (!reader) return;
+      while (!controller.signal.aborted) {
+        let connectTimer: ReturnType<typeof setTimeout> | null = null;
+        const attemptController = new AbortController();
+        const abortAttempt = () => attemptController.abort();
+        controller.signal.addEventListener('abort', abortAttempt);
 
-        const decoder = new TextDecoder();
-        let buffer = '';
+        try {
+          connectTimer = setTimeout(() => attemptController.abort(), FETCH_TIMEOUT_MS);
+          const response = await fetch(`${FEED_BASE_URL}/feed/events`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal: attemptController.signal,
+          });
+          clearTimeout(connectTimer);
+          connectTimer = null;
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          if (!response.ok) throw new Error(`connect failed: ${response.status}`);
 
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
+          const reader = response.body?.getReader();
+          if (!reader) throw new Error('SSE response body unavailable');
 
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const event = JSON.parse(line.slice(6));
-              const { messageId, type: evtType } = event;
+          retryDelay = 1000;
 
-              if (evtType === 'message-added') {
-                // New message arrived — add to feed
-                const newRecord: MessageRecord = {
-                  messageId:          event.messageId,
-                  threadId:           event.threadId ?? null,
-                  labelIds:           event.labelIds ?? [],
-                  subject:            event.subject ?? '',
-                  fromName:           event.fromName ?? '',
-                  fromEmail:          event.fromEmail ?? '',
-                  snippet:            event.snippet ?? '',
-                  internalDate:       event.internalDate ?? Date.now(),
-                  postCutoff:         event.postCutoff ?? false,
-                  aiStatus:           event.aiStatus ?? 'none',
-                  quote:              null,
-                  summary:            null,
-                  action:             null,
-                  actionUrl:          null,
-                  requiresAttention:  false,
-                  unsubscribeUrl:     null,
-                  avatarUri:          event.avatarUri ?? null,
-                  avatarFallbackText: event.avatarFallbackText ?? '',
-                };
-                setFeedMessages(prev => {
-                  const exists = prev.some(m => m.messageId === newRecord.messageId);
-                  if (exists) return prev;
-                  return [newRecord, ...prev].sort((a, b) => b.internalDate - a.internalDate);
-                });
-              } else if (evtType === 'processing') {
-                // Mark message as processing
-                setFeedMessages(prev => prev.map(m =>
-                  m.messageId === messageId ? { ...m, aiStatus: 'processing' } : m
-                ));
-              } else if (evtType === 'field-complete') {
-                // Field fully resolved — set final value
-                setFeedMessages(prev => prev.map(m =>
-                  m.messageId === messageId ? { ...m, [event.field]: event.value } : m
-                ));
-              } else if (evtType === 'message-ready') {
-                // All AI fields done
-                setFeedMessages(prev => prev.map(m =>
-                  m.messageId === messageId ? { ...m, aiStatus: 'done' } : m
-                ));
-              } else if (evtType === 'message-read') {
-                // Message marked as read — remove from unread feed
-                setFeedMessages(prev => prev.filter(m => m.messageId !== messageId));
-              } else if (evtType === 'unsubscribe-status') {
-                setUnsubscribeJobs(prev => {
-                  const exists = prev.find(j => j.messageId === messageId);
-                  const job: UnsubscribeJob = {
-                    messageId,
-                    senderName: event.senderName ?? '',
-                    status:     event.status,
-                    message:    event.message ?? '',
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (!controller.signal.aborted) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const event = JSON.parse(line.slice(6));
+                const { messageId, type: evtType } = event;
+
+                if (evtType === 'message-added') {
+                  // New message arrived — add to feed
+                  const newRecord: MessageRecord = {
+                    messageId:          event.messageId,
+                    threadId:           event.threadId ?? null,
+                    labelIds:           event.labelIds ?? [],
+                    subject:            event.subject ?? '',
+                    fromName:           event.fromName ?? '',
+                    fromEmail:          event.fromEmail ?? '',
+                    snippet:            event.snippet ?? '',
+                    internalDate:       event.internalDate ?? Date.now(),
+                    postCutoff:         event.postCutoff ?? false,
+                    aiStatus:           event.aiStatus ?? 'none',
+                    quote:              null,
+                    summary:            null,
+                    action:             null,
+                    actionUrl:          null,
+                    requiresAttention:  false,
+                    unsubscribeUrl:     null,
+                    avatarUri:          event.avatarUri ?? null,
+                    avatarFallbackText: event.avatarFallbackText ?? '',
                   };
-                  if (exists) return prev.map(j => j.messageId === messageId ? job : j);
-                  return [...prev, job];
-                });
+                  setFeedMessages(prev => {
+                    const exists = prev.some(m => m.messageId === newRecord.messageId);
+                    if (exists) return prev;
+                    return [newRecord, ...prev].sort((a, b) => b.internalDate - a.internalDate);
+                  });
+                } else if (evtType === 'processing') {
+                  // Mark message as processing
+                  setFeedMessages(prev => prev.map(m =>
+                    m.messageId === messageId ? { ...m, aiStatus: 'processing' } : m
+                  ));
+                } else if (evtType === 'field-complete') {
+                  // Field fully resolved — set final value
+                  setFeedMessages(prev => prev.map(m =>
+                    m.messageId === messageId ? { ...m, [event.field]: event.value } : m
+                  ));
+                } else if (evtType === 'message-ready') {
+                  // All AI fields done
+                  setFeedMessages(prev => prev.map(m =>
+                    m.messageId === messageId ? { ...m, aiStatus: 'done' } : m
+                  ));
+                } else if (evtType === 'message-read') {
+                  // Message marked as read — remove from unread feed
+                  setFeedMessages(prev => prev.filter(m => m.messageId !== messageId));
+                } else if (evtType === 'unsubscribe-status') {
+                  setUnsubscribeJobs(prev => {
+                    const exists = prev.find(j => j.messageId === messageId);
+                    const job: UnsubscribeJob = {
+                      messageId,
+                      senderName: event.senderName ?? '',
+                      status:     event.status,
+                      message:    event.message ?? '',
+                    };
+                    if (exists) return prev.map(j => j.messageId === messageId ? job : j);
+                    return [...prev, job];
+                  });
+                }
+              } catch {
+                // Skip malformed events.
               }
-            } catch { /* skip malformed event */ }
+            }
           }
-        }
 
-        // SSE disconnected — reload feed to catch any missed events
-        if (!controller.signal.aborted) {
-          loadFeed();
+          // SSE disconnected — reload feed to catch any missed events, then reconnect.
+          if (!controller.signal.aborted) {
+            await loadFeed();
+            await wait(1000);
+          }
+        } catch (err: any) {
+          if (err.name !== 'AbortError') console.warn('[sse] error:', err.message);
+          if (controller.signal.aborted) break;
+          await wait(retryDelay);
+          retryDelay = Math.min(retryDelay * 2, 10_000);
+        } finally {
+          if (connectTimer) clearTimeout(connectTimer);
+          controller.signal.removeEventListener('abort', abortAttempt);
         }
-      } catch (err: any) {
-        if (err.name !== 'AbortError') console.warn('[sse] error:', err.message);
       }
     })();
 
