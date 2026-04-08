@@ -7,7 +7,7 @@ import { Colors, InterFonts, Radius, Spacing } from '@/constants/theme';
 export type UnsubscribeJob = {
   messageId: string;
   senderName: string;
-  status: 'queued' | 'started' | 'clicking' | 'done' | 'error';
+  status: 'queued' | 'navigating' | 'analyzing' | 'filling' | 'clicking' | 'verifying' | 'done' | 'error';
   message: string;
 };
 

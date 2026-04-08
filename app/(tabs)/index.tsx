@@ -13,7 +13,7 @@ import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 
 // ─── Feed ─────────────────────────────────────────────────────────────────
 
-const FEED_BASE_URL = 'https://email-ai-server.onrender.com';
+const FEED_BASE_URL = process.env.EXPO_PUBLIC_FEED_BASE_URL || 'https://email-ai-server.onrender.com';
 
 type MessageRecord = {
   messageId:         string;

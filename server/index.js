@@ -20,6 +20,7 @@ const messageStore     = require('./messageStore');
 const gmailSync        = require('./gmailSync');
 const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
+const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const { cleanEmailForAI } = require('./emailCleaner');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -759,13 +760,14 @@ app.post('/unsubscribe', async (req, res) => {
 
   const { unsubscribeUrl } = record;
   const senderName = record.fromName || record.fromEmail;
+  const user = await userStore.getUser(userId);
 
   const emit = (status, message) =>
     emitUnsubscribeStatus(userId, { messageId, senderName, status, message });
 
   // Handle mailto: unsubscribe (send an email, no browser needed)
   if (unsubscribeUrl.startsWith('mailto:')) {
-    emit('started', 'Sending unsubscribe request…');
+    emit('navigating', 'Sending unsubscribe request…');
     try {
       const accessToken = await userStore.getValidAccessToken(userId);
       const mailto = new URL(unsubscribeUrl);
@@ -797,33 +799,15 @@ app.post('/unsubscribe', async (req, res) => {
   let browser;
   try {
     const { chromium } = require('playwright');
-    emit('started', 'Opening unsubscribe page…');
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
-
-    await page.goto(unsubscribeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-    emit('clicking', 'Looking for unsubscribe button…');
-
-    // Try to find and click an unsubscribe/confirm button
-    const clicked = await page.evaluate(() => {
-      const candidates = Array.from(document.querySelectorAll('button, input[type="submit"], a[href], input[type="button"]'));
-      const patterns   = [/unsubscribe/i, /confirm/i, /opt.?out/i, /remove/i];
-      for (const pattern of patterns) {
-        const el = candidates.find(c => pattern.test(c.textContent ?? '') || pattern.test(c.value ?? ''));
-        if (el) { el.click(); return true; }
-      }
-      // If this is a simple one-click unsubscribe page with only one button, click it
-      if (candidates.length === 1) { candidates[0].click(); return true; }
-      return false;
+    const result = await runUnsubscribeAgent({
+      browser,
+      unsubscribeUrl,
+      userEmail: user?.email ?? '',
+      emit,
+      openai,
     });
-
-    if (clicked) {
-      // Brief wait for any navigation/confirmation to settle
-      await page.waitForTimeout(2000);
-      emit('done', 'Unsubscribed ✓');
-    } else {
-      emit('done', 'Unsubscribe page opened — may need manual confirmation');
-    }
+    emit(result.status, result.message);
   } catch (err) {
     console.error('[unsubscribe] browser error:', err.message);
     emit('error', 'Could not complete unsubscribe');
