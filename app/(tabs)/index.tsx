@@ -71,12 +71,21 @@ async function fetchAllMail(
   return res.json();
 }
 
-async function requestUnsubscribe(accessToken: string, messageId: string): Promise<void> {
-  await fetch(`${FEED_BASE_URL}/unsubscribe`, {
-    method:  'POST',
-    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ messageId }),
-  });
+async function requestUnsubscribe(accessToken: string, messageId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${FEED_BASE_URL}/unsubscribe`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ messageId }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      return { ok: false, error: body.error ?? `server error ${res.status}` };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message ?? 'network error' };
+  }
 }
 
 async function markAsRead(accessToken: string, messageId: string): Promise<void> {
@@ -640,9 +649,15 @@ export default function Index() {
                               if (prev.find(j => j.messageId === m.messageId)) return prev;
                               return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
                             });
-                            requestUnsubscribe(accessToken, m.messageId).catch(err =>
-                              console.error('[unsubscribe] request failed:', err)
-                            );
+                            requestUnsubscribe(accessToken, m.messageId).then(result => {
+                              if (!result.ok) {
+                                setUnsubscribeJobs(prev => prev.map(j =>
+                                  j.messageId === m.messageId
+                                    ? { ...j, status: 'error', message: result.error ?? 'Failed' }
+                                    : j
+                                ));
+                              }
+                            });
                           }
                         : undefined,
                     }}
@@ -700,9 +715,15 @@ export default function Index() {
                           if (prev.find(j => j.messageId === m.messageId)) return prev;
                           return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
                         });
-                        requestUnsubscribe(accessToken, m.messageId).catch(err =>
-                          console.error('[unsubscribe] request failed:', err)
-                        );
+                        requestUnsubscribe(accessToken, m.messageId).then(result => {
+                          if (!result.ok) {
+                            setUnsubscribeJobs(prev => prev.map(j =>
+                              j.messageId === m.messageId
+                                ? { ...j, status: 'error', message: result.error ?? 'Failed' }
+                                : j
+                            ));
+                          }
+                        });
                       }
                     : undefined,
                 }}
