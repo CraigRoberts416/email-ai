@@ -58,7 +58,7 @@ export default function UnsubscribeToast({ jobs }: Props) {
           <Text style={styles.senderName} numberOfLines={1}>
             {current.senderName}
           </Text>
-          <Text style={styles.statusText} numberOfLines={1}>
+          <Text style={styles.statusText} numberOfLines={2}>
             {current.message}
           </Text>
         </View>

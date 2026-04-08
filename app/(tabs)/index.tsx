@@ -824,7 +824,7 @@ export default function Index() {
                         ? () => {
                             setUnsubscribeJobs(prev => {
                               if (prev.find(j => j.messageId === m.messageId)) return prev;
-                              return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
+                              return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Initiating unsubscribe heist…' }];
                             });
                             requestUnsubscribe(
                               accessToken,
@@ -899,7 +899,7 @@ export default function Index() {
                     ? () => {
                         setUnsubscribeJobs(prev => {
                           if (prev.find(j => j.messageId === m.messageId)) return prev;
-                          return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Queued…' }];
+                          return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Initiating unsubscribe heist…' }];
                         });
                         requestUnsubscribe(
                           accessToken,

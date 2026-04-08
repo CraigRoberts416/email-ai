@@ -22,6 +22,7 @@ const userStore        = require('./userStore');
 const messageStore     = require('./messageStore');
 const gmailSync        = require('./gmailSync');
 const processingWorker = require('./processingWorker');
+const unsubscribeCopy  = require('./unsubscribeCopy');
 const watchManager     = require('./watchManager');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const { cleanEmailForAI } = require('./emailCleaner');
@@ -835,7 +836,7 @@ app.post('/unsubscribe', async (req, res) => {
   const senderName = directSenderName || record?.fromName || record?.fromEmail || 'Sender';
   if (!unsubscribeUrl) return res.status(400).json({ error: 'no unsubscribe URL for this message' });
 
-  emitUnsubscribeStatus(userId, { messageId, senderName, status: 'queued', message: 'Queued…' });
+  emitUnsubscribeStatus(userId, { messageId, senderName, status: 'queued', message: unsubscribeCopy.queuedMessage() });
 
   // Acknowledge immediately — status updates flow via SSE
   res.json({ success: true });
@@ -856,7 +857,7 @@ app.post('/unsubscribe', async (req, res) => {
 
   // Handle mailto: unsubscribe (send an email, no browser needed)
   if (unsubscribeUrl.startsWith('mailto:')) {
-    emit('navigating', 'Sending unsubscribe request…');
+    emit('navigating', unsubscribeCopy.queuedMessage(2));
     try {
       const accessToken = requestAccessToken || await userStore.getValidAccessToken(userId);
       const mailto = new URL(unsubscribeUrl);
@@ -876,7 +877,7 @@ app.post('/unsubscribe', async (req, res) => {
         body:    JSON.stringify({ raw: encoded }),
       });
       if (!gmailRes.ok) throw new Error(`gmail send failed (${gmailRes.status})`);
-      emit('done', 'Unsubscribe email sent ✓');
+      emit('done', unsubscribeCopy.emailDoneMessage());
     } catch (err) {
       console.error('[unsubscribe] mailto error:', err.message);
       emit('error', formatUnsubscribeError(err, 'Failed to send unsubscribe email'));

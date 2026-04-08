@@ -1,3 +1,5 @@
+const unsubscribeCopy = require('./unsubscribeCopy');
+
 const MAX_STEPS = 6;
 const MAX_BODY_TEXT = 4000;
 const MAX_ACTIONS_FOR_AI = 12;
@@ -10,12 +12,23 @@ const POSITIVE_ACTION_RULES = [
   { pattern: /\bno more emails?\b/i, score: 9 },
   { pattern: /\bglobal unsubscribe\b/i, score: 9 },
   { pattern: /\ball emails?\b/i, score: 5 },
+  { pattern: /\bnotification preferences?\b/i, score: 6 },
+  { pattern: /\bemail preferences?\b/i, score: 6 },
+  { pattern: /\bmanage preferences?\b/i, score: 6 },
+  { pattern: /\bmanage subscriptions?\b/i, score: 6 },
+  { pattern: /\bemail settings?\b/i, score: 6 },
+  { pattern: /\baccount settings?\b/i, score: 5 },
+  { pattern: /\bturn off\b/i, score: 5 },
+  { pattern: /\bdisable\b/i, score: 5 },
   { pattern: /\bconfirm\b/i, score: 4 },
   { pattern: /\byes\b/i, score: 3 },
   { pattern: /\bsubmit\b/i, score: 3 },
+  { pattern: /\bfinish\b/i, score: 3 },
+  { pattern: /\bdone\b/i, score: 3 },
   { pattern: /\bsave\b/i, score: 2 },
   { pattern: /\bupdate preferences?\b/i, score: 2 },
   { pattern: /\bcontinue\b/i, score: 1 },
+  { pattern: /\bnext\b/i, score: 1 },
 ];
 
 const NEGATIVE_ACTION_RULES = [
@@ -34,6 +47,23 @@ const NEGATIVE_ACTION_RULES = [
   { pattern: /\bcancel\b/i, score: -10 },
   { pattern: /\bgo back\b/i, score: -10 },
   { pattern: /\bback\b/i, score: -6 },
+];
+
+const RECOVERY_PAGE_PATTERNS = [
+  /\boops,? something went wrong\b/i,
+  /\bplease try again\b/i,
+  /\btemporarily unavailable\b/i,
+  /\bnotification preferences?\b/i,
+  /\bupdate .*account settings?\b/i,
+];
+
+const RECOVERY_ACTION_RULES = [
+  { pattern: /\bnotification preferences?\b/i, score: 8 },
+  { pattern: /\bemail preferences?\b/i, score: 8 },
+  { pattern: /\bmanage preferences?\b/i, score: 8 },
+  { pattern: /\bmanage subscriptions?\b/i, score: 8 },
+  { pattern: /\bemail settings?\b/i, score: 8 },
+  { pattern: /\baccount settings?\b/i, score: 6 },
 ];
 
 const SUCCESS_PATTERNS = [
@@ -71,6 +101,8 @@ const POSITIVE_FIELD_PATTERNS = [
   /\ball emails?\b/i,
   /\bmarketing emails?\b/i,
   /\bpromotional emails?\b/i,
+  /\bnewsletter\b/i,
+  /\bnotification preferences?\b/i,
 ];
 
 const NEGATIVE_FIELD_PATTERNS = [
@@ -79,6 +111,54 @@ const NEGATIVE_FIELD_PATTERNS = [
   /\bkeep me subscribed\b/i,
   /\bweekly digest\b/i,
 ];
+
+const SURVEY_FIELD_PATTERNS = [
+  /\bwhy (are you|you’re|are u) (leaving|unsubscribing)\b/i,
+  /\breason\b/i,
+  /\bfeedback\b/i,
+  /\bhow can we improve\b/i,
+  /\btell us why\b/i,
+  /\bcomment\b/i,
+];
+
+const SURVEY_OPTION_PATTERNS = [
+  /\btoo many (emails?|messages?)\b/i,
+  /\btoo frequent\b/i,
+  /\bnot relevant\b/i,
+  /\bnot interested\b/i,
+  /\bno longer interested\b/i,
+  /\bother\b/i,
+  /\bprefer not to say\b/i,
+  /\bi didn'?t sign up\b/i,
+  /\bnever signed up\b/i,
+  /\bcontent is not relevant\b/i,
+];
+
+const MARKETING_CATEGORY_PATTERNS = [
+  /\bmarketing\b/i,
+  /\bnewsletter\b/i,
+  /\bpromotional\b/i,
+  /\boffers?\b/i,
+  /\bevents?\b/i,
+  /\brecommendations?\b/i,
+  /\bannouncements?\b/i,
+  /\bupdates?\b/i,
+  /\bdigest\b/i,
+];
+
+const ESSENTIAL_CATEGORY_PATTERNS = [
+  /\baccount\b/i,
+  /\bsecurity\b/i,
+  /\bpassword\b/i,
+  /\border\b/i,
+  /\breceipt\b/i,
+  /\bbilling\b/i,
+  /\btransaction(al)?\b/i,
+  /\blegal\b/i,
+  /\bsupport\b/i,
+];
+
+const EXIT_SURVEY_TEXT = 'Too many emails.';
 
 function normalizeText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -221,10 +301,21 @@ function detectManualBlocker(snapshot) {
 }
 
 function describeAction(action) {
-  return truncate(action.text || action.href || `${action.tag} action`, 48);
+  const raw = normalizeText(action.text || action.href || `${action.tag} action`);
+  const collapsed = raw.replace(/\b(.+?)\s+\1\b/i, '$1');
+  return truncate(collapsed, 48);
 }
 
-function scoreAction(action, history) {
+function pageLooksRecoverable(snapshot) {
+  return matchesAny(normalizeText(`${snapshot.title} ${snapshot.bodyText}`), RECOVERY_PAGE_PATTERNS);
+}
+
+function pageLooksLikePreferences(snapshot) {
+  const haystack = normalizeText(`${snapshot.title} ${snapshot.bodyText} ${snapshot.url}`);
+  return /\b(preferences?|settings?|subscriptions?)\b/i.test(haystack);
+}
+
+function scoreAction(action, history, snapshot) {
   const haystack = normalizeText(`${action.text} ${action.href}`);
   let score = scoreWithRules(haystack, POSITIVE_ACTION_RULES) + scoreWithRules(haystack, NEGATIVE_ACTION_RULES);
 
@@ -235,11 +326,54 @@ function scoreAction(action, history) {
   if (haystack.length > 120) score -= 2;
 
   if (history.some(entry => entry.signature === haystack)) score -= 12;
+  if (pageLooksRecoverable(snapshot)) score += scoreWithRules(haystack, RECOVERY_ACTION_RULES);
   return score;
+}
+
+function isSurveyField(field, snapshot) {
+  const haystack = normalizeText(`${field.text} ${field.name} ${field.placeholder}`);
+  return matchesAny(haystack, SURVEY_FIELD_PATTERNS)
+    || (field.tag === 'textarea' && (matchesAny(snapshot.bodyText, SURVEY_FIELD_PATTERNS) || field.required));
+}
+
+function isPositiveSurveyChoice(text) {
+  return matchesAny(text, SURVEY_OPTION_PATTERNS);
+}
+
+function shouldSelectField(field, snapshot) {
+  const haystack = normalizeText(`${field.text} ${field.name} ${field.placeholder}`);
+  if (matchesAny(haystack, NEGATIVE_FIELD_PATTERNS)) return false;
+
+  const explicitOptOut = /\bunsubscribe\b|\bopt.?out\b|\bremove me\b|\bstop (all )?(emails?|messages?)\b/i.test(haystack);
+  const marketingCategory = matchesAny(haystack, MARKETING_CATEGORY_PATTERNS);
+
+  if (field.type === 'checkbox' && pageLooksLikePreferences(snapshot) && marketingCategory && !explicitOptOut) {
+    return false;
+  }
+
+  return explicitOptOut || isPositiveSurveyChoice(haystack) || matchesAny(haystack, POSITIVE_FIELD_PATTERNS);
+}
+
+function shouldUncheckField(field, snapshot) {
+  if (field.type !== 'checkbox' || !field.checked) return false;
+  if (!pageLooksLikePreferences(snapshot)) return false;
+
+  const haystack = normalizeText(`${field.text} ${field.name} ${field.placeholder}`);
+  if (matchesAny(haystack, ESSENTIAL_CATEGORY_PATTERNS)) return false;
+  return matchesAny(haystack, MARKETING_CATEGORY_PATTERNS);
+}
+
+function chooseSelectOption(field) {
+  return field.options.find(item => {
+    const optionText = normalizeText(`${item.text} ${item.value}`);
+    return isPositiveSurveyChoice(optionText)
+      || (matchesAny(optionText, POSITIVE_FIELD_PATTERNS) && !matchesAny(optionText, NEGATIVE_FIELD_PATTERNS));
+  });
 }
 
 async function maybeFillFields(page, snapshot, userEmail, emit) {
   let changed = 0;
+  const handledRadioGroups = new Set();
 
   for (const field of snapshot.fields) {
     if (field.disabled) continue;
@@ -248,31 +382,49 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
 
     if (field.tag === 'input' && (field.type === 'email' || matchesAny(haystack, EMAIL_FIELD_PATTERNS))) {
       if (field.value.toLowerCase() !== userEmail.toLowerCase()) {
-        emit('filling', 'Filling in your email address…');
+        emit('filling', unsubscribeCopy.fillingEmailMessage());
         await locator.fill(userEmail, { timeout: 5_000 }).catch(() => {});
         changed += 1;
       }
       continue;
     }
 
+    if ((field.tag === 'textarea' || field.type === 'text') && isSurveyField(field, snapshot) && !field.value) {
+      emit('filling', unsubscribeCopy.fillingReasonMessage());
+      await locator.fill(EXIT_SURVEY_TEXT, { timeout: 5_000 }).catch(() => {});
+      changed += 1;
+      continue;
+    }
+
+    if (shouldUncheckField(field, snapshot)) {
+      emit('filling', unsubscribeCopy.fillingTrapMessage());
+      await locator.uncheck({ timeout: 5_000 }).catch(async () => {
+        await locator.click({ timeout: 5_000, force: true }).catch(() => {});
+      });
+      changed += 1;
+      continue;
+    }
+
     if ((field.type === 'checkbox' || field.type === 'radio') && !field.checked) {
-      if (matchesAny(haystack, POSITIVE_FIELD_PATTERNS) && !matchesAny(haystack, NEGATIVE_FIELD_PATTERNS)) {
-        emit('filling', `Selecting ${truncate(field.text || field.name, 40)}…`);
+      if (field.type === 'radio' && field.name && handledRadioGroups.has(field.name)) continue;
+      if (shouldSelectField(field, snapshot)) {
+        const fillMessage = isPositiveSurveyChoice(haystack)
+          ? unsubscribeCopy.fillingChoiceMessage()
+          : unsubscribeCopy.fillingTrapMessage();
+        emit('filling', fillMessage);
         await locator.check({ timeout: 5_000 }).catch(async () => {
           await locator.click({ timeout: 5_000, force: true }).catch(() => {});
         });
         changed += 1;
+        if (field.type === 'radio' && field.name) handledRadioGroups.add(field.name);
       }
       continue;
     }
 
     if (field.tag === 'select' && field.options.length > 0) {
-      const option = field.options.find(item => {
-        const optionText = normalizeText(`${item.text} ${item.value}`);
-        return matchesAny(optionText, POSITIVE_FIELD_PATTERNS) && !matchesAny(optionText, NEGATIVE_FIELD_PATTERNS);
-      });
+      const option = chooseSelectOption(field);
       if (option && option.value && option.value !== field.value) {
-        emit('filling', `Updating ${truncate(field.text || field.name, 40)}…`);
+        emit('filling', unsubscribeCopy.fillingChoiceMessage());
         await locator.selectOption(option.value, { timeout: 5_000 }).catch(() => {});
         changed += 1;
       }
@@ -293,10 +445,20 @@ async function chooseActionWithAi(snapshot, history, openai) {
     tag: action.tag,
     disabled: action.disabled,
   }));
+  const fields = snapshot.fields.slice(0, MAX_ACTIONS_FOR_AI).map(field => ({
+    text: truncate(field.text, 100),
+    name: truncate(field.name, 60),
+    type: field.type,
+    checked: field.checked,
+    required: field.required,
+    value: truncate(field.value, 80),
+  }));
 
   const prompt = [
     'You are selecting the next safe browser action to unsubscribe a user from email.',
     'Goal: complete the unsubscribe flow without logging in, resubscribing, or visiting unrelated pages.',
+    'Preference centers, surveys, and "tell us why" screens are normal. Continue through them if they help finish the unsubscribe.',
+    'If the page says to use account settings or notification preferences, it is okay to try that path as long as the page does not ask for login credentials.',
     'Return JSON only.',
     '',
     `URL: ${snapshot.url}`,
@@ -304,6 +466,7 @@ async function chooseActionWithAi(snapshot, history, openai) {
     `Body excerpt: ${truncate(snapshot.bodyText, 1600)}`,
     `Recent action history: ${history.map(item => item.signature).slice(-4).join(' | ') || 'none'}`,
     `Available actions: ${JSON.stringify(actions)}`,
+    `Visible fields: ${JSON.stringify(fields)}`,
     '',
     'Return one of:',
     '{"action":"click","candidateId":"...","reason":"..."}',
@@ -329,7 +492,7 @@ async function chooseActionWithAi(snapshot, history, openai) {
 
 async function chooseNextAction(snapshot, history, openai) {
   const scored = snapshot.actions
-    .map(action => ({ action, score: scoreAction(action, history) }))
+    .map(action => ({ action, score: scoreAction(action, history, snapshot) }))
     .sort((a, b) => b.score - a.score);
 
   const best = scored[0];
@@ -380,16 +543,16 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
   const history = [];
 
   try {
-    emit('navigating', 'Opening unsubscribe page…');
+    emit('navigating', unsubscribeCopy.navigatingMessage());
     await page.goto(unsubscribeUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
     await settlePage(page);
 
     for (let step = 0; step < MAX_STEPS; step += 1) {
-      emit('analyzing', `Inspecting unsubscribe page ${step + 1}/${MAX_STEPS}…`);
+      emit('analyzing', unsubscribeCopy.analyzingMessage(step, MAX_STEPS));
       let snapshot = await snapshotPage(page);
 
       if (detectSuccess(snapshot)) {
-        return { status: 'done', message: 'Unsubscribed ✓' };
+        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
       }
 
       const blocker = detectManualBlocker(snapshot);
@@ -401,36 +564,39 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
       snapshot = await snapshotPage(page);
 
       if (detectSuccess(snapshot)) {
-        return { status: 'done', message: 'Unsubscribed ✓' };
+        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
       }
 
       const choice = await chooseNextAction(snapshot, history, openai);
       if (!choice) {
+        if (pageLooksRecoverable(snapshot)) {
+          return { status: 'error', message: 'Their unsubscribe page looks busted, and the backup route was not safe to click' };
+        }
         return { status: 'error', message: 'Could not find a safe unsubscribe action' };
       }
 
       if (choice.action === 'done') {
-        return { status: 'done', message: 'Unsubscribed ✓' };
+        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
       }
 
       if (choice.action === 'manual') {
         return { status: 'error', message: choice.reason || 'Unsubscribe page needs manual action' };
       }
 
-      emit('clicking', `Clicking ${describeAction(choice.candidate)}…`);
+      emit('clicking', unsubscribeCopy.clickingMessage(describeAction(choice.candidate), step));
       page = await clickAction(page, choice.candidate);
       history.push({ signature: normalizeText(`${choice.candidate.text} ${choice.candidate.href}`) });
 
-      emit('verifying', 'Checking whether the unsubscribe worked…');
+      emit('verifying', unsubscribeCopy.verifyingMessage(step));
       const postClickSnapshot = await snapshotPage(page);
       if (detectSuccess(postClickSnapshot)) {
-        return { status: 'done', message: 'Unsubscribed ✓' };
+        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
       }
     }
 
     const finalSnapshot = await snapshotPage(page);
     if (detectSuccess(finalSnapshot)) {
-      return { status: 'done', message: 'Unsubscribed ✓' };
+      return { status: 'done', message: unsubscribeCopy.doneMessage(MAX_STEPS - 1) };
     }
 
     return { status: 'error', message: 'Reached the unsubscribe page but could not finish the flow' };
