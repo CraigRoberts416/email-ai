@@ -165,7 +165,16 @@ async function setUnsubscribeUrl(userId, messageId, url) {
   );
 }
 
+async function getMessageIdsNeedingUnsubscribeBackfill(userId) {
+  const { rows } = await query(
+    'SELECT message_id FROM messages WHERE user_id = $1 AND unsubscribe_url IS NULL',
+    [userId]
+  );
+  return rows.map(r => r.message_id);
+}
+
 module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
-  getNextToProcess, setAiStatus, setAiField, setAiFields, updateLabelIds, setUnsubscribeUrl,
+  getNextToProcess, setAiStatus, setAiField, setAiFields, updateLabelIds,
+  setUnsubscribeUrl, getMessageIdsNeedingUnsubscribeBackfill,
 };

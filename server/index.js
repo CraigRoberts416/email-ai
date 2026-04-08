@@ -789,6 +789,64 @@ app.post('/unsubscribe', async (req, res) => {
   }
 });
 
+// ─── Unsubscribe URL backfill ─────────────────────────────────────────────
+// Runs once per user on startup. Fetches only the List-Unsubscribe header
+// (metadata format) for any existing message that has no unsubscribe_url yet.
+
+const { extractUnsubscribeUrl: _extractUnsubscribeUrl } = (() => {
+  // Inline the same header parser from emailCleaner so we don't circular-import
+  function extractUnsubscribeUrl(raw) {
+    if (!raw) return null;
+    const httpsMatch = raw.match(/<(https?:\/\/[^>]+)>/i);
+    if (httpsMatch) return httpsMatch[1];
+    const mailtoMatch = raw.match(/<(mailto:[^>]+)>/i);
+    if (mailtoMatch) return mailtoMatch[1];
+    return null;
+  }
+  return { extractUnsubscribeUrl };
+})();
+
+async function runUnsubscribeBackfill(userId) {
+  try {
+    const messageIds = await messageStore.getMessageIdsNeedingUnsubscribeBackfill(userId);
+    if (messageIds.length === 0) return;
+
+    console.log(`[backfill] ${messageIds.length} messages to check for unsubscribe URLs (user: ${userId.slice(0, 8)}…)`);
+
+    const accessToken = await userStore.getValidAccessToken(userId);
+    const BATCH = 20;
+    let found = 0;
+
+    for (let i = 0; i < messageIds.length; i += BATCH) {
+      const slice = messageIds.slice(i, i + BATCH);
+      await Promise.all(slice.map(async (messageId) => {
+        try {
+          const res = await fetch(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=metadata&metadataHeaders=List-Unsubscribe`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          if (!res.ok) return;
+          const msg = await res.json();
+          const headers = msg.payload?.headers ?? [];
+          const raw = headers.find(h => h.name.toLowerCase() === 'list-unsubscribe')?.value ?? '';
+          const url = _extractUnsubscribeUrl(raw);
+          // Write NULL explicitly so we don't re-check this message next time
+          await messageStore.setUnsubscribeUrl(userId, messageId, url ?? '');
+          if (url) found++;
+        } catch { /* skip individual failures */ }
+      }));
+      // Brief pause between batches to avoid rate limits
+      if (i + BATCH < messageIds.length) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    console.log(`[backfill] done — ${found} unsubscribe URLs found (user: ${userId.slice(0, 8)}…)`);
+  } catch (err) {
+    console.error(`[backfill] error for user ${userId.slice(0, 8)}…:`, err.message);
+  }
+}
+
 // ─── Bootstrap ────────────────────────────────────────────────────────────
 
 processingWorker.init({ streamInterpretEmail, streamDecideActionSurface, emitSSE });
@@ -806,6 +864,10 @@ app.listen(PORT, () => {
     console.log(`[startup] resuming workers for ${users.length} user(s)`);
     for (const user of users) {
       processingWorker.startWorker(user.user_id);
+      // Non-blocking backfill — runs in background, doesn't block startup
+      runUnsubscribeBackfill(user.user_id).catch(err =>
+        console.error('[startup] backfill error:', err.message)
+      );
     }
     watchManager.renewAllExpiring().catch(err =>
       console.error('[startup] watch renewal failed:', err.message)
