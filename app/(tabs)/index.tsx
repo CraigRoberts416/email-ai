@@ -113,13 +113,30 @@ async function requestUnsubscribe(
   messageId: string,
   unsubscribeUrl: string,
   senderName: string
-): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const res = await fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe`, {
+): Promise<{ ok: boolean; error?: string; refreshedToken?: string }> {
+  const doRequest = (token: string) =>
+    fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe`, {
       method:  'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body:    JSON.stringify({ messageId, unsubscribeUrl, senderName }),
     });
+
+  try {
+    let res = await doRequest(accessToken);
+
+    // If 401, the token has expired — try refreshing once and retry.
+    if (res.status === 401) {
+      const stored = await loadAuth();
+      if (stored?.refreshToken) {
+        const refreshed = await refreshAccessToken(stored.refreshToken);
+        if (refreshed) {
+          await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+          res = await doRequest(refreshed.accessToken);
+          if (res.ok) return { ok: true, refreshedToken: refreshed.accessToken };
+        }
+      }
+    }
+
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       return { ok: false, error: body.error ?? `server error ${res.status}` };
@@ -252,6 +269,7 @@ export default function Index() {
   const [recap] = useState<RecapData | null>(null);
   const [uiCopy, setUiCopy] = useState<UiCopy>(DEFAULT_UI_COPY);
   const activeUnsubscribePolls = useRef(new Set<string>());
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Feed state ────────────────────────────────────────────────────────
   const [feedMessages, setFeedMessages] = useState<MessageRecord[]>([]);
@@ -376,6 +394,20 @@ export default function Index() {
           clearTimeout(connectTimer);
           connectTimer = null;
 
+          if (response.status === 401) {
+            console.log('[sse] 401 — attempting token refresh');
+            const stored = await loadAuth();
+            if (stored?.refreshToken) {
+              const refreshed = await refreshAccessToken(stored.refreshToken);
+              if (refreshed) {
+                await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+                setAccessToken(refreshed.accessToken);
+                break; // exit loop; effect will restart with new token
+              }
+            }
+            console.warn('[sse] 401 and no refresh token available, stopping');
+            break;
+          }
           if (!response.ok) throw new Error(`connect failed: ${response.status}`);
 
           const reader = response.body?.getReader();
@@ -650,6 +682,43 @@ export default function Index() {
     })();
   }, []);
 
+  // Proactively refresh the access token 5 minutes before it expires.
+  // Google tokens last ~1 hour. Without this, the SSE and API calls start
+  // failing with 401 after the first hour the app is open.
+  useEffect(() => {
+    if (!accessToken) return;
+
+    const doRefresh = async () => {
+      const s = await loadAuth();
+      if (!s?.refreshToken) return;
+      console.log('[auth] proactive token refresh');
+      const r = await refreshAccessToken(s.refreshToken);
+      if (r) {
+        await saveAuth(r.accessToken, s.refreshToken, r.expiresAt);
+        setAccessToken(r.accessToken);
+      }
+    };
+
+    (async () => {
+      const stored = await loadAuth();
+      if (!stored?.refreshToken || !stored.expiresAt) return;
+      const msUntilRefresh = stored.expiresAt - Date.now() - 5 * 60 * 1000;
+      if (msUntilRefresh <= 0) {
+        await doRefresh();
+      } else {
+        if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = setTimeout(doRefresh, msUntilRefresh);
+      }
+    })();
+
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+    };
+  }, [accessToken]);
+
   // Restore user name on launch
   useEffect(() => {
     loadUserName().then(n => { if (n) setUserName(n); });
@@ -882,7 +951,9 @@ export default function Index() {
                                     : j
                                 ));
                               } else {
-                                pollUnsubscribeStatus(accessToken, m.messageId).catch(err =>
+                                if (result.refreshedToken) setAccessToken(result.refreshedToken);
+                                const pollToken = result.refreshedToken ?? accessToken;
+                                pollUnsubscribeStatus(pollToken, m.messageId).catch(err =>
                                   console.warn('[unsubscribe] poll failed:', err)
                                 );
                               }
@@ -957,7 +1028,9 @@ export default function Index() {
                                 : j
                             ));
                           } else {
-                            pollUnsubscribeStatus(accessToken, m.messageId).catch(err =>
+                            if (result.refreshedToken) setAccessToken(result.refreshedToken);
+                            const pollToken = result.refreshedToken ?? accessToken;
+                            pollUnsubscribeStatus(pollToken, m.messageId).catch(err =>
                               console.warn('[unsubscribe] poll failed:', err)
                             );
                           }
