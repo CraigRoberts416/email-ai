@@ -4,6 +4,7 @@ import {
   Inter_500Medium,
   useFonts,
 } from '@expo-google-fonts/inter';
+import '@/tasks/backgroundFetch';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import {
   BatchSize,

@@ -28,6 +28,23 @@ const { cleanEmailForAI } = require('./emailCleaner');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+const { Expo } = require('expo-server-sdk');
+const expo = new Expo();
+
+async function sendSilentPush(pushToken) {
+  if (!pushToken || !Expo.isExpoPushToken(pushToken)) return;
+  try {
+    await expo.sendPushNotificationsAsync([{
+      to:               pushToken,
+      _contentAvailable: true,
+      data:             { type: 'new-mail' },
+      priority:         'high',
+    }]);
+  } catch (err) {
+    console.warn('[push] send failed:', err.message);
+  }
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -525,6 +542,21 @@ app.post('/auth/register', async (req, res) => {
   }
 });
 
+// Store push token for a user
+app.post('/auth/push-token', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const { pushToken } = req.body;
+  if (!pushToken) return res.status(400).json({ error: 'pushToken required' });
+  try {
+    await userStore.updatePushToken(userId, pushToken);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[push-token] error:', err.message);
+    res.status(500).json({ error: 'failed to store push token' });
+  }
+});
+
 // Mail Feed — unread messages, prioritized
 app.get('/feed', async (req, res) => {
   const userId = await resolveUserId(req);
@@ -717,6 +749,8 @@ app.post('/webhooks/gmail', async (req, res) => {
     // Wake the worker immediately for new unread mail
     if (newUnreadIds.length > 0) {
       processingWorker.wakeWorker(userId);
+      // Silent push to wake the app in background so the feed cache stays fresh
+      sendSilentPush(user.push_token);
     }
   } catch (err) {
     console.error('[webhook] processing error:', err.message);
@@ -789,7 +823,7 @@ app.post('/session-recap', async (req, res) => {
   const attentionCards = cards.filter(c => c.requiresAttention === true);
   const requireAttention = attentionCards.length;
   const formatCards = (arr) =>
-    arr.map(c => `- From: ${c.senderName} | Subject: ${c.subject} | Summary: ${c.summary}${c.action ? ` | Action: ${c.action}` : ''}`).join('\n') || '(none)';
+    arr.map(c => `- From: ${c.fromName || c.fromEmail} | Subject: ${c.subject} | Summary: ${c.summary ?? c.snippet}${c.action ? ` | Action: ${c.action}` : ''}`).join('\n') || '(none)';
 
   const prompt = renderPrompt(PROMPTS.sessionRecap, {
     timeOfDay: timeOfDay ?? 'morning', userName: userName ?? '',

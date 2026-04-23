@@ -6,10 +6,22 @@ import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
+import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Linking, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Linking, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { DdRum, RumActionType } from '@datadog/mobile-react-native';
+import { registerBackgroundFetch } from '@/tasks/backgroundFetch';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: false,
+    shouldShowBanner: false,
+    shouldShowList: false,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
 
 // ─── Feed ─────────────────────────────────────────────────────────────────
 
@@ -86,12 +98,38 @@ function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> 
   );
 }
 
-async function fetchFeed(accessToken: string): Promise<{ cards: MessageRecord[] }> {
+async function fetchFeed(accessToken: string): Promise<{ cards: MessageRecord[]; recap: RecapData | null }> {
   const res = await fetchWithTimeout(`${FEED_BASE_URL}/feed`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) throw new Error(`/feed returned ${res.status}`);
   return res.json();
+}
+
+async function fetchSessionRecap(
+  accessToken: string,
+  cards: MessageRecord[],
+  userName?: string
+): Promise<RecapData | null> {
+  const hour = new Date().getHours();
+  const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const res = await fetch(`${FEED_BASE_URL}/session-recap`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cards, userName, timeOfDay }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.recap ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function fetchAllMail(
@@ -161,6 +199,31 @@ async function fetchUnsubscribeStatus(
   } catch (err) {
     console.warn('[unsubscribe] status poll failed:', err);
     return null;
+  }
+}
+
+async function registerPushToken(accessToken: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  try {
+    const { status: existing } = await Notifications.getPermissionsAsync();
+    const { status } = existing === 'granted'
+      ? { status: existing }
+      : await Notifications.requestPermissionsAsync();
+    if (status !== 'granted') return;
+
+    const { data: pushToken } = await Notifications.getExpoPushTokenAsync({
+      projectId: '5abdcca5-eea7-41f6-bf4e-ab6b45ed62eb',
+    });
+
+    await fetch(`${FEED_BASE_URL}/auth/push-token`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ pushToken }),
+    });
+
+    await registerBackgroundFetch();
+  } catch (err: any) {
+    console.warn('[push] registration failed:', err.message);
   }
 }
 
@@ -266,10 +329,12 @@ function formatRelativeTime(dateStr: string): string {
 export default function Index() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userName, setUserName] = useState('');
-  const [recap] = useState<RecapData | null>(null);
+  const [recap, setRecap] = useState<RecapData | null>(null);
+  const [authRestoring, setAuthRestoring] = useState(true);
   const [uiCopy, setUiCopy] = useState<UiCopy>(DEFAULT_UI_COPY);
   const activeUnsubscribePolls = useRef(new Set<string>());
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recapFetchedRef = useRef(false);
 
   // Tracks messageIds that have been successfully unsubscribed so the
   // tag on the card can flip from "Unsubscribe" → "Unsubscribed".
@@ -366,12 +431,20 @@ export default function Index() {
     fetchUiCopy(accessToken).then(copy => { if (copy) setUiCopy(copy); });
   }, [accessToken]);
 
+  // Register for push notifications and background fetch once per auth session
+  useEffect(() => {
+    if (!accessToken) return;
+    registerPushToken(accessToken);
+  }, [accessToken]);
+
   // Load feed on mount / when access token becomes available
   const loadFeed = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const { cards } = await fetchFeed(accessToken);
+      const { cards, recap: incomingRecap } = await fetchFeed(accessToken);
       setFeedMessages(cards);
+      AsyncStorage.setItem('feed_cache', JSON.stringify(cards)).catch(() => {});
+      if (incomingRecap) setRecap(incomingRecap);
     } catch (err) {
       console.warn('[feed] load failed:', err);
     }
@@ -380,6 +453,16 @@ export default function Index() {
   useEffect(() => {
     loadFeed();
   }, [loadFeed]);
+
+  // Fetch recap once when messages are available — fires whether they came from
+  // initial load, SSE, or cache hydration
+  useEffect(() => {
+    if (!accessToken || feedMessages.length === 0 || recapFetchedRef.current) return;
+    recapFetchedRef.current = true;
+    fetchSessionRecap(accessToken, feedMessages, userName || undefined)
+      .then(r => { if (r) setRecap(r); })
+      .catch(() => {});
+  }, [feedMessages, accessToken, userName]);
 
   // SSE connection — receives real-time message events while the user is in the app.
   // Handles: message-added, processing, chunk, field-complete, message-ready, message-read
@@ -691,6 +774,8 @@ export default function Index() {
         }
       } catch (err) {
         console.error('[auth] restore error:', err);
+      } finally {
+        setAuthRestoring(false);
       }
     })();
   }, []);
@@ -735,6 +820,17 @@ export default function Index() {
   // Restore user name on launch
   useEffect(() => {
     loadUserName().then(n => { if (n) setUserName(n); });
+  }, []);
+
+  // Hydrate feed from cache before auth finishes so emails appear instantly on open
+  useEffect(() => {
+    AsyncStorage.getItem('feed_cache').then(raw => {
+      if (!raw) return;
+      try {
+        const cached = JSON.parse(raw);
+        setFeedMessages(cached);
+      } catch {}
+    });
   }, []);
 
   // Set initial RUM attributes when the screen mounts.
@@ -836,17 +932,22 @@ export default function Index() {
   const listHeader = (
     <>
       {recap && <InboxRecapHeader recap={recap} inViewLabel={uiCopy.inView} needAttentionLabel={uiCopy.needAttention} />}
-      <Pressable
-        style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
-        onPress={() => promptAsync()}
-        disabled={!request}
-      >
-        <Text style={styles.connectLabel}>{uiCopy.connectGmail}</Text>
-      </Pressable>
-      {/* DEV ONLY — auth state diagnostic, remove before launch */}
-      <Text style={styles.devStatus}>
-        {accessToken ? `token: live (${accessToken.slice(0, 8)}…)` : 'token: none — tap Connect Gmail to re-authorise'}
-      </Text>
+      {authRestoring && feedMessages.length === 0 && (
+        <>
+          <EmailCardSkeleton />
+          <EmailCardSkeleton />
+          <EmailCardSkeleton />
+        </>
+      )}
+      {!accessToken && !authRestoring && (
+        <Pressable
+          style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
+          onPress={() => promptAsync()}
+          disabled={!request}
+        >
+          <Text style={styles.connectLabel}>{uiCopy.connectGmail}</Text>
+        </Pressable>
+      )}
       {/* ── Surface toggle ──────────────────────────────────────── */}
       <View style={styles.toggle}>
         <Pressable
@@ -1078,12 +1179,6 @@ const styles = StyleSheet.create({
   },
   connectBtnPressed: {
     opacity: 0.6,
-  },
-  devStatus: {
-    ...Typography.bodySm,
-    color: Colors.light.textSecondary,
-    textAlign: 'center',
-    marginBottom: Spacing.lg,
   },
   toggle: {
     flexDirection: 'row',
