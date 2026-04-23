@@ -113,17 +113,22 @@ async function fetchSessionRecap(
 ): Promise<RecapData | null> {
   const hour = new Date().getHours();
   const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
   try {
-    const res = await fetchWithTimeout(`${FEED_BASE_URL}/session-recap`, {
+    const res = await fetch(`${FEED_BASE_URL}/session-recap`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ cards, userName, timeOfDay }),
+      signal: controller.signal,
     });
     if (!res.ok) return null;
     const json = await res.json();
     return json.recap ?? null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -440,20 +445,24 @@ export default function Index() {
       setFeedMessages(cards);
       AsyncStorage.setItem('feed_cache', JSON.stringify(cards)).catch(() => {});
       if (incomingRecap) setRecap(incomingRecap);
-      if (cards.length > 0 && !recapFetchedRef.current && !incomingRecap) {
-        recapFetchedRef.current = true;
-        fetchSessionRecap(accessToken, cards, userName || undefined)
-          .then(r => { if (r) setRecap(r); })
-          .catch(() => {});
-      }
     } catch (err) {
       console.warn('[feed] load failed:', err);
     }
-  }, [accessToken, userName]);
+  }, [accessToken]);
 
   useEffect(() => {
     loadFeed();
   }, [loadFeed]);
+
+  // Fetch recap once when messages are available — fires whether they came from
+  // initial load, SSE, or cache hydration
+  useEffect(() => {
+    if (!accessToken || feedMessages.length === 0 || recapFetchedRef.current) return;
+    recapFetchedRef.current = true;
+    fetchSessionRecap(accessToken, feedMessages, userName || undefined)
+      .then(r => { if (r) setRecap(r); })
+      .catch(() => {});
+  }, [feedMessages, accessToken, userName]);
 
   // SSE connection — receives real-time message events while the user is in the app.
   // Handles: message-added, processing, chunk, field-complete, message-ready, message-read
