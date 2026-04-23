@@ -6,10 +6,22 @@ import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
+import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Linking, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Linking, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { DdRum, RumActionType } from '@datadog/mobile-react-native';
+import { registerBackgroundFetch } from '@/tasks/backgroundFetch';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: false,
+    shouldShowBanner: false,
+    shouldShowList: false,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+  }),
+});
 
 // ─── Feed ─────────────────────────────────────────────────────────────────
 
@@ -182,6 +194,31 @@ async function fetchUnsubscribeStatus(
   } catch (err) {
     console.warn('[unsubscribe] status poll failed:', err);
     return null;
+  }
+}
+
+async function registerPushToken(accessToken: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  try {
+    const { status: existing } = await Notifications.getPermissionsAsync();
+    const { status } = existing === 'granted'
+      ? { status: existing }
+      : await Notifications.requestPermissionsAsync();
+    if (status !== 'granted') return;
+
+    const { data: pushToken } = await Notifications.getExpoPushTokenAsync({
+      projectId: '5abdcca5-eea7-41f6-bf4e-ab6b45ed62eb',
+    });
+
+    await fetch(`${FEED_BASE_URL}/auth/push-token`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ pushToken }),
+    });
+
+    await registerBackgroundFetch();
+  } catch (err: any) {
+    console.warn('[push] registration failed:', err.message);
   }
 }
 
@@ -387,6 +424,12 @@ export default function Index() {
   useEffect(() => {
     if (!accessToken) return;
     fetchUiCopy(accessToken).then(copy => { if (copy) setUiCopy(copy); });
+  }, [accessToken]);
+
+  // Register for push notifications and background fetch once per auth session
+  useEffect(() => {
+    if (!accessToken) return;
+    registerPushToken(accessToken);
   }, [accessToken]);
 
   // Load feed on mount / when access token becomes available

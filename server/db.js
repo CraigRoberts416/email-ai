@@ -30,6 +30,9 @@ async function runMigrations() {
   await pool.query(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS unsubscribe_url TEXT
   `);
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT
+  `);
 }
 
 runMigrations().catch(err =>
