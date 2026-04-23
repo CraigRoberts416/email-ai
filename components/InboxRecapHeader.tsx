@@ -8,14 +8,20 @@ type RecapData = {
   requireAttention: number;
 };
 
-export default function InboxRecapHeader({ recap }: { recap: RecapData }) {
+type Props = {
+  recap: RecapData;
+  inViewLabel?: string;
+  needAttentionLabel?: string;
+};
+
+export default function InboxRecapHeader({ recap, inViewLabel = 'in view', needAttentionLabel = 'need attention' }: Props) {
   return (
     <View style={styles.container}>
       <Text style={styles.greeting}>{recap.greeting}</Text>
       <Text style={styles.summary}>{recap.summary}</Text>
       <View style={styles.metaRow}>
-        <Text style={styles.metaItem}>{recap.totalInView} in view</Text>
-        <Text style={styles.metaItem}>{recap.requireAttention} need attention</Text>
+        <Text style={styles.metaItem}>{recap.totalInView} {inViewLabel}</Text>
+        <Text style={styles.metaItem}>{recap.requireAttention} {needAttentionLabel}</Text>
       </View>
     </View>
   );

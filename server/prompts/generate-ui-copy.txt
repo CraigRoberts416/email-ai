@@ -1,0 +1,17 @@
+{{tone}}
+
+Generate UI copy for an email inbox app. Return a single JSON object with exactly these keys:
+
+- connectGmail: button label for connecting a Gmail account
+- mailFeed: tab label for the curated, prioritised inbox feed
+- allMail: tab label for the full mail archive
+- loadingMore: short text shown while paginating (replaces a spinner label)
+- loadMore: button label to load more messages
+- unsubscribeStart: short message shown the moment an unsubscribe begins
+- inView: 2–3 word phrase used as a suffix after a number (e.g. "12 in view")
+- needAttention: 2–3 word phrase used as a suffix after a number (e.g. "3 need attention")
+
+Rules:
+- All values must be short (ideally under 5 words)
+- No markdown formatting, no explanation, no surrounding text
+- Return only the JSON object, nothing else

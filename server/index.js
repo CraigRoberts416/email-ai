@@ -22,7 +22,6 @@ const userStore        = require('./userStore');
 const messageStore     = require('./messageStore');
 const gmailSync        = require('./gmailSync');
 const processingWorker = require('./processingWorker');
-const unsubscribeCopy  = require('./unsubscribeCopy');
 const watchManager     = require('./watchManager');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const { cleanEmailForAI } = require('./emailCleaner');
@@ -92,8 +91,10 @@ function loadPrompt(name) {
   return fs.readFileSync(path.join(__dirname, 'prompts', `${name}.txt`), 'utf8');
 }
 
+const TONE = fs.readFileSync(path.join(__dirname, 'prompts', 'tone.md'), 'utf8');
+
 function renderPrompt(template, vars) {
-  return Object.entries(vars).reduce((result, [key, value]) => {
+  return Object.entries({ tone: TONE, ...vars }).reduce((result, [key, value]) => {
     return result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), () => String(value));
   }, template);
 }
@@ -102,6 +103,7 @@ const PROMPTS = {
   interpretEmail:       loadPrompt('interpret-email'),
   decideActionSurface:  loadPrompt('decide-action-surface'),
   sessionRecap:         loadPrompt('session-recap'),
+  generateUiCopy:       loadPrompt('generate-ui-copy'),
 };
 
 // ─── XML helpers ──────────────────────────────────────────────────────────
@@ -877,7 +879,7 @@ app.post('/unsubscribe', async (req, res) => {
         body:    JSON.stringify({ raw: encoded }),
       });
       if (!gmailRes.ok) throw new Error(`gmail send failed (${gmailRes.status})`);
-      emit('done', unsubscribeCopy.emailDoneMessage());
+      emit('done', 'Unsubscribe request sent ✓');
     } catch (err) {
       console.error('[unsubscribe] mailto error:', err.message);
       emit('error', formatUnsubscribeError(err, 'Failed to send unsubscribe email'));
@@ -897,6 +899,8 @@ app.post('/unsubscribe', async (req, res) => {
       userEmail,
       emit,
       openai,
+      senderName,
+      tone: TONE,
     });
     emit(result.status, result.message);
   } catch (err) {
@@ -917,6 +921,28 @@ app.get('/unsubscribe/:messageId/status', async (req, res) => {
 
   const { updatedAt, ...payload } = status;
   res.json(payload);
+});
+
+// ─── UI copy ──────────────────────────────────────────────────────────────
+
+const uiCopyCache = new Map(); // userId → copy object
+
+app.get('/ui-copy', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  if (uiCopyCache.has(userId)) return res.json(uiCopyCache.get(userId));
+
+  try {
+    const prompt = renderPrompt(PROMPTS.generateUiCopy, {});
+    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+    const copy = JSON.parse(response.output_text);
+    uiCopyCache.set(userId, copy);
+    res.json(copy);
+  } catch (err) {
+    console.error('[ui-copy] failed:', err.message);
+    res.status(500).json({ error: 'ui-copy failed' });
+  }
 });
 
 // ─── Unsubscribe URL backfill ─────────────────────────────────────────────

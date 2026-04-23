@@ -16,6 +16,42 @@ import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 const FEED_BASE_URL = process.env.EXPO_PUBLIC_FEED_BASE_URL || 'https://email-ai-server.onrender.com';
 const UNSUBSCRIBE_BASE_URL = process.env.EXPO_PUBLIC_UNSUBSCRIBE_BASE_URL || FEED_BASE_URL;
 
+// ─── UI copy ─────────────────────────────────────────────────────────────
+
+type UiCopy = {
+  connectGmail: string;
+  mailFeed: string;
+  allMail: string;
+  loadingMore: string;
+  loadMore: string;
+  unsubscribeStart: string;
+  inView: string;
+  needAttention: string;
+};
+
+const DEFAULT_UI_COPY: UiCopy = {
+  connectGmail: 'Connect Gmail',
+  mailFeed: 'Mail Feed',
+  allMail: 'All Mail',
+  loadingMore: 'Loading…',
+  loadMore: 'Load More',
+  unsubscribeStart: 'Initiating unsubscribe heist…',
+  inView: 'in view',
+  needAttention: 'need attention',
+};
+
+async function fetchUiCopy(token: string): Promise<UiCopy | null> {
+  try {
+    const res = await fetch(`${FEED_BASE_URL}/ui-copy`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 type MessageRecord = {
   messageId:         string;
   threadId:          string | null;
@@ -214,6 +250,7 @@ export default function Index() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userName, setUserName] = useState('');
   const [recap] = useState<RecapData | null>(null);
+  const [uiCopy, setUiCopy] = useState<UiCopy>(DEFAULT_UI_COPY);
   const activeUnsubscribePolls = useRef(new Set<string>());
 
   // ── Feed state ────────────────────────────────────────────────────────
@@ -261,7 +298,7 @@ export default function Index() {
     if (doneJobs.length === 0) return;
     const timer = setTimeout(() => {
       setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'done'));
-    }, 3000);
+    }, 5000);
     return () => clearTimeout(timer);
   }, [unsubscribeJobs]);
 
@@ -290,6 +327,12 @@ export default function Index() {
   useEffect(() => {
     setAllMailMessages([]);
     setAllMailCursor(null);
+  }, [accessToken]);
+
+  // Fetch AI-generated UI copy once per session when auth is available
+  useEffect(() => {
+    if (!accessToken) return;
+    fetchUiCopy(accessToken).then(copy => { if (copy) setUiCopy(copy); });
   }, [accessToken]);
 
   // Load feed on mount / when access token becomes available
@@ -710,13 +753,13 @@ export default function Index() {
 
   const listHeader = (
     <>
-      {recap && <InboxRecapHeader recap={recap} />}
+      {recap && <InboxRecapHeader recap={recap} inViewLabel={uiCopy.inView} needAttentionLabel={uiCopy.needAttention} />}
       <Pressable
         style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
         onPress={() => promptAsync()}
         disabled={!request}
       >
-        <Text style={styles.connectLabel}>Connect Gmail</Text>
+        <Text style={styles.connectLabel}>{uiCopy.connectGmail}</Text>
       </Pressable>
       {/* DEV ONLY — auth state diagnostic, remove before launch */}
       <Text style={styles.devStatus}>
@@ -729,7 +772,7 @@ export default function Index() {
           onPress={() => handleTabChange('feed')}
         >
           <Text style={[styles.toggleLabel, activeTab === 'feed' && styles.toggleLabelActive]}>
-            Mail Feed
+            {uiCopy.mailFeed}
           </Text>
         </Pressable>
         <Pressable
@@ -737,7 +780,7 @@ export default function Index() {
           onPress={() => handleTabChange('allMail')}
         >
           <Text style={[styles.toggleLabel, activeTab === 'allMail' && styles.toggleLabelActive]}>
-            All Mail
+            {uiCopy.allMail}
           </Text>
         </Pressable>
       </View>
@@ -767,7 +810,7 @@ export default function Index() {
               onPress={handleLoadMoreAllMail}
               disabled={loadingAllMail}
             >
-              <Text style={styles.connectLabel}>{loadingAllMail ? 'Loading…' : 'Load More'}</Text>
+              <Text style={styles.connectLabel}>{loadingAllMail ? uiCopy.loadingMore : uiCopy.loadMore}</Text>
             </Pressable>
           ) : null
         }
@@ -824,7 +867,7 @@ export default function Index() {
                         ? () => {
                             setUnsubscribeJobs(prev => {
                               if (prev.find(j => j.messageId === m.messageId)) return prev;
-                              return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Initiating unsubscribe heist…' }];
+                              return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: uiCopy.unsubscribeStart }];
                             });
                             requestUnsubscribe(
                               accessToken,
@@ -899,7 +942,7 @@ export default function Index() {
                     ? () => {
                         setUnsubscribeJobs(prev => {
                           if (prev.find(j => j.messageId === m.messageId)) return prev;
-                          return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: 'Initiating unsubscribe heist…' }];
+                          return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: uiCopy.unsubscribeStart }];
                         });
                         requestUnsubscribe(
                           accessToken,

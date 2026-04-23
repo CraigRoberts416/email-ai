@@ -1,5 +1,3 @@
-const unsubscribeCopy = require('./unsubscribeCopy');
-
 const MAX_STEPS = 6;
 const MAX_BODY_TEXT = 4000;
 const MAX_ACTIONS_FOR_AI = 12;
@@ -382,7 +380,7 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
 
     if (field.tag === 'input' && (field.type === 'email' || matchesAny(haystack, EMAIL_FIELD_PATTERNS))) {
       if (field.value.toLowerCase() !== userEmail.toLowerCase()) {
-        emit('filling', unsubscribeCopy.fillingEmailMessage());
+        emit('filling', 'Typing in your email address…');
         await locator.fill(userEmail, { timeout: 5_000 }).catch(() => {});
         changed += 1;
       }
@@ -390,14 +388,16 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
     }
 
     if ((field.tag === 'textarea' || field.type === 'text') && isSurveyField(field, snapshot) && !field.value) {
-      emit('filling', unsubscribeCopy.fillingReasonMessage());
+      const label = truncate(field.text || field.placeholder || field.name, 40);
+      emit('filling', label ? `Answering: "${label}"…` : 'Filling out the exit survey…');
       await locator.fill(EXIT_SURVEY_TEXT, { timeout: 5_000 }).catch(() => {});
       changed += 1;
       continue;
     }
 
     if (shouldUncheckField(field, snapshot)) {
-      emit('filling', unsubscribeCopy.fillingTrapMessage());
+      const label = truncate(field.text || field.name, 40);
+      emit('filling', label ? `Unchecking "${label}"…` : 'Unchecking a sneaky box…');
       await locator.uncheck({ timeout: 5_000 }).catch(async () => {
         await locator.click({ timeout: 5_000, force: true }).catch(() => {});
       });
@@ -408,10 +408,8 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
     if ((field.type === 'checkbox' || field.type === 'radio') && !field.checked) {
       if (field.type === 'radio' && field.name && handledRadioGroups.has(field.name)) continue;
       if (shouldSelectField(field, snapshot)) {
-        const fillMessage = isPositiveSurveyChoice(haystack)
-          ? unsubscribeCopy.fillingChoiceMessage()
-          : unsubscribeCopy.fillingTrapMessage();
-        emit('filling', fillMessage);
+        const label = truncate(field.text || field.name, 40);
+        emit('filling', label ? `Selecting "${label}"…` : 'Picking the right option…');
         await locator.check({ timeout: 5_000 }).catch(async () => {
           await locator.click({ timeout: 5_000, force: true }).catch(() => {});
         });
@@ -424,7 +422,8 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
     if (field.tag === 'select' && field.options.length > 0) {
       const option = chooseSelectOption(field);
       if (option && option.value && option.value !== field.value) {
-        emit('filling', unsubscribeCopy.fillingChoiceMessage());
+        const label = truncate(option.text || option.value, 40);
+        emit('filling', label ? `Selecting "${label}"…` : 'Picking the right option…');
         await locator.selectOption(option.value, { timeout: 5_000 }).catch(() => {});
         changed += 1;
       }
@@ -435,7 +434,7 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
   return changed;
 }
 
-async function chooseActionWithAi(snapshot, history, openai) {
+async function chooseActionWithAi(snapshot, history, openai, tone) {
   if (!openai || snapshot.actions.length === 0) return null;
 
   const actions = snapshot.actions.slice(0, MAX_ACTIONS_FOR_AI).map(action => ({
@@ -455,6 +454,8 @@ async function chooseActionWithAi(snapshot, history, openai) {
   }));
 
   const prompt = [
+    tone ?? '',
+    '',
     'You are selecting the next safe browser action to unsubscribe a user from email.',
     'Goal: complete the unsubscribe flow without logging in, resubscribing, or visiting unrelated pages.',
     'Preference centers, surveys, and "tell us why" screens are normal. Continue through them if they help finish the unsubscribe.',
@@ -469,10 +470,11 @@ async function chooseActionWithAi(snapshot, history, openai) {
     `Visible fields: ${JSON.stringify(fields)}`,
     '',
     'Return one of:',
-    '{"action":"click","candidateId":"...","reason":"..."}',
-    '{"action":"done","reason":"..."}',
-    '{"action":"manual","reason":"..."}',
+    '{"action":"click","candidateId":"...","reason":"...","message":"..."}',
+    '{"action":"done","reason":"...","message":"..."}',
+    '{"action":"manual","reason":"...","message":"..."}',
     '',
+    'message: one short sentence for the user\'s status toast. Describe what you found on this page or what you\'re about to do. Write it in the app\'s tone.',
     'Use "done" only if the page clearly confirms the user is unsubscribed.',
     'Use "manual" if the page requires a captcha, login, or human judgment.',
   ].join('\n');
@@ -484,32 +486,37 @@ async function chooseActionWithAi(snapshot, history, openai) {
     const jsonEnd = raw.lastIndexOf('}');
     if (jsonStart === -1 || jsonEnd === -1) return null;
     const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
-    return parsed;
+    return {
+      action:      parsed.action,
+      candidateId: parsed.candidateId,
+      reason:      parsed.reason,
+      message:     typeof parsed.message === 'string' ? parsed.message.trim() : null,
+    };
   } catch {
     return null;
   }
 }
 
-async function chooseNextAction(snapshot, history, openai) {
+async function chooseNextAction(snapshot, history, openai, tone) {
   const scored = snapshot.actions
     .map(action => ({ action, score: scoreAction(action, history, snapshot) }))
     .sort((a, b) => b.score - a.score);
 
   const best = scored[0];
   if (best && best.score >= 10) {
-    return { action: 'click', candidate: best.action, reason: 'heuristic high-confidence match' };
+    return { action: 'click', candidate: best.action, message: null };
   }
 
-  const aiChoice = await chooseActionWithAi(snapshot, history, openai);
-  if (aiChoice?.action === 'done') return { action: 'done', reason: aiChoice.reason ?? 'page confirms unsubscribe' };
+  const aiChoice = await chooseActionWithAi(snapshot, history, openai, tone);
+  if (aiChoice?.action === 'done') return { action: 'done', message: aiChoice.message };
   if (aiChoice?.action === 'manual') return { action: 'manual', reason: aiChoice.reason ?? 'page requires manual action' };
   if (aiChoice?.action === 'click' && aiChoice.candidateId) {
     const candidate = snapshot.actions.find(action => action.id === aiChoice.candidateId);
-    if (candidate) return { action: 'click', candidate, reason: aiChoice.reason ?? 'AI-selected action' };
+    if (candidate) return { action: 'click', candidate, message: aiChoice.message };
   }
 
   if (best && best.score >= 3) {
-    return { action: 'click', candidate: best.action, reason: 'heuristic fallback match' };
+    return { action: 'click', candidate: best.action, message: null };
   }
 
   return null;
@@ -533,7 +540,7 @@ async function clickAction(page, action) {
   return activePage;
 }
 
-async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai }) {
+async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone }) {
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     viewport: { width: 1440, height: 1200 },
@@ -543,16 +550,15 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
   const history = [];
 
   try {
-    emit('navigating', unsubscribeCopy.navigatingMessage());
+    emit('navigating', `Loading ${senderName}'s unsubscribe page…`);
     await page.goto(unsubscribeUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
     await settlePage(page);
 
     for (let step = 0; step < MAX_STEPS; step += 1) {
-      emit('analyzing', unsubscribeCopy.analyzingMessage(step, MAX_STEPS));
       let snapshot = await snapshotPage(page);
 
       if (detectSuccess(snapshot)) {
-        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
+        return { status: 'done', message: 'Done ✓' };
       }
 
       const blocker = detectManualBlocker(snapshot);
@@ -564,10 +570,10 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
       snapshot = await snapshotPage(page);
 
       if (detectSuccess(snapshot)) {
-        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
+        return { status: 'done', message: 'Done ✓' };
       }
 
-      const choice = await chooseNextAction(snapshot, history, openai);
+      const choice = await chooseNextAction(snapshot, history, openai, tone);
       if (!choice) {
         if (pageLooksRecoverable(snapshot)) {
           return { status: 'error', message: 'Their unsubscribe page looks busted, and the backup route was not safe to click' };
@@ -576,27 +582,29 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
       }
 
       if (choice.action === 'done') {
-        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
+        return { status: 'done', message: choice.message ?? 'Done ✓' };
       }
 
       if (choice.action === 'manual') {
         return { status: 'error', message: choice.reason || 'Unsubscribe page needs manual action' };
       }
 
-      emit('clicking', unsubscribeCopy.clickingMessage(describeAction(choice.candidate), step));
+      const clickMsg = choice.message
+        ?? (choice.candidate ? `Clicking "${truncate(describeAction(choice.candidate), 30)}"…` : 'Clicking…');
+      emit('clicking', clickMsg);
       page = await clickAction(page, choice.candidate);
       history.push({ signature: normalizeText(`${choice.candidate.text} ${choice.candidate.href}`) });
 
-      emit('verifying', unsubscribeCopy.verifyingMessage(step));
+      emit('verifying', 'Checking if that did it…');
       const postClickSnapshot = await snapshotPage(page);
       if (detectSuccess(postClickSnapshot)) {
-        return { status: 'done', message: unsubscribeCopy.doneMessage(step) };
+        return { status: 'done', message: 'Done ✓' };
       }
     }
 
     const finalSnapshot = await snapshotPage(page);
     if (detectSuccess(finalSnapshot)) {
-      return { status: 'done', message: unsubscribeCopy.doneMessage(MAX_STEPS - 1) };
+      return { status: 'done', message: 'Done ✓' };
     }
 
     return { status: 'error', message: 'Reached the unsubscribe page but could not finish the flow' };

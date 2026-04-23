@@ -15,6 +15,12 @@ type Props = {
   jobs: UnsubscribeJob[];
 };
 
+function statusColor(status: UnsubscribeJob['status']): string {
+  if (status === 'done')  return '#4CD964';
+  if (status === 'error') return '#FF3B30';
+  return '#AAAAAA';
+}
+
 // ─── Component ────────────────────────────────────────────────────────────
 
 export default function UnsubscribeToast({ jobs }: Props) {
@@ -50,10 +56,12 @@ export default function UnsubscribeToast({ jobs }: Props) {
 
   const completedCount = doneCount + errorCount;
   const showProgress   = total > 1;
+  const dotColor       = statusColor(current.status);
 
   return (
     <Animated.View style={[styles.container, { transform: [{ translateY }], opacity }]}>
       <View style={styles.toast}>
+        <View style={[styles.dot, { backgroundColor: dotColor }]} />
         <View style={styles.left}>
           <Text style={styles.senderName} numberOfLines={1}>
             {current.senderName}
@@ -95,6 +103,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 12,
     elevation: 8,
+  },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    flexShrink: 0,
   },
   left: {
     flex: 1,
