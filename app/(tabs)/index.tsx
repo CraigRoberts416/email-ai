@@ -957,7 +957,7 @@ export default function Index() {
           onPress={() => handleTabChange('feed')}
         >
           <Text style={[styles.toggleLabel, activeTab === 'feed' && styles.toggleLabelActive]}>
-            {uiCopy.mailFeed}
+            HELLO TEST 🔴
           </Text>
         </Pressable>
         <Pressable
