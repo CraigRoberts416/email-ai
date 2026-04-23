@@ -10,7 +10,7 @@ import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, FlatList, Linking, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Linking, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 import { registerBackgroundFetch } from '@/tasks/backgroundFetch';
 
@@ -957,7 +957,7 @@ export default function Index() {
           onPress={() => handleTabChange('feed')}
         >
           <Text style={[styles.toggleLabel, activeTab === 'feed' && styles.toggleLabelActive]}>
-            HELLO TEST 🔴
+            {uiCopy.mailFeed}
           </Text>
         </Pressable>
         <Pressable
@@ -1004,18 +1004,12 @@ export default function Index() {
             return (
               <Pressable
                 onPress={() => {
-                  Alert.alert('STEP 1', 'onPress fired on feed card');
                   DdRum.addAction(RumActionType.TAP, 'card_tapped', {
                     feed_mode: 'feed',
                     current_screen: 'inbox',
                     ai_status: m.aiStatus,
                   });
-                  try {
-                    router.push('/test' as any);
-                    Alert.alert('STEP 2', 'router.push("/test") returned without throwing');
-                  } catch (e: any) {
-                    Alert.alert('ERROR', `router.push threw: ${e?.message ?? String(e)}`);
-                  }
+                  router.push(`/email/${m.messageId}` as any);
                 }}
               >
                 {!m.fromName ? (
@@ -1098,18 +1092,12 @@ export default function Index() {
           return (
             <Pressable
               onPress={() => {
-                Alert.alert('STEP 1', 'onPress fired on all-mail card');
                 DdRum.addAction(RumActionType.TAP, 'card_tapped', {
                   feed_mode: 'all_mail',
                   current_screen: 'all_mail',
                   interpreted: m.interpreted ?? false,
                 });
-                try {
-                  router.push('/test' as any);
-                  Alert.alert('STEP 2', 'router.push("/test") returned without throwing');
-                } catch (e: any) {
-                  Alert.alert('ERROR', `router.push threw: ${e?.message ?? String(e)}`);
-                }
+                router.push(`/email/${m.messageId}` as any);
               }}
             >
               <EmailCard
