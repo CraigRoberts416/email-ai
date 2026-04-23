@@ -452,6 +452,45 @@ async function generateMessage(openai, tone, situation, pageContext = '') {
   }
 }
 
+async function chooseActionWithVision(page, senderName, openai) {
+  if (!openai) return null;
+  try {
+    const screenshot = await page.screenshot({ type: 'jpeg', quality: 80 });
+    const base64 = screenshot.toString('base64');
+
+    const prompt = `This is a screenshot of a web page for unsubscribing from "${senderName}" emails.
+
+Look at the page carefully. What should I click to complete the unsubscribe?
+
+Return JSON only — one of:
+{"action":"click","x":NUMBER,"y":NUMBER,"reason":"brief explanation"}
+{"action":"done","reason":"already unsubscribed"}
+{"action":"manual","reason":"needs login, captcha, or human judgment"}
+
+x and y are pixel coordinates in the screenshot (viewport is 1440×1200).`;
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}`, detail: 'high' } },
+          { type: 'text', text: prompt },
+        ],
+      }],
+      max_tokens: 200,
+    });
+
+    const raw = response.choices[0]?.message?.content ?? '';
+    const jsonStart = raw.indexOf('{');
+    const jsonEnd = raw.lastIndexOf('}');
+    if (jsonStart === -1 || jsonEnd === -1) return null;
+    return JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+  } catch {
+    return null;
+  }
+}
+
 async function chooseActionWithAi(snapshot, history, openai, tone) {
   if (!openai || snapshot.actions.length === 0) return null;
 
@@ -607,15 +646,13 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
           continue;
         }
 
-        // Last resort: use Playwright's text locator to find and click anything
-        // that looks like an unsubscribe button, bypassing the snapshot entirely.
-        // Catches JS-heavy pages (e.g. Google Forms) where DOM scanning misses elements.
-        const textFallback = page.getByRole('button', { name: /unsubscribe|opt.?out|remove me/i })
-          .or(page.locator('[role="button"]').filter({ hasText: /unsubscribe|opt.?out/i }))
-          .first();
-        if (await textFallback.count() > 0) {
-          emit('clicking', `Trying direct click on unsubscribe button…`);
-          await textFallback.click({ timeout: 7_500, force: true }).catch(() => {});
+        // Vision fallback: take a screenshot and let GPT-4o look at the page
+        // and decide what to click — works on any page regardless of HTML structure.
+        emit('analyzing', `Taking a closer look at ${senderName}'s page…`);
+        const visionChoice = await chooseActionWithVision(page, senderName, openai);
+        if (visionChoice?.action === 'click' && visionChoice.x != null && visionChoice.y != null) {
+          emit('clicking', `Spotted something — clicking it now…`);
+          await page.mouse.click(visionChoice.x, visionChoice.y);
           await settlePage(page);
           const afterSnapshot = await snapshotPage(page);
           if (detectSuccess(afterSnapshot)) {
@@ -623,6 +660,14 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
             return { status: 'done', message: msg };
           }
           continue;
+        }
+        if (visionChoice?.action === 'done') {
+          const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title);
+          return { status: 'done', message: msg };
+        }
+        if (visionChoice?.action === 'manual') {
+          const msg = await generateMessage(openai, tone, visionChoice.reason || `${senderName}'s page requires manual action`, snapshot.title);
+          return { status: 'error', message: msg };
         }
 
         if (pageLooksRecoverable(snapshot)) {
