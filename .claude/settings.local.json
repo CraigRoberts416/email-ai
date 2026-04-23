@@ -30,7 +30,11 @@
       "Bash(find /Users/craigroberts/email-ai/node_modules/@datadog/mobile-react-native -name *.podspec)",
       "Bash(ls /Users/craigroberts/email-ai/server/*.js)",
       "Bash(npx playwright:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(git log *)",
+      "Bash(gh pr create --title 'Fix startup UX: instant feed from cache, working recap, clean auth state' --body ' *)",
+      "Bash(brew install *)",
+      "Bash(gh auth *)"
     ]
   }
 }

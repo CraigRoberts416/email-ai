@@ -16,6 +16,7 @@
     "cors": "^2.8.6",
     "dd-trace": "^5.93.0",
     "dotenv": "^17.3.1",
+    "expo-server-sdk": "^6.1.0",
     "express": "^5.2.1",
     "google-auth-library": "^9.15.1",
     "node-cron": "^4.2.1",

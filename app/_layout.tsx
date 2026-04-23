@@ -5,6 +5,7 @@ import {
   useFonts,
 } from '@expo-google-fonts/inter';
 import { DMSans_400Regular } from '@expo-google-fonts/dm-sans';
+import '@/tasks/backgroundFetch';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import {
   BatchSize,
