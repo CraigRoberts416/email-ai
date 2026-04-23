@@ -271,6 +271,10 @@ export default function Index() {
   const activeUnsubscribePolls = useRef(new Set<string>());
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Tracks messageIds that have been successfully unsubscribed so the
+  // tag on the card can flip from "Unsubscribe" → "Unsubscribed".
+  const [unsubscribedIds, setUnsubscribedIds] = useState<Set<string>>(new Set());
+
   // ── Feed state ────────────────────────────────────────────────────────
   const [feedMessages, setFeedMessages] = useState<MessageRecord[]>([]);
 
@@ -311,9 +315,18 @@ export default function Index() {
   }, []);
 
   // Clear successful jobs quickly, but leave errors around longer so we can read them.
+  // Also permanently record done IDs so the card tag flips to "Unsubscribed".
   useEffect(() => {
     const doneJobs = unsubscribeJobs.filter(j => j.status === 'done');
     if (doneJobs.length === 0) return;
+
+    // Persist the unsubscribed state on the card immediately (survives toast cleanup)
+    setUnsubscribedIds(prev => {
+      const next = new Set(prev);
+      doneJobs.forEach(j => next.add(j.messageId));
+      return next;
+    });
+
     const timer = setTimeout(() => {
       setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'done'));
     }, 5000);
@@ -914,7 +927,7 @@ export default function Index() {
                         : undefined,
                       actionLabel: m.action && !m.actionUrl ? m.action : undefined,
                     }}
-                    tag={m.unsubscribeUrl ? 'Unsubscribe' : undefined}
+                    tag={unsubscribedIds.has(m.messageId) ? 'Unsubscribed' : m.unsubscribeUrl ? 'Unsubscribe' : undefined}
                     loading={m.aiStatus !== 'done'}
                     timestamp={formatRelativeTime(String(m.internalDate))}
                     actions={{
@@ -932,7 +945,7 @@ export default function Index() {
                             console.error('[read] markAsRead failed:', err)
                           )
                         : undefined,
-                      onUnsubscribe: accessToken && m.unsubscribeUrl
+                      onUnsubscribe: accessToken && m.unsubscribeUrl && !unsubscribedIds.has(m.messageId)
                         ? () => {
                             setUnsubscribeJobs(prev => {
                               if (prev.find(j => j.messageId === m.messageId)) return prev;
@@ -996,7 +1009,7 @@ export default function Index() {
                     : undefined,
                   actionLabel: m.action && !m.actionUrl ? m.action : undefined,
                 }}
-                tag={m.unsubscribeUrl ? 'Unsubscribe' : undefined}
+                tag={unsubscribedIds.has(m.messageId) ? 'Unsubscribed' : m.unsubscribeUrl ? 'Unsubscribe' : undefined}
                 loading={false}
                 timestamp={formatRelativeTime(String(m.internalDate))}
                 actions={{
@@ -1009,7 +1022,7 @@ export default function Index() {
                     feed_mode: 'all_mail',
                     current_screen: 'all_mail',
                   }),
-                  onUnsubscribe: accessToken && m.unsubscribeUrl
+                  onUnsubscribe: accessToken && m.unsubscribeUrl && !unsubscribedIds.has(m.messageId)
                     ? () => {
                         setUnsubscribeJobs(prev => {
                           if (prev.find(j => j.messageId === m.messageId)) return prev;
