@@ -264,7 +264,7 @@ export default function Index() {
     activeUnsubscribePolls.current.add(messageId);
 
     try {
-      const deadline = Date.now() + 90_000;
+      const deadline = Date.now() + 180_000;
 
       while (Date.now() < deadline) {
         const status = await fetchUnsubscribeStatus(token, messageId);

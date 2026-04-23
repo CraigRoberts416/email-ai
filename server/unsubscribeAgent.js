@@ -440,13 +440,19 @@ async function generateMessage(openai, tone, situation, pageContext = '') {
     const prompt = [
       tone ?? '',
       '',
-      'Write a single short status message (under 12 words) to show the user in a toast notification.',
-      `Situation: ${situation}`,
-      pageContext ? `Page context: ${pageContext}` : '',
-      'Return only the message text, nothing else.',
+      'Write one short toast notification message (under 12 words).',
+      'Be specific about what is actually happening. Be playful — wit over blandness.',
+      'No filler words. No "I am". No corporate speak. Just the thing.',
+      `What is happening: ${situation}`,
+      pageContext ? `Page: ${pageContext}` : '',
+      'Return only the message text.',
     ].filter(Boolean).join('\n');
-    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
-    return response.output_text?.trim() || situation;
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 40,
+    });
+    return response.choices[0]?.message?.content?.trim() || situation;
   } catch {
     return situation;
   }
@@ -688,13 +694,14 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
         return { status: 'error', message: manualMsg };
       }
 
+      const actionLabel = choice.candidate ? truncate(describeAction(choice.candidate), 40) : 'next step';
       const clickMsg = choice.message
-        ?? await generateMessage(openai, tone, `clicking ${choice.candidate ? describeAction(choice.candidate) : 'next element'} on ${senderName}'s unsubscribe page`, snapshot.title);
+        ?? await generateMessage(openai, tone, `clicking "${actionLabel}" to unsubscribe from ${senderName}`, snapshot.title);
       emit('clicking', clickMsg);
       page = await clickAction(page, choice.candidate);
       history.push({ signature: normalizeText(`${choice.candidate.text} ${choice.candidate.href}`) });
 
-      const verifyMsg = await generateMessage(openai, tone, `just clicked something on ${senderName}'s page, checking if it worked`, snapshot.title);
+      const verifyMsg = await generateMessage(openai, tone, `just clicked "${actionLabel}" on ${senderName}'s page — checking if the unsubscribe went through`, snapshot.title);
       emit('verifying', verifyMsg);
       const postClickSnapshot = await snapshotPage(page);
       if (detectSuccess(postClickSnapshot)) {
