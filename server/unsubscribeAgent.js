@@ -651,7 +651,8 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
         emit('analyzing', `Taking a closer look at ${senderName}'s page…`);
         const visionChoice = await chooseActionWithVision(page, senderName, openai);
         if (visionChoice?.action === 'click' && visionChoice.x != null && visionChoice.y != null) {
-          emit('clicking', `Spotted something — clicking it now…`);
+          const visionClickMsg = await generateMessage(openai, tone, visionChoice.reason || `clicking a button on ${senderName}'s page`, snapshot.title);
+          emit('clicking', visionClickMsg);
           await page.mouse.click(visionChoice.x, visionChoice.y);
           await settlePage(page);
           const afterSnapshot = await snapshotPage(page);
@@ -688,15 +689,17 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
       }
 
       const clickMsg = choice.message
-        ?? (choice.candidate ? `Clicking "${truncate(describeAction(choice.candidate), 30)}"…` : 'Clicking…');
+        ?? await generateMessage(openai, tone, `clicking ${choice.candidate ? describeAction(choice.candidate) : 'next element'} on ${senderName}'s unsubscribe page`, snapshot.title);
       emit('clicking', clickMsg);
       page = await clickAction(page, choice.candidate);
       history.push({ signature: normalizeText(`${choice.candidate.text} ${choice.candidate.href}`) });
 
-      emit('verifying', 'Checking if that did it…');
+      const verifyMsg = await generateMessage(openai, tone, `just clicked something on ${senderName}'s page, checking if it worked`, snapshot.title);
+      emit('verifying', verifyMsg);
       const postClickSnapshot = await snapshotPage(page);
       if (detectSuccess(postClickSnapshot)) {
-        return { status: 'done', message: 'Done ✓' };
+        const doneMsg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, postClickSnapshot.title);
+        return { status: 'done', message: doneMsg };
       }
     }
 
