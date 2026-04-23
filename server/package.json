@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers playwright install chromium",
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=.playwright-browsers playwright install chromium && playwright install-deps chromium",
     "start": "node index.js",
     "dev": "node index.js"
   },
