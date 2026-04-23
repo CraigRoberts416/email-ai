@@ -1009,7 +1009,20 @@ export default function Index() {
                     current_screen: 'inbox',
                     ai_status: m.aiStatus,
                   });
-                  router.push(`/email/${m.messageId}` as any);
+                  router.push({
+                    pathname: '/email/[messageId]',
+                    params: {
+                      messageId: m.messageId,
+                      fromName: m.fromName,
+                      fromEmail: m.fromEmail,
+                      avatarUri: m.avatarUri ?? '',
+                      avatarFallbackText: m.avatarFallbackText,
+                      subject: m.subject,
+                      summary: m.summary ?? '',
+                      snippet: m.snippet,
+                      internalDate: String(m.internalDate),
+                    },
+                  } as any);
                 }}
               >
                 {!m.fromName ? (
@@ -1097,7 +1110,20 @@ export default function Index() {
                   current_screen: 'all_mail',
                   interpreted: m.interpreted ?? false,
                 });
-                router.push(`/email/${m.messageId}` as any);
+                router.push({
+                  pathname: '/email/[messageId]',
+                  params: {
+                    messageId: m.messageId,
+                    fromName: m.fromName,
+                    fromEmail: m.fromEmail,
+                    avatarUri: m.avatarUri ?? '',
+                    avatarFallbackText: m.avatarFallbackText,
+                    subject: m.subject,
+                    summary: m.summary ?? '',
+                    snippet: m.snippet,
+                    internalDate: String(m.internalDate),
+                  },
+                } as any);
               }}
             >
               <EmailCard
