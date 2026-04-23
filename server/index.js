@@ -892,7 +892,7 @@ app.post('/unsubscribe', async (req, res) => {
   try {
     await ensurePlaywrightChromium();
     const { chromium } = require('playwright');
-    browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
     const result = await runUnsubscribeAgent({
       browser,
       unsubscribeUrl,
