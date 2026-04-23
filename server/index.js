@@ -819,6 +819,11 @@ app.get('/test-ai', async (req, res) => {
   }
 });
 
+// Unsubscribe copy — status messages shown to the user during the flow
+const unsubscribeCopy = {
+  queuedMessage: (step = 1) => step === 1 ? 'Getting ready to unsubscribe…' : 'Sending unsubscribe request…',
+};
+
 // Unsubscribe — launch headless browser to complete unsubscribe flow
 app.post('/unsubscribe', async (req, res) => {
   const userId = await resolveUserId(req);
