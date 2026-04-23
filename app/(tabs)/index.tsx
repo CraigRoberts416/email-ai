@@ -10,7 +10,7 @@ import * as Notifications from 'expo-notifications';
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Linking, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Linking, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { DdRum, RumActionType } from '@datadog/mobile-react-native';
 import { registerBackgroundFetch } from '@/tasks/backgroundFetch';
 
@@ -1004,12 +1004,18 @@ export default function Index() {
             return (
               <Pressable
                 onPress={() => {
+                  Alert.alert('STEP 1', 'onPress fired on feed card');
                   DdRum.addAction(RumActionType.TAP, 'card_tapped', {
                     feed_mode: 'feed',
                     current_screen: 'inbox',
                     ai_status: m.aiStatus,
                   });
-                  router.push(`/email/${m.messageId}` as any);
+                  try {
+                    router.push('/test' as any);
+                    Alert.alert('STEP 2', 'router.push("/test") returned without throwing');
+                  } catch (e: any) {
+                    Alert.alert('ERROR', `router.push threw: ${e?.message ?? String(e)}`);
+                  }
                 }}
               >
                 {!m.fromName ? (
@@ -1092,12 +1098,18 @@ export default function Index() {
           return (
             <Pressable
               onPress={() => {
+                Alert.alert('STEP 1', 'onPress fired on all-mail card');
                 DdRum.addAction(RumActionType.TAP, 'card_tapped', {
                   feed_mode: 'all_mail',
                   current_screen: 'all_mail',
                   interpreted: m.interpreted ?? false,
                 });
-                router.push(`/email/${m.messageId}` as any);
+                try {
+                  router.push('/test' as any);
+                  Alert.alert('STEP 2', 'router.push("/test") returned without throwing');
+                } catch (e: any) {
+                  Alert.alert('ERROR', `router.push threw: ${e?.message ?? String(e)}`);
+                }
               }}
             >
               <EmailCard
