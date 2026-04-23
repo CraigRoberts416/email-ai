@@ -7,6 +7,7 @@ import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
 import * as Notifications from 'expo-notifications';
+import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Linking, Platform, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
@@ -327,6 +328,7 @@ function formatRelativeTime(dateStr: string): string {
 // ─── Screen ───────────────────────────────────────────────────────────────
 
 export default function Index() {
+  const router = useRouter();
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userName, setUserName] = useState('');
   const [recap, setRecap] = useState<RecapData | null>(null);
@@ -1001,11 +1003,14 @@ export default function Index() {
           if (activeTab === 'feed') {
             return (
               <Pressable
-                onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
-                  feed_mode: 'feed',
-                  current_screen: 'inbox',
-                  ai_status: m.aiStatus,
-                })}
+                onPress={() => {
+                  DdRum.addAction(RumActionType.TAP, 'card_tapped', {
+                    feed_mode: 'feed',
+                    current_screen: 'inbox',
+                    ai_status: m.aiStatus,
+                  });
+                  router.push(`/email/${m.messageId}` as any);
+                }}
               >
                 {!m.fromName ? (
                   <EmailCardSkeleton />
@@ -1086,11 +1091,14 @@ export default function Index() {
           const body     = m.summary || (m.snippet ? m.snippet + ' See more...' : null);
           return (
             <Pressable
-              onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
-                feed_mode: 'all_mail',
-                current_screen: 'all_mail',
-                interpreted: m.interpreted ?? false,
-              })}
+              onPress={() => {
+                DdRum.addAction(RumActionType.TAP, 'card_tapped', {
+                  feed_mode: 'all_mail',
+                  current_screen: 'all_mail',
+                  interpreted: m.interpreted ?? false,
+                });
+                router.push(`/email/${m.messageId}` as any);
+              }}
             >
               <EmailCard
                 sender={{

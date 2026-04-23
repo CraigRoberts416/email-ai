@@ -71,6 +71,11 @@ export const InterFonts = {
   medium:  'Inter_500Medium',
 } as const;
 
+// DM Sans as loaded by @expo-google-fonts/dm-sans in app/_layout.tsx
+export const DmSansFonts = {
+  regular: 'DMSans_400Regular',
+} as const;
+
 // Matches Figma spacing variables (px)
 export const Spacing = {
   none: 0,
