@@ -1,4 +1,4 @@
-const MAX_STEPS = 6;
+const MAX_STEPS = 10;
 const MAX_BODY_TEXT = 4000;
 const MAX_ACTIONS_FOR_AI = 12;
 
@@ -78,11 +78,11 @@ const SUCCESS_PATTERNS = [
 ];
 
 const MANUAL_PATTERNS = [
-  { pattern: /\bcaptcha\b/i, message: 'Unsubscribe page needs a captcha' },
-  { pattern: /\bi am not a robot\b/i, message: 'Unsubscribe page needs a captcha' },
-  { pattern: /\bsign in\b/i, message: 'Unsubscribe page requires a login' },
-  { pattern: /\blog in\b/i, message: 'Unsubscribe page requires a login' },
-  { pattern: /\bpassword\b/i, message: 'Unsubscribe page requires a login' },
+  { pattern: /\bcaptcha\b/i, message: 'They want proof you\'re human — needs a manual click' },
+  { pattern: /\bi am not a robot\b/i, message: 'They want proof you\'re human — needs a manual click' },
+  { pattern: /\bsign in\b/i, message: 'They\'re asking you to log in — can\'t do that for you' },
+  { pattern: /\blog in\b/i, message: 'They\'re asking you to log in — can\'t do that for you' },
+  { pattern: /\bpassword\b/i, message: 'They\'re asking you to log in — can\'t do that for you' },
 ];
 
 const EMAIL_FIELD_PATTERNS = [
@@ -575,10 +575,20 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
 
       const choice = await chooseNextAction(snapshot, history, openai, tone);
       if (!choice) {
-        if (pageLooksRecoverable(snapshot)) {
-          return { status: 'error', message: 'Their unsubscribe page looks busted, and the backup route was not safe to click' };
+        // Scroll down and try once more before giving up
+        const scrolled = await page.evaluate(() => {
+          const before = window.scrollY;
+          window.scrollBy(0, 600);
+          return window.scrollY !== before;
+        });
+        if (scrolled) {
+          await page.waitForTimeout(800);
+          continue;
         }
-        return { status: 'error', message: 'Could not find a safe unsubscribe action' };
+        if (pageLooksRecoverable(snapshot)) {
+          return { status: 'error', message: 'Their page is broken and the backup link felt risky' };
+        }
+        return { status: 'error', message: 'Their page has us stumped — nothing obvious to click' };
       }
 
       if (choice.action === 'done') {
@@ -607,7 +617,7 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
       return { status: 'done', message: 'Done ✓' };
     }
 
-    return { status: 'error', message: 'Reached the unsubscribe page but could not finish the flow' };
+    return { status: 'error', message: 'Made it to their page but hit a dead end' };
   } finally {
     await context.close().catch(() => {});
   }
