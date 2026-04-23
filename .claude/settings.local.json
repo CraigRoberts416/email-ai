@@ -31,10 +31,14 @@
       "Bash(ls /Users/craigroberts/email-ai/server/*.js)",
       "Bash(npx playwright:*)",
       "Bash(npm run:*)",
-      "Bash(git log *)",
-      "Bash(gh pr create --title 'Fix startup UX: instant feed from cache, working recap, clean auth state' --body ' *)",
-      "Bash(brew install *)",
-      "Bash(gh auth *)"
+      "Bash(gh pr create --title 'Add Open Email screen with hero image, thread cards, and AI chat' --body ' *)",
+      "Bash(gh auth *)",
+      "Bash(git fetch *)",
+      "Bash(git merge *)",
+      "Bash(git stash *)",
+      "Bash(gh pr *)",
+      "Bash(git restore *)",
+      "Bash(python3 -m json.tool)"
     ]
   }
 }

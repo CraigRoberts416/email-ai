@@ -1,4 +1,3 @@
-import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import {
@@ -259,26 +258,11 @@ export default function OpenEmailScreen() {
 
             {/* ── Hero ──────────────────────────────────────────────── */}
             <View style={styles.hero}>
-              {hasHeroImage ? (
-                <>
-                  <Image
-                    source={{ uri: params.heroImageUrl }}
-                    style={StyleSheet.absoluteFill}
-                    resizeMode="cover"
-                  />
-                  <LinearGradient
-                    colors={['transparent', bgColor]}
-                    style={StyleSheet.absoluteFill}
-                    start={{ x: 0.5, y: 0.3 }}
-                    end={{ x: 0.5, y: 1 }}
-                  />
-                </>
-              ) : (
-                <LinearGradient
-                  colors={['rgba(255,255,255,0.15)', 'rgba(255,255,255,0)']}
+              {hasHeroImage && (
+                <Image
+                  source={{ uri: params.heroImageUrl }}
                   style={StyleSheet.absoluteFill}
-                  start={{ x: 0.5, y: 0 }}
-                  end={{ x: 0.5, y: 1 }}
+                  resizeMode="cover"
                 />
               )}
             </View>
