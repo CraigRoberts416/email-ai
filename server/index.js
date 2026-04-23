@@ -823,7 +823,7 @@ app.post('/session-recap', async (req, res) => {
   const attentionCards = cards.filter(c => c.requiresAttention === true);
   const requireAttention = attentionCards.length;
   const formatCards = (arr) =>
-    arr.map(c => `- From: ${c.senderName} | Subject: ${c.subject} | Summary: ${c.summary}${c.action ? ` | Action: ${c.action}` : ''}`).join('\n') || '(none)';
+    arr.map(c => `- From: ${c.fromName || c.fromEmail} | Subject: ${c.subject} | Summary: ${c.summary ?? c.snippet}${c.action ? ` | Action: ${c.action}` : ''}`).join('\n') || '(none)';
 
   const prompt = renderPrompt(PROMPTS.sessionRecap, {
     timeOfDay: timeOfDay ?? 'morning', userName: userName ?? '',
