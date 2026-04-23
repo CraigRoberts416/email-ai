@@ -898,15 +898,14 @@ app.post('/unsubscribe', async (req, res) => {
     await ensurePlaywrightChromium();
     const { chromium } = require('playwright');
     browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-    const result = await runUnsubscribeAgent({
-      browser,
-      unsubscribeUrl,
-      userEmail,
-      emit,
-      openai,
-      senderName,
-      tone: TONE,
-    });
+
+    let result = await runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone: TONE });
+
+    if (result.status === 'error' && result.retryable) {
+      emit('navigating', `Taking another run at it…`);
+      result = await runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone: TONE });
+    }
+
     emit(result.status, result.message);
   } catch (err) {
     console.error('[unsubscribe] browser error:', err.message);

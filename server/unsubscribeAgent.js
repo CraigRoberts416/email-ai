@@ -628,7 +628,7 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
       const blocker = detectManualBlocker(snapshot);
       if (blocker) {
         const msg = await generateMessage(openai, tone, blocker, snapshot.title);
-        return { status: 'error', message: msg };
+        return { status: 'error', message: msg, retryable: false };
       }
 
       await maybeFillFields(page, snapshot, userEmail, emit);
@@ -674,15 +674,15 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
         }
         if (visionChoice?.action === 'manual') {
           const msg = await generateMessage(openai, tone, visionChoice.reason || `${senderName}'s page requires manual action`, snapshot.title);
-          return { status: 'error', message: msg };
+          return { status: 'error', message: msg, retryable: false };
         }
 
         if (pageLooksRecoverable(snapshot)) {
           const msg = await generateMessage(openai, tone, `${senderName}'s unsubscribe page appears broken and no safe fallback link was found`, snapshot.title);
-          return { status: 'error', message: msg };
+          return { status: 'error', message: msg, retryable: true };
         }
         const msg = await generateMessage(openai, tone, `could not find a way to unsubscribe from ${senderName} on this page`, snapshot.title);
-        return { status: 'error', message: msg };
+        return { status: 'error', message: msg, retryable: true };
       }
 
       if (choice.action === 'done') {
@@ -691,7 +691,7 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
 
       if (choice.action === 'manual') {
         const manualMsg = await generateMessage(openai, tone, choice.reason || `${senderName}'s unsubscribe page requires manual action`, snapshot.title);
-        return { status: 'error', message: manualMsg };
+        return { status: 'error', message: manualMsg, retryable: false };
       }
 
       const actionLabel = choice.candidate ? truncate(describeAction(choice.candidate), 40) : 'next step';
@@ -717,7 +717,7 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
     }
 
     const finalMsg = await generateMessage(openai, tone, `reached ${senderName}'s unsubscribe page but could not complete the flow`, finalSnapshot.title);
-    return { status: 'error', message: finalMsg };
+    return { status: 'error', message: finalMsg, retryable: true };
   } finally {
     await context.close().catch(() => {});
   }
