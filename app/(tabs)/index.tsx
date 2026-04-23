@@ -86,12 +86,33 @@ function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> 
   );
 }
 
-async function fetchFeed(accessToken: string): Promise<{ cards: MessageRecord[] }> {
+async function fetchFeed(accessToken: string): Promise<{ cards: MessageRecord[]; recap: RecapData | null }> {
   const res = await fetchWithTimeout(`${FEED_BASE_URL}/feed`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) throw new Error(`/feed returned ${res.status}`);
   return res.json();
+}
+
+async function fetchSessionRecap(
+  accessToken: string,
+  cards: MessageRecord[],
+  userName?: string
+): Promise<RecapData | null> {
+  const hour = new Date().getHours();
+  const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+  try {
+    const res = await fetchWithTimeout(`${FEED_BASE_URL}/session-recap`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cards, userName, timeOfDay }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.recap ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchAllMail(
@@ -266,10 +287,12 @@ function formatRelativeTime(dateStr: string): string {
 export default function Index() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userName, setUserName] = useState('');
-  const [recap] = useState<RecapData | null>(null);
+  const [recap, setRecap] = useState<RecapData | null>(null);
+  const [authRestoring, setAuthRestoring] = useState(true);
   const [uiCopy, setUiCopy] = useState<UiCopy>(DEFAULT_UI_COPY);
   const activeUnsubscribePolls = useRef(new Set<string>());
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recapFetchedRef = useRef(false);
 
   // Tracks messageIds that have been successfully unsubscribed so the
   // tag on the card can flip from "Unsubscribe" → "Unsubscribed".
@@ -370,12 +393,20 @@ export default function Index() {
   const loadFeed = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const { cards } = await fetchFeed(accessToken);
+      const { cards, recap: incomingRecap } = await fetchFeed(accessToken);
       setFeedMessages(cards);
+      AsyncStorage.setItem('feed_cache', JSON.stringify(cards)).catch(() => {});
+      if (incomingRecap) setRecap(incomingRecap);
+      if (cards.length > 0 && !recapFetchedRef.current && !incomingRecap) {
+        recapFetchedRef.current = true;
+        fetchSessionRecap(accessToken, cards, userName || undefined)
+          .then(r => { if (r) setRecap(r); })
+          .catch(() => {});
+      }
     } catch (err) {
       console.warn('[feed] load failed:', err);
     }
-  }, [accessToken]);
+  }, [accessToken, userName]);
 
   useEffect(() => {
     loadFeed();
@@ -691,6 +722,8 @@ export default function Index() {
         }
       } catch (err) {
         console.error('[auth] restore error:', err);
+      } finally {
+        setAuthRestoring(false);
       }
     })();
   }, []);
@@ -735,6 +768,17 @@ export default function Index() {
   // Restore user name on launch
   useEffect(() => {
     loadUserName().then(n => { if (n) setUserName(n); });
+  }, []);
+
+  // Hydrate feed from cache before auth finishes so emails appear instantly on open
+  useEffect(() => {
+    AsyncStorage.getItem('feed_cache').then(raw => {
+      if (!raw) return;
+      try {
+        const cached = JSON.parse(raw);
+        setFeedMessages(cached);
+      } catch {}
+    });
   }, []);
 
   // Set initial RUM attributes when the screen mounts.
@@ -836,17 +880,22 @@ export default function Index() {
   const listHeader = (
     <>
       {recap && <InboxRecapHeader recap={recap} inViewLabel={uiCopy.inView} needAttentionLabel={uiCopy.needAttention} />}
-      <Pressable
-        style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
-        onPress={() => promptAsync()}
-        disabled={!request}
-      >
-        <Text style={styles.connectLabel}>{uiCopy.connectGmail}</Text>
-      </Pressable>
-      {/* DEV ONLY — auth state diagnostic, remove before launch */}
-      <Text style={styles.devStatus}>
-        {accessToken ? `token: live (${accessToken.slice(0, 8)}…)` : 'token: none — tap Connect Gmail to re-authorise'}
-      </Text>
+      {authRestoring && feedMessages.length === 0 && (
+        <>
+          <EmailCardSkeleton />
+          <EmailCardSkeleton />
+          <EmailCardSkeleton />
+        </>
+      )}
+      {!accessToken && !authRestoring && (
+        <Pressable
+          style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
+          onPress={() => promptAsync()}
+          disabled={!request}
+        >
+          <Text style={styles.connectLabel}>{uiCopy.connectGmail}</Text>
+        </Pressable>
+      )}
       {/* ── Surface toggle ──────────────────────────────────────── */}
       <View style={styles.toggle}>
         <Pressable
@@ -1078,12 +1127,6 @@ const styles = StyleSheet.create({
   },
   connectBtnPressed: {
     opacity: 0.6,
-  },
-  devStatus: {
-    ...Typography.bodySm,
-    color: Colors.light.textSecondary,
-    textAlign: 'center',
-    marginBottom: Spacing.lg,
   },
   toggle: {
     flexDirection: 'row',
