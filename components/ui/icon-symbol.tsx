@@ -19,14 +19,19 @@ const MAPPING = {
   'paperplane.fill': 'send',
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
+  'chevron.left': 'chevron-left',
   // ── email card ──
-  'ellipsis':                 'more-horiz',
-  'face.smiling':             'sentiment-satisfied-alt',
-  'arrow.turn.up.left':  'reply',
-  'arrow.turn.up.right': 'forward',
-  'sparkles':                 'auto-awesome',
-  'bookmark':                 'bookmark-border',
-  'trash':                    'delete-outline',
+  'ellipsis':                       'more-horiz',
+  'face.smiling':                   'sentiment-satisfied-alt',
+  'arrow.turn.up.left':             'reply',
+  'arrow.turn.up.right':            'forward',
+  'sparkles':                       'auto-awesome',
+  'bookmark':                       'bookmark-border',
+  'trash':                          'delete-outline',
+  'clock':                          'access-time',
+  'bubble.left.and.bubble.right':   'forum',
+  // ── open email ──
+  'arrow.up.circle':                'arrow-upward',
 } as IconMapping;
 
 /**

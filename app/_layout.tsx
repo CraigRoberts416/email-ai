@@ -4,6 +4,7 @@ import {
   Inter_500Medium,
   useFonts,
 } from '@expo-google-fonts/inter';
+import { DMSans_400Regular } from '@expo-google-fonts/dm-sans';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import {
   BatchSize,
@@ -98,6 +99,7 @@ export default function RootLayout() {
     Inter_300Light,
     Inter_400Regular,
     Inter_500Medium,
+    DMSans_400Regular,
   });
 
   useEffect(() => {
@@ -113,6 +115,7 @@ export default function RootLayout() {
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="email/[messageId]" options={{ headerShown: false }} />
           <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
         </Stack>
         <StatusBar style="auto" />

@@ -16,6 +16,7 @@
   "dependencies": {
     "@datadog/mobile-react-native": "^3.2.0",
     "@datadog/mobile-react-native-session-replay": "^3.2.0",
+    "@expo-google-fonts/dm-sans": "^0.4.2",
     "@expo-google-fonts/inter": "^0.4.2",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -32,6 +33,7 @@
     "expo-font": "~14.0.11",
     "expo-haptics": "~15.0.8",
     "expo-image": "~3.0.11",
+    "expo-linear-gradient": "~15.0.8",
     "expo-linking": "~8.0.11",
     "expo-random": "^14.0.1",
     "expo-router": "~6.0.23",
