@@ -606,6 +606,25 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
           await page.waitForTimeout(800);
           continue;
         }
+
+        // Last resort: use Playwright's text locator to find and click anything
+        // that looks like an unsubscribe button, bypassing the snapshot entirely.
+        // Catches JS-heavy pages (e.g. Google Forms) where DOM scanning misses elements.
+        const textFallback = page.getByRole('button', { name: /unsubscribe|opt.?out|remove me/i })
+          .or(page.locator('[role="button"]').filter({ hasText: /unsubscribe|opt.?out/i }))
+          .first();
+        if (await textFallback.count() > 0) {
+          emit('clicking', `Trying direct click on unsubscribe button…`);
+          await textFallback.click({ timeout: 7_500, force: true }).catch(() => {});
+          await settlePage(page);
+          const afterSnapshot = await snapshotPage(page);
+          if (detectSuccess(afterSnapshot)) {
+            const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, afterSnapshot.title);
+            return { status: 'done', message: msg };
+          }
+          continue;
+        }
+
         if (pageLooksRecoverable(snapshot)) {
           const msg = await generateMessage(openai, tone, `${senderName}'s unsubscribe page appears broken and no safe fallback link was found`, snapshot.title);
           return { status: 'error', message: msg };
