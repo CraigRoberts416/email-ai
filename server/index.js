@@ -607,6 +607,43 @@ app.get('/feed', async (req, res) => {
   }
 });
 
+// Message body — returns the full email body (plain text + raw HTML).
+// Used by the detail screen to render the actual message, not just the snippet.
+app.get('/messages/:messageId/body', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { messageId } = req.params;
+  try {
+    const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
+
+    // Extract plain text + raw HTML directly so the client can choose how to
+    // render. cleanEmailForAI strips all tags and collapses whitespace, which
+    // is useful for AI but destroys paragraph breaks for display.
+    function decodeBody(data) {
+      if (!data) return '';
+      return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    }
+    function extractBody(payload, mimeType) {
+      if (!payload) return '';
+      if (payload.mimeType === mimeType && payload.body?.data) return decodeBody(payload.body.data);
+      for (const part of payload.parts ?? []) {
+        const result = extractBody(part, mimeType);
+        if (result) return result;
+      }
+      return '';
+    }
+
+    const plainText = extractBody(rawMsg.payload, 'text/plain');
+    const htmlRaw   = extractBody(rawMsg.payload, 'text/html');
+
+    res.json({ plainText, htmlRaw });
+  } catch (err) {
+    console.error('[message-body] error:', err.message);
+    res.status(500).json({ error: 'failed to load message body' });
+  }
+});
+
 // Hero image — streams cached per-domain image bytes from DB
 app.get('/hero-image/:domain', async (req, res) => {
   try {
