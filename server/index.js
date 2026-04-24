@@ -23,6 +23,7 @@ const messageStore     = require('./messageStore');
 const gmailSync        = require('./gmailSync');
 const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
+const heroImage        = require('./heroImageGenerator');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const { cleanEmailForAI } = require('./emailCleaner');
 
@@ -565,18 +566,59 @@ app.get('/feed', async (req, res) => {
   try {
     const messages = await messageStore.getUnread(userId);
 
-    // Attach avatar fields (computed server-side)
-    const cards = messages.map(m => ({
-      ...m,
-      avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
-      avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
-      unsubscribeUrl:     m.unsubscribeUrl ?? null,
+    // Collect unique sender domains and look up cached hero assets in parallel.
+    // Missing ones trigger fire-and-forget generation so the next /feed response
+    // (or a pull-to-refresh) will return the image once ready.
+    const domainToSender = new Map();
+    for (const m of messages) {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      if (!domain) continue;
+      if (!domainToSender.has(domain)) domainToSender.set(domain, m.fromName || domain);
+    }
+
+    const heroByDomain = new Map();
+    await Promise.all(Array.from(domainToSender.keys()).map(async domain => {
+      const senderName = domainToSender.get(domain);
+      const cached = await heroImage.getCachedAsset(domain);
+      if (cached) {
+        heroByDomain.set(domain, cached);
+      } else {
+        heroImage.ensureHeroAsset(openai, domain, senderName);
+      }
     }));
+
+    const cards = messages.map(m => {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      const cached = heroByDomain.get(domain) ?? null;
+      return {
+        ...m,
+        avatarUri:          resolveAvatarUri({ sender: { domain } }),
+        avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+        unsubscribeUrl:     m.unsubscribeUrl ?? null,
+        heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
+        heroImageBgColor:   cached?.bgColor ?? null,
+      };
+    });
 
     res.json({ cards });
   } catch (err) {
     console.error('[feed] error:', err.message);
     res.status(500).json({ error: 'feed failed' });
+  }
+});
+
+// Hero image — streams cached per-domain image bytes from DB
+app.get('/hero-image/:domain', async (req, res) => {
+  try {
+    const { domain } = req.params;
+    const asset = await heroImage.getCachedImageBytes(domain);
+    if (!asset) return res.status(404).end();
+    res.setHeader('Content-Type', asset.mime || 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+    res.send(asset.bytes);
+  } catch (err) {
+    console.error('[hero-image] error:', err.message);
+    res.status(500).end();
   }
 });
 
@@ -620,13 +662,37 @@ app.get('/all-mail', async (req, res) => {
     const cursor = req.query.cursor ? Number(req.query.cursor) : undefined;
     const { records, nextCursor } = await messageStore.getAll(userId, { limit: 50, cursor });
 
-    const cards = records.map(m => ({
-      ...m,
-      avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
-      avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
-      interpreted:        m.aiStatus === 'done',
-      unsubscribeUrl:     m.unsubscribeUrl ?? null,
+    const domainToSender = new Map();
+    for (const m of records) {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      if (!domain) continue;
+      if (!domainToSender.has(domain)) domainToSender.set(domain, m.fromName || domain);
+    }
+
+    const heroByDomain = new Map();
+    await Promise.all(Array.from(domainToSender.keys()).map(async domain => {
+      const senderName = domainToSender.get(domain);
+      const cached = await heroImage.getCachedAsset(domain);
+      if (cached) {
+        heroByDomain.set(domain, cached);
+      } else {
+        heroImage.ensureHeroAsset(openai, domain, senderName);
+      }
     }));
+
+    const cards = records.map(m => {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      const cached = heroByDomain.get(domain) ?? null;
+      return {
+        ...m,
+        avatarUri:          resolveAvatarUri({ sender: { domain } }),
+        avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+        interpreted:        m.aiStatus === 'done',
+        unsubscribeUrl:     m.unsubscribeUrl ?? null,
+        heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
+        heroImageBgColor:   cached?.bgColor ?? null,
+      };
+    });
 
     res.json({ cards, nextCursor });
   } catch (err) {

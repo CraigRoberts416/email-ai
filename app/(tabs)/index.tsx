@@ -85,6 +85,8 @@ type MessageRecord = {
   // Computed server-side
   avatarUri:         string | null;
   avatarFallbackText: string;
+  heroImageUrl:      string | null;
+  heroImageBgColor:  string | null;
   // Only on All Mail cards from server
   interpreted?:      boolean;
 };
@@ -1021,6 +1023,8 @@ export default function Index() {
                       summary: m.summary ?? '',
                       snippet: m.snippet,
                       internalDate: String(m.internalDate),
+                      heroImageUrl: m.heroImageUrl ?? '',
+                      heroImageBgColor: m.heroImageBgColor ?? '',
                     },
                   } as any);
                 }}
@@ -1122,6 +1126,8 @@ export default function Index() {
                     summary: m.summary ?? '',
                     snippet: m.snippet,
                     internalDate: String(m.internalDate),
+                    heroImageUrl: m.heroImageUrl ?? '',
+                    heroImageBgColor: m.heroImageBgColor ?? '',
                   },
                 } as any);
               }}
