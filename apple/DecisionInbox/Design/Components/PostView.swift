@@ -34,6 +34,10 @@ struct PostView: View {
     private enum Armed: Equatable { case save, archive }
 
     @State private var pressed = false
+    /// The finger travelled during this touch, so its release is not a tap.
+    /// The scroll view would normally cancel the button for us; running the
+    /// swipe simultaneously is what takes that away, so it is restored here.
+    @State private var dragged = false
     @State private var dx: CGFloat = 0
     @State private var armed: Armed?
     /// Latched on the first sample past 10pt and never revisited, so a swipe
@@ -77,19 +81,19 @@ struct PostView: View {
         // The post slides out of its own row rather than over its neighbours'.
         .clipped()
         .contentShape(.rect)
-        // A custom DragGesture rather than `List.swipeActions`: `List` imposes
-        // row insets, separators and a container fill, and the post's defining
-        // decision is that it is decontained. The platform component's cost
-        // here is a design regression.
+        // NO row-level DragGesture here, in either form. This was measured, not
+        // reasoned about: with the same synthetic drag over the same feed, the
+        // scroll offset reached 4681pt without it and exactly 0 with it —
+        // arbitrated (`.gesture`) AND simultaneous. SwiftUI will not let a
+        // drag on a row coexist with the scroll view's pan; `guard axis ==
+        // .horizontal` stops this handler from acting but never returns the
+        // touch, and there is no API to fail a gesture after the fact. Posts
+        // cover the whole feed, so the feed did not scroll at all.
         //
-        // `.gesture`, NOT `.simultaneousGesture`. A simultaneous drag claims
-        // the touch stream alongside the scroll view, which stops the scroll
-        // from cancelling the reading surface's button — so every vertical
-        // scroll also fired it and opened a thread. Arbitrated, the scroll
-        // wins vertically and this never starts.
-        .gesture(swipe)
-        // Attached AFTER the drag gesture on purpose. A long press that then
-        // moves cancels the menu's recogniser, so a slow swipe still works.
+        // Swipe-to-file is worth having, but not at the cost of scrolling a
+        // feed. The route back is `List` + `.swipeActions`, where UIKit does
+        // the arbitration properly — a real change, not a modifier. Until
+        // then the action row carries these, which is where the spec had them.
         //
         // No haptic from us: `.contextMenu` fires the system's own lift cue and
         // ours would double it.
@@ -128,6 +132,9 @@ struct PostView: View {
     private var swipe: some Gesture {
         DragGesture(minimumDistance: Move.Swipe.axisLatch, coordinateSpace: .local)
             .onChanged { value in
+                // Any travel at all, on either axis. A vertical drag is a
+                // scroll and must not also count as a tap on release.
+                dragged = true
                 if axis == nil {
                     axis = abs(value.translation.width)
                         > abs(value.translation.height) * Move.Swipe.axisRatio
@@ -157,7 +164,14 @@ struct PostView: View {
                 }
             }
             .onEnded { value in
-                defer { axis = nil; onSwiping(false) }
+                defer {
+                    axis = nil
+                    onSwiping(false)
+                    // Cleared a turn later, never here: the button's action
+                    // fires on this same touch-up, and it has to still see
+                    // that the finger travelled.
+                    Task { @MainActor in dragged = false }
+                }
                 guard axis == .horizontal else { return }
 
                 // Velocity can commit early: a flick is a decision even when
@@ -339,7 +353,7 @@ struct PostView: View {
             // own buttons — a control inside a button's label never receives a
             // tap — and the pressed fill is lifted to the whole row so the
             // ground still changes as one object.
-            Button(action: onOpen) {
+            Button { if !dragged { onOpen() } } label: {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     header
 
@@ -360,13 +374,6 @@ struct PostView: View {
             .buttonStyle(PostPressStyle(pressed: $pressed))
             .accessibilityHidden(true)
 
-            // No action row in the feed. It renders again on the thread — the
-            // screen you actually act from — and here every one of its six
-            // actions already has three routes: swipe, context menu and the
-            // accessibility rotor. At ~52pt on every post it was the largest
-            // unearned block in the design, and removing it leaves the lead's
-            // CTA as the only button in the feed, which is the cheapest
-            // dominance signal available.
             if message.density == .lead, let label = message.actionLabel {
                 CTAButton(label: label) {
                     if let url = message.actionURL { UIApplication.shared.open(url) }
@@ -374,6 +381,25 @@ struct PostView: View {
                 .padding(.horizontal, Metric.gutter)
                 .padding(.top, Space.sm)
             }
+
+            // The footer is in the spec, and taking it out was my call, not the
+            // design's. The argument for removing it — that swipe, the context
+            // menu and the rotor already covered these six — has since lost its
+            // first leg: the swipe had to go because a row-level DragGesture
+            // stops the feed scrolling at all. A long press is a discovery
+            // problem and the rotor is not a route most people have. This is
+            // the only visible way to act on a post without opening it.
+            ActionRow(
+                message: message,
+                onReply: onReply,
+                onDiscuss: onDiscuss,
+                onForward: onForward,
+                onSave: onSave,
+                onArchive: onArchive,
+                onUnsubscribe: onUnsubscribe
+            )
+            .padding(.horizontal, Metric.gutter)
+            .padding(.top, Space.xs)
         }
         .padding(.vertical, Metric.postPaddingY)
     }
@@ -638,6 +664,11 @@ struct PostView: View {
             // clause always begins at the same x — the eye lands in the same
             // place on every row, which is what makes a long list scannable
             // without shrinking the type.
+            //
+            // And it opens. This row had no tap target beyond its avatar, so
+            // every compact post — most of a real feed — was inert: it could
+            // be swiped and long-pressed but not read.
+            Button { if !dragged { onOpen() } } label: {
             HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                 Text(message.sender.displayName.uppercased())
                     .typeStyle(Style.compactSender)
@@ -664,6 +695,11 @@ struct PostView: View {
                     .typeStyle(Style.monoMicro)
                     .foregroundStyle(Ink.tertiary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+            }
+            .buttonStyle(PostPressStyle(pressed: $pressed))
+            .accessibilityHidden(true)
         }
         .padding(.horizontal, Metric.gutter)
         .frame(height: 44)
