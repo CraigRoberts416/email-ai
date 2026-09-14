@@ -76,7 +76,12 @@ async function processNext(userId) {
     console.log(`[worker] done: ${messageId} (user: ${userId.slice(0, 8)}…)`);
   } catch (err) {
     console.error(`[worker] error on ${messageId}:`, err.message);
-    await messageStore.setAiStatus(userId, messageId, 'error');
+    // Counted, not just marked. A message that fails three times is failing
+    // for its own reasons and must stop being re-queued; one that failed
+    // because the mailbox credential was broken deserves another go once it
+    // is fixed. Without the count those two are indistinguishable, and the
+    // difference is whether a retry is free or is a paid model call on loop.
+    await messageStore.failAttempt(userId, messageId);
   }
 
   return true;

@@ -53,6 +53,29 @@ async function runMigrations() {
   await pool.query(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS risk_evidence JSONB
   `);
+
+  // 'error' was a terminal state. getNextToProcess only ever selects 'none'
+  // and 'queued', so a message that failed once was never looked at again —
+  // and when the Google client id was wrong, every fetch failed and 18,828
+  // messages were written off in a batch. Nothing in the product could
+  // recover them, and nothing said so.
+  //
+  // The counter is what makes retrying safe: without it, a message that fails
+  // for its own reasons would be re-queued on every boot forever, and each
+  // attempt is a paid model call.
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS ai_attempts INT NOT NULL DEFAULT 0
+  `);
+
+  // Re-queue only what the feed actually draws on. The rest of that batch is
+  // pre-cutoff backlog going back to 2023 that the product deliberately does
+  // not interpret, and re-queueing it would buy nothing and cost ~19,000
+  // model calls.
+  const { rowCount } = await pool.query(`
+    UPDATE messages SET ai_status = 'none'
+    WHERE ai_status = 'error' AND post_cutoff = TRUE AND ai_attempts < 3
+  `);
+  if (rowCount) console.log(`[db] re-queued ${rowCount} failed post-cutoff message(s)`);
 }
 
 runMigrations().catch(err =>

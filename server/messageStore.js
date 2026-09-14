@@ -129,6 +129,16 @@ async function getNextToProcess(userId) {
   return rows[0]?.message_id ?? null;
 }
 
+/// Marks a failure and counts it in one statement, so the two can never
+/// disagree about how many times this message has been tried.
+async function failAttempt(userId, messageId) {
+  await query(
+    `UPDATE messages SET ai_status = 'error', ai_attempts = ai_attempts + 1
+     WHERE user_id = $1 AND message_id = $2`,
+    [userId, messageId]
+  );
+}
+
 async function setAiStatus(userId, messageId, status) {
   await query(
     'UPDATE messages SET ai_status = $3 WHERE user_id = $1 AND message_id = $2',
@@ -194,7 +204,7 @@ async function getMessageIdsNeedingUnsubscribeBackfill(userId) {
 
 module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
-  getNextToProcess, setAiStatus, setAiField, setAiFields, updateLabelIds,
+  getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, getMessageIdsNeedingUnsubscribeBackfill,
   setRiskVerdict,
 };
