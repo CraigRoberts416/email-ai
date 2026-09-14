@@ -42,3 +42,8 @@ app-example
 /ios
 /android
 .claude/worktrees/
+
+# Xcode
+apple/**/xcuserdata/
+apple/**/*.xcworkspace/xcuserdata/
+DerivedData/
