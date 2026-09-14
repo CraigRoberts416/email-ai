@@ -401,11 +401,15 @@ enum Metric {
     static let iconFile: CGFloat = 15
     static let tapTarget: CGFloat = 44
     static let unreadBar: CGFloat = 2
-    /// A true hairline — one device pixel, not one point. At 1pt a divider is
-    /// three physical pixels on a 3x screen, which is why a feed of them read
-    /// as ruled paper rather than as structure. Linear drops to 0.5px above
-    /// 2dppx for the same reason.
-    static let hairline: CGFloat = 1 / UIScreen.main.scale
+    /// 0.5pt — 1.5 device pixels at 3x, the iOS separator convention.
+    ///
+    /// 1pt was three physical pixels and read as ruled paper. But one device
+    /// pixel (0.33pt) is the other failure: at #EEEEEE it nearly vanishes, and
+    /// a decontained feed has no other structural grammar to fall back on.
+    /// Things 3 answers this by keeping a full 1pt rule and lightening the
+    /// colour instead; here the rule is the only divider there is, so it
+    /// splits the difference and stays visible.
+    static let hairline: CGFloat = 0.5
 
     /// Instagram's proven card shape. Media crops to this unless it is landscape.
     static let mediaAspect: CGFloat = 4.0 / 5.0
