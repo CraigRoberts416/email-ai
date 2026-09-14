@@ -35,7 +35,10 @@ struct RootView: View {
                     await push.requestIfUndecided()
                 }
             } else {
-                OnboardingFlow(auth: auth)
+                // The primer links to "What we store", which is the one thing
+                // worth reading before consenting and was previously only
+                // reachable after connecting — behind the decision it informs.
+                NavigationStack { OnboardingFlow(auth: auth) }
             }
         }
         // One store for the life of the session. Rebuilding it on sign-in
