@@ -101,6 +101,30 @@ actor SSEClient {
         let field: String?
         let chunk: String?
         let value: String?
+
+        enum CodingKeys: String, CodingKey { case type, messageId, field, chunk, value }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            type = try c.decode(String.self, forKey: .type)
+            messageId = try c.decodeIfPresent(String.self, forKey: .messageId)
+            field = try c.decodeIfPresent(String.self, forKey: .field)
+            chunk = try c.decodeIfPresent(String.self, forKey: .chunk)
+
+            // `value` is whatever the field happens to be. requiresAttention
+            // arrives as a JSON boolean, and decoding it as String? threw for
+            // the whole event — so the one field that drives NEEDS YOU was
+            // silently dropped on every message, live.
+            if let text = try? c.decodeIfPresent(String.self, forKey: .value) {
+                value = text
+            } else if let flag = try? c.decodeIfPresent(Bool.self, forKey: .value) {
+                value = flag ? "true" : "false"
+            } else if let number = try? c.decodeIfPresent(Double.self, forKey: .value) {
+                value = String(number)
+            } else {
+                value = nil
+            }
+        }
     }
 
     private static func decode(_ data: Data) -> Event? {

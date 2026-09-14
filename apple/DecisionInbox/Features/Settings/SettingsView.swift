@@ -1,208 +1,214 @@
 import SwiftUI
 
-/// Settings.
+/// `01 · Settings`.
 ///
-/// Grouped by what the user is deciding, not by which subsystem owns it:
-/// what reaches me, what the AI is allowed to do, what you keep. "What we
-/// store" is a screen rather than a paragraph in a policy, because a product
-/// that reads your mail has to be able to answer that question plainly.
+/// Grouped by what the user is deciding, not by which subsystem owns it: which
+/// mailboxes there are, what the app does with them, what you keep.
+///
+/// Every value on the right of a row is computed from something the app
+/// actually knows. None of them is a stored preference dressed up as a fact,
+/// and no row on this screen leads to a switch that does nothing — five of
+/// those shipped here before, two of them privacy settings, and a privacy
+/// switch that does nothing is worse than no switch at all.
 struct SettingsView: View {
     @Environment(FeedStore.self) private var store
-    @AppStorage("feed.groupPromotions") private var groupPromotions = true
-    @AppStorage("feed.showTags") private var showTags = true
-    @AppStorage("ai.interpretOnArrival") private var interpretOnArrival = true
-    @AppStorage("ai.blockRemoteImages") private var blockRemoteImages = true
-    @AppStorage("notify.onlyNeedsYou") private var onlyNeedsYou = true
+    @State private var route: Route?
+    @State private var notifications: NotificationState = .unknown
 
-    var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                Section("MAILBOXES") {
-                    NavigationLink {
-                        MailboxesView()
-                    } label: {
-                        SettingsRowLabel(
-                            title: store.mailboxes.count == 1
-                                ? store.mailboxes.first?.address ?? "Mailboxes"
-                                : "\(store.mailboxes.count) mailboxes",
-                            detail: detail
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Section("THE FEED") {
-                    SettingsToggle(
-                        title: "Group promotions",
-                        detail: "Broadcast mail collapses to one line each.",
-                        isOn: $groupPromotions
-                    )
-                    Rule()
-                    SettingsToggle(
-                        title: "Show mailbox tags",
-                        detail: "Only appears when you have more than one mailbox.",
-                        isOn: $showTags
-                    )
-                }
-
-                Section("THE AI") {
-                    SettingsToggle(
-                        title: "Read mail as it arrives",
-                        detail: "Off means nothing is interpreted until you open the app.",
-                        isOn: $interpretOnArrival
-                    )
-                    Rule()
-                    SettingsToggle(
-                        title: "Block remote images",
-                        detail: "Images in email are read receipts. This stops them firing.",
-                        isOn: $blockRemoteImages
-                    )
-                    Rule()
-                    NavigationLink { StorageView() } label: {
-                        SettingsRowLabel(
-                            title: "What we store",
-                            detail: "Exactly what leaves your phone, and for how long."
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Section("NOTIFICATIONS") {
-                    SettingsToggle(
-                        title: "Only what needs you",
-                        detail: "Receipts, promotions and newsletters stay silent.",
-                        isOn: $onlyNeedsYou
-                    )
-                }
-
-                Section("ABOUT") {
-                    SettingsRow(title: "Version", value: Self.version)
-                }
-
-                Text("DECISION INBOX READS YOUR MAIL SO YOU DO NOT HAVE TO. IT NEVER SENDS ANYTHING WITHOUT YOU.")
-                    .typeStyle(Style.chip)
-                    .foregroundStyle(Ink.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, Metric.gutter)
-                    .padding(.top, Space.xxl)
-                    .padding(.bottom, Space.xxxl)
-            }
-        }
-        .scrollIndicators(.hidden)
-        .background(Ink.surface)
-        .navigationTitle("Settings")
-        .navigationBarTitleDisplayMode(.inline)
+    private enum Route: String, Identifiable, Hashable {
+        case mailboxes, feed, ai, notifications, senders, privacy, about
+        var id: String { rawValue }
     }
 
-    private var detail: String {
+    var body: some View {
+        SettingsScreen(title: "Settings") {
+            SettingsGroup("MAILBOXES")
+            Rule()
+            mailboxes
+            ListRow(
+                title: "Add a mailbox",
+                subtitle: "NO LIMIT",
+                action: { Task { await store.add() } },
+                trailing: { RowArrow() }
+            )
+            .disabled(store.auth.isConnecting)
+            Rule()
+
+            SettingsGroup("THE APP")
+            Rule()
+            SettingsLink(title: "Feed", value: feedValue) { route = .feed }
+            Rule()
+            SettingsLink(title: "AI") { route = .ai }
+            Rule()
+            SettingsLink(title: "Notifications", value: notifications.label) {
+                route = .notifications
+            }
+            Rule()
+            SettingsLink(title: "Senders", value: sendersValue) { route = .senders }
+            Rule()
+
+            SettingsGroup("YOUR DATA")
+            Rule()
+            SettingsLink(title: "Privacy and data") { route = .privacy }
+            Rule()
+            SettingsLink(title: "About", value: Self.version) { route = .about }
+            Rule()
+
+            Text("Decision Inbox reads your mail so you don\u{2019}t have to. Nothing leaves it without you pressing something.")
+                .typeStyle(Style.bodySmall)
+                .foregroundStyle(Ink.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Metric.gutter)
+                .padding(.top, Space.xxl)
+        }
+        .task { notifications = await NotificationState.current() }
+        .navigationDestination(item: $route) { route in
+            switch route {
+            case .mailboxes: MailboxesView()
+            case .feed: SettingsFeedView()
+            case .ai: SettingsAIView()
+            case .notifications: SettingsNotificationsView()
+            case .senders: SettingsSendersView()
+            case .privacy: SettingsPrivacyView()
+            case .about: AboutView()
+            }
+        }
+    }
+
+    // MARK: Mailboxes
+    //
+    // Under four they are listed; past that the group collapses to one row with
+    // stacked tags and a count, per the scale board. Nothing is hidden at
+    // either size — the collapsed row leads to the full list.
+
+    @ViewBuilder
+    private var mailboxes: some View {
+        if store.mailboxes.count > 3 {
+            ListRow(
+                title: "\(store.mailboxes.count) mailboxes",
+                subtitle: collapsedState,
+                action: { route = .mailboxes },
+                leading: { MailboxTagStack(mailboxes: store.mailboxes) },
+                trailing: { RowArrow() }
+            )
+            Rule()
+        } else {
+            ForEach(store.mailboxes) { mailbox in
+                ListRow(
+                    title: mailbox.address,
+                    subtitle: mailbox.stateLabel,
+                    action: { route = .mailboxes },
+                    leading: { MailboxTag(mailbox.tag, size: Metric.avatarRow) },
+                    trailing: { RowArrow() }
+                )
+                Rule()
+            }
+        }
+    }
+
+    private var collapsedState: String {
         let broken = store.needsReconnect.count
-        if broken > 0 { return "\(broken) needs reconnecting" }
-        return store.mailboxes.count == 1 ? "Connected" : "All connected"
+        if broken == 0 { return "ALL CONNECTED" }
+        return broken == 1 ? "1 NEEDS RECONNECTING" : "\(broken) NEED RECONNECTING"
+    }
+
+    // MARK: Values
+    //
+    // Derived, never stored. A settings value that is a preference the app
+    // never reads is the same lie as a switch that does nothing, just quieter.
+
+    /// How many mailboxes the feed is actually drawing from — which is exactly
+    /// what `FeedStore.messages()` filters on.
+    private var feedValue: String? {
+        let total = store.mailboxes.count
+        guard total > 1 else { return nil }
+        let showing = store.mailboxes.count(where: \.includeInUnifiedFeed)
+        return showing == total ? "ALL MAILBOXES" : "\(showing) OF \(total)"
+    }
+
+    /// Receipts the unsubscribe agent has actually produced this session.
+    private var sendersValue: String? {
+        let runs = store.unsubscribes.count
+        return runs == 0 ? nil : "\(runs) UNSUBSCRIBED"
     }
 
     private static var version: String {
         let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = info?["CFBundleVersion"] as? String ?? "1"
-        return "\(short) (\(build))"
+        return info?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
 }
 
-// MARK: - Section
-//
-// A mono label above a hairline-bounded block. Deliberately not `List`: the
-// feed has no inset rounded rows and settings should not teach a second
-// vocabulary for the same product.
+// MARK: - Stacked tags
 
-private struct Section<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
-
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
+/// The collapsed mailboxes row. Four tiles overlapping by a third, each ringed
+/// in the colour of the ground behind it — without the ring the overlap reads
+/// as mud.
+struct MailboxTagStack: View {
+    let mailboxes: [Mailbox]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .typeStyle(Style.kicker)
-                .foregroundStyle(Ink.secondary)
-                .padding(.horizontal, Metric.gutter)
-                .padding(.top, Space.xl)
-                .padding(.bottom, Space.sm)
-            Rule()
-            content
-            Rule()
-        }
-    }
-}
-
-private struct SettingsRowLabel: View {
-    let title: String
-    var detail: String?
-
-    var body: some View {
-        HStack(spacing: Space.md) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .typeStyle(Style.body)
-                    .foregroundStyle(Ink.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let detail {
-                    Text(detail)
-                        .typeStyle(Style.bodySmall)
-                        .foregroundStyle(Ink.secondary)
-                }
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13))
-                .foregroundStyle(Ink.tertiary)
-        }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.vertical, Space.md + 2)
-        .contentShape(.rect)
-    }
-}
-
-// MARK: - What we store
-
-/// Written as answers, not as policy. Each line is a thing a reasonable person
-/// would want to know before handing over a mailbox.
-struct StorageView: View {
-    private let facts: [(String, String)] = [
-        ("Your mail", "Subject, sender and a short snippet are stored so the feed can exist offline. Full bodies are fetched when you open one and are not kept."),
-        ("What the AI reads", "The cleaned text of an email, once, to write the quote and the summary. It is not used to train anything."),
-        ("Your tokens", "Held in the iOS Keychain on this device and on the sync server, so mail can be read while the app is closed. Disconnecting a mailbox deletes them."),
-        ("Unsubscribing", "The agent visits the sender's own page and fills in their form using the address that received the mail. Nothing else is shared."),
-        ("What we never do", "Send, delete, or reply to anything on your behalf. Every send in this app is one you pressed."),
-    ]
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
-                    VStack(alignment: .leading, spacing: Space.sm) {
-                        Text(fact.0.uppercased())
-                            .typeStyle(Style.kicker)
-                            .foregroundStyle(Ink.secondary)
-                        Text(fact.1)
-                            .typeStyle(Style.body)
-                            .foregroundStyle(Ink.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, Metric.gutter)
-                    .padding(.vertical, Space.xl)
-                    Rule()
-                }
+        HStack(spacing: Metric.avatarStackOverlap) {
+            ForEach(mailboxes.prefix(4)) { mailbox in
+                MailboxTag(mailbox.tag, size: Metric.avatarCompact)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
+                            .strokeBorder(Ink.surface, lineWidth: 2)
+                    )
             }
         }
-        .scrollIndicators(.hidden)
-        .background(Ink.surface)
-        .navigationTitle("What we store")
-        .navigationBarTitleDisplayMode(.inline)
+        .accessibilityHidden(true)
     }
+}
+
+// MARK: - About
+
+/// Version, and the two sentences that say what the product is for. Nothing
+/// here is a link to a marketing site the app does not have.
+struct AboutView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        SettingsScreen(title: "About", onBack: { dismiss() }) {
+            SettingsGroup("THIS BUILD")
+            Rule()
+            SettingsFact(title: "Version", value: Self.version)
+            Rule()
+            SettingsFact(title: "Build", value: Self.build)
+            Rule()
+
+            SettingsGroup("WHAT IT IS")
+            SettingsParagraph("Decision Inbox reads your mail as it lands and tells you what each message wants from you, so the deciding happens before you open anything.")
+            SettingsParagraph("The quote on a post is verbatim from the email. The line under it is ours. That difference is the whole product, and it is why one is set in sans and the other in mono.")
+        }
+    }
+
+    private static var version: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    }
+
+    private static var build: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+    }
+}
+
+// MARK: - Mailbox state
+
+extension Mailbox {
+    /// The row sub-label. A stamp, so upper-case mono is right here — and the
+    /// time is the last successful sync, not the age of the newest email.
+    var stateLabel: String {
+        switch status {
+        case .active(let synced):
+            return "SYNCED \(synced.formatted(.dateTime.hour().minute()))"
+        case .needsReconnect:
+            return "NEEDS RECONNECTING"
+        case .paused:
+            return "PAUSED"
+        }
+    }
+}
+
+#Preview {
+    NavigationStack { SettingsView() }
+        .environment(FeedStore(sample: true))
 }

@@ -7,6 +7,10 @@ import SwiftUI
 /// not. Colour carries that step; size does not. Counts sit beside their glyph in mono rather than inside a pill:
 /// a bare count reads as information, a pill reads as a badge demanding
 /// attention.
+///
+/// Every glyph here is a real 44 × 44 target and every one of them does
+/// something. Both were untrue before: the targets were 26.4pt wide at every
+/// type size, and "React" was wired to an empty closure.
 struct ActionRow: View {
     let message: Message
     var onReply: () -> Void = {}
@@ -16,27 +20,53 @@ struct ActionRow: View {
     var onArchive: () -> Void = {}
     var onUnsubscribe: () -> Void = {}
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// Raising every target to a real 44pt makes the row 5 × 44 wide before any
+    /// gaps. With `Space.xl` between them that is 316pt against 361pt of usable
+    /// width — tight, and gone the moment the type grows. The gaps give ground
+    /// before the targets do.
+    private var spacing: CGFloat { typeSize >= .xxxLarge ? Space.md : Space.xl }
+    /// At accessibility sizes no arrangement of five 44pt glyphs fits, so the
+    /// row collapses to one labelled menu rather than clipping, or wrapping
+    /// into something that no longer reads as a footer.
+    private var collapsed: Bool { typeSize >= .accessibility1 }
+
     var body: some View {
-        HStack(spacing: Space.xl) {
+        if collapsed {
+            collapsedMenu
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
+        HStack(spacing: spacing) {
             if message.isPromotion {
                 // Nobody replies to a newsletter, so unsubscribe takes the slot.
-                Button(action: onUnsubscribe) {
+                Button(action: filed(onUnsubscribe)) {
                     HStack(spacing: Space.xs) {
                         Image(systemName: "xmark")
                             .font(.system(size: 13))
                         Text("Unsubscribe")
                             .typeStyle(Style.bodySmall)
+                            .lineLimit(1)
                     }
                     .foregroundStyle(Ink.primary)
                     .padding(.horizontal, Space.md)
                     .padding(.vertical, 6)
                     .overlay(Capsule().strokeBorder(Ink.primary, lineWidth: 1))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TapStyle())
 
                 actOn("sparkles", label: "Discuss", action: onDiscuss)
             } else {
-                actOn("face.smiling", label: "React", action: {})
+                // "React" used to sit here calling an empty closure on every
+                // non-promotional post. A visible control that does nothing is
+                // worse than an absent one, and reactions need a product
+                // decision before they need a motion one — so it is removed
+                // rather than faked. Restoring it is a one-line change.
                 actOn("arrowshape.turn.up.left", label: "Reply", action: onReply)
                 actOn("arrowshape.turn.up.right", label: "Forward", action: onForward)
                 actOn("sparkles", label: "Discuss", action: onDiscuss)
@@ -46,6 +76,30 @@ struct ActionRow: View {
 
             file(message.isSaved ? "bookmark.fill" : "bookmark", label: "Save", action: onSave)
             file("archivebox", label: "Archive", action: onArchive)
+        }
+    }
+
+    private var collapsedMenu: some View {
+        Menu {
+            if message.isPromotion {
+                Button("Unsubscribe", systemImage: "xmark", action: filed(onUnsubscribe))
+            } else {
+                Button("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+                Button("Forward", systemImage: "arrowshape.turn.up.right", action: onForward)
+            }
+            Button("Discuss", systemImage: "sparkles", action: onDiscuss)
+            Button(message.isSaved ? "Unsave" : "Save",
+                   systemImage: message.isSaved ? "bookmark.fill" : "bookmark", action: filed(onSave))
+            Button("Archive", systemImage: "archivebox", action: filed(onArchive))
+        } label: {
+            HStack(spacing: Space.xs) {
+                Text("Actions").typeStyle(Style.bodySmall)
+                Image(systemName: "chevron.down").font(.system(size: 11))
+            }
+            .foregroundStyle(Ink.primary)
+            .frame(minHeight: Metric.tapTarget, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
         }
     }
 
@@ -74,17 +128,37 @@ struct ActionRow: View {
         label: String,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        Button(action: filing(label) ? filed(action) : action) {
             Image(systemName: systemName)
                 .font(.system(size: size))
                 .foregroundStyle(tint)
-                // The glyphs differ in size, so the row is kept even by the
-                // tap target rather than by the artwork.
-                .frame(minWidth: Metric.tapTarget * 0.6, minHeight: Metric.tapTarget, alignment: .leading)
+                // Was `tapTarget * 0.6` — 26.4pt, under the 44pt minimum at
+                // every type size rather than only the large ones.
+                .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget, alignment: .leading)
                 .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TapStyle())
         .accessibilityLabel(label)
+        // The glyph filling is the entire visible consequence of a save.
+        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace.offUp))
+        .animation(Move.resolved(Move.crisp, reduceMotion), value: message.isSaved)
+    }
+
+    private func filing(_ label: String) -> Bool {
+        label == "Save" || label == "Archive" || label == "Unsubscribe"
+    }
+
+    /// H3 / H4 — save, archive and unsubscribe all mean "that state now
+    /// holds", so they share one cue. Save in particular is the one state
+    /// change in the product with no visual consequence beyond a 17pt glyph
+    /// filling: no navigation, no removal, no receipt. Touch is carrying real
+    /// information there.
+    ///
+    /// Reply, Forward and Discuss open something instead, and the screen
+    /// changing is their feedback — a cue on every navigation is the canonical
+    /// over-buzz.
+    private func filed(_ action: @escaping () -> Void) -> () -> Void {
+        { Haptics.commit(); action() }
     }
 }
 
@@ -94,6 +168,8 @@ struct ActionRow: View {
 
 struct QuotedCard: View {
     let quoted: QuotedMessage
+
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
@@ -135,7 +211,8 @@ struct QuotedCard: View {
         .padding(Space.md + 2)
         .overlay(
             RoundedRectangle(cornerRadius: Corner.md, style: .continuous)
-                .strokeBorder(Ink.border, lineWidth: 1)
+                // Structural.
+                .strokeBorder(Ink.rule(contrast == .increased), lineWidth: 1)
         )
     }
 }
@@ -153,40 +230,55 @@ struct AttachmentCarousel: View {
     let attachments: [Attachment]
     var onOpenThread: () -> Void = {}
 
-    @State private var page = 0
+    /// The dots used to read 1/N forever: `page` was declared and never
+    /// written, and `.viewAligned` had no position binding. An indicator
+    /// stating something false is worse than no indicator.
+    @State private var scrolledID: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var page: Int { scrolledID ?? 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: Space.sm) {
-                    ForEach(attachments) { attachment in
-                        AttachmentTile(attachment: attachment)
+                    ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
+                        AttachmentTile(attachment: attachment).id(index)
                     }
-                    OpenThreadTile(action: onOpenThread)
+                    OpenThreadTile(action: onOpenThread).id(attachments.count)
                 }
                 .padding(.horizontal, Metric.gutter)
                 .scrollTargetLayout()
             }
             .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $scrolledID)
 
             HStack(spacing: Space.xs + 2) {
                 ForEach(0..<(attachments.count + 1), id: \.self) { index in
                     Circle()
-                        .fill(index == page ? Ink.primary : Ink.border)
+                        .fill(index == page ? Ink.primary : Ink.rule(contrast == .increased))
                         .frame(width: 5, height: 5)
                 }
                 Spacer(minLength: 0)
                 Text("\(page + 1)/\(attachments.count + 1)")
                     .typeStyle(Style.chip)
                     .foregroundStyle(Ink.secondary)
+                    .monospacedDigit()
             }
             .padding(.horizontal, Metric.gutter)
+            // No haptic on a page change. A flicked carousel is continuous and
+            // frequent, and the dots already carry it — a detented picker would
+            // earn `Haptics.detent()`; this does not.
+            .animation(Move.resolved(Move.crisp, reduceMotion), value: page)
         }
     }
 }
 
 struct AttachmentTile: View {
     let attachment: Attachment
+
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         VStack(spacing: 0) {
@@ -203,6 +295,10 @@ struct AttachmentTile: View {
                 }
             }
             .frame(width: Metric.carouselTile)
+            // A floor rather than a fixed share: the footer sizes itself at
+            // accessibility sizes and the preview takes whatever is left,
+            // instead of the filename clipping against a hard 375pt tile.
+            .frame(minHeight: Metric.carouselTileHeight * 0.5)
             .frame(maxHeight: .infinity)
             .clipped()
 
@@ -210,7 +306,8 @@ struct AttachmentTile: View {
                 Text(attachment.filename)
                     .typeStyle(Style.bodySmall)
                     .foregroundStyle(Ink.primary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
                 Text(attachment.sizeLabel.uppercased())
                     .typeStyle(Style.chip)
                     .foregroundStyle(Ink.secondary)
@@ -221,12 +318,14 @@ struct AttachmentTile: View {
             .background(Ink.surface)
             .overlay(alignment: .top) { Rule() }
         }
-        .frame(width: Metric.carouselTile, height: Metric.carouselTileHeight)
+        .frame(width: Metric.carouselTile)
+        .frame(minHeight: Metric.carouselTileHeight)
         .background(Ink.surfaceTertiary)
         .clipShape(RoundedRectangle(cornerRadius: Corner.md, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Corner.md, style: .continuous)
-                .strokeBorder(Ink.border, lineWidth: 1)
+                // Structural.
+                .strokeBorder(Ink.rule(contrast == .increased), lineWidth: 1)
         )
     }
 }

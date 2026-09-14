@@ -12,6 +12,8 @@ struct AvatarView: View {
     /// a faded avatar, because opacity is not a contrast channel.
     var dimmed: Bool = false
 
+    @Environment(\.colorSchemeContrast) private var contrast
+
     private var corner: CGFloat {
         // Circles crop logos badly and read as people, so brands get a tile.
         sender.kind == .brand ? size * 0.25 : size / 2
@@ -36,8 +38,13 @@ struct AvatarView: View {
         }
         .frame(width: size, height: size)
         .clipShape(shape)
-        .overlay(shape.strokeBorder(Ink.border, lineWidth: 1))
+        // Structural — this ring is what makes twenty unrelated brand grounds
+        // read as one system, so it strengthens with every other structural
+        // line under Increase Contrast.
+        .overlay(shape.strokeBorder(Ink.rule(contrast == .increased), lineWidth: 1))
         .opacity(dimmed ? 0.55 : 1)
+        // Avatars stay at their token size and do not scale with Dynamic Type.
+        // An avatar is an image, not text.
         .accessibilityHidden(true)
     }
 
@@ -58,11 +65,21 @@ struct AvatarStack: View {
     let senders: [Sender]
     var size: CGFloat = Metric.avatarPill
     var ringColor: Color = Ink.surface
-    var max: Int = 3
+    /// Was a hardcoded 3 beside a `Move.Pill.maxAvatars` token that nothing
+    /// read. One number, one home.
+    var max: Int = Move.Pill.maxAvatars
+    /// Avatars enter one after another only where the set is small, ordered
+    /// and user-summoned — the new-posts pill. Three items with a clear order
+    /// is exactly the case where a stagger is legitimate; a stagger over an
+    /// unbounded batch is the waterfall tax.
+    var staggered = false
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
 
     var body: some View {
         HStack(spacing: -(size * 0.4)) {
-            ForEach(senders.prefix(max)) { sender in
+            ForEach(Array(senders.prefix(max).enumerated()), id: \.element.id) { index, sender in
                 AvatarView(sender: sender, size: size)
                     .overlay(
                         RoundedRectangle(
@@ -71,8 +88,17 @@ struct AvatarStack: View {
                         )
                         .strokeBorder(ringColor, lineWidth: 2)
                     )
+                    .opacity(staggered && !shown ? 0 : 1)
+                    .animation(
+                        // Reduce Motion: the whole set lands together.
+                        reduceMotion
+                            ? Move.crossfade
+                            : Move.reveal.delay(Double(index) * Move.Pill.avatarStagger),
+                        value: shown
+                    )
             }
         }
+        .onAppear { shown = true }
         .accessibilityHidden(true)
     }
 }

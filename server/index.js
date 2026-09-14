@@ -25,6 +25,7 @@ const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
 const heroImage        = require('./heroImageGenerator');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
+const unsubscribeCopy  = require('./unsubscribeCopy');
 const { cleanEmailForAI } = require('./emailCleaner');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -124,6 +125,7 @@ const PROMPTS = {
   generateUiCopy:       loadPrompt('generate-ui-copy'),
   discussThread:        loadPrompt('discuss-thread'),
   suggestReply:         loadPrompt('suggest-reply'),
+  detectRiskSignals:    loadPrompt('detect-risk-signals'),
 };
 
 // ─── XML helpers ──────────────────────────────────────────────────────────
@@ -182,28 +184,134 @@ function pruneUnsubscribeStatuses(userId) {
   const now = Date.now();
 
   for (const [messageId, status] of statuses) {
-    const isTerminal = status.status === 'done' || status.status === 'error';
-    if (isTerminal && now - status.updatedAt > TERMINAL_UNSUBSCRIBE_STATUS_TTL_MS) {
+    if (unsubscribeCopy.isTerminal(status.step) && now - status.updatedAt > TERMINAL_UNSUBSCRIBE_STATUS_TTL_MS) {
       statuses.delete(messageId);
     }
   }
 
-  if (statuses.size === 0) unsubscribeStatuses.delete(userId);
+  if (statuses.size === 0) {
+    unsubscribeStatuses.delete(userId);
+    // Only once nothing is still running. A run is registered a beat before
+    // its first status exists, and dropping the registry in that window would
+    // cost it its place in the batch for the rest of its life.
+    if (batchIsFinished(unsubscribeRuns.get(userId))) unsubscribeRuns.delete(userId);
+  }
   return statuses;
 }
 
-function emitUnsubscribeStatus(userId, data) {
-  const statuses = getUnsubscribeStatuses(userId);
-  statuses.set(data.messageId, { ...data, updatedAt: Date.now() });
-  pruneUnsubscribeStatuses(userId);
-  emitSSE(userId, { type: 'unsubscribe-status', ...data });
+// ─── Which sender of the batch ────────────────────────────────────────────
+// The client fires one POST per sender, so a "batch" is simply whatever is in
+// flight at the same time: `index` is this run's place in that set and `total`
+// is its size. The set is dropped once every run in it has resolved, so the
+// next unsubscribe starts again at 1 of 1 rather than counting on from this
+// morning's sweep.
+
+// userId → { runId, senders: Map<messageId, { index, startedAt, resolved }> }
+const unsubscribeRuns = new Map();
+
+function batchIsFinished(batch) {
+  return !batch || Array.from(batch.senders.values()).every(sender => sender.resolved);
 }
 
-function formatUnsubscribeError(err, fallback) {
+function beginUnsubscribeRun(userId, messageId) {
+  let batch = unsubscribeRuns.get(userId);
+  if (batchIsFinished(batch)) {
+    batch = { runId: `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`, senders: new Map() };
+    unsubscribeRuns.set(userId, batch);
+  }
+
+  const existing = batch.senders.get(messageId);
+  if (existing) {
+    existing.startedAt = Date.now();
+    existing.resolved  = false;
+    return existing;
+  }
+
+  const sender = { index: batch.senders.size + 1, startedAt: Date.now(), resolved: false };
+  batch.senders.set(messageId, sender);
+  return sender;
+}
+
+function unsubscribeRunContext(userId, messageId) {
+  const batch  = unsubscribeRuns.get(userId);
+  const sender = batch?.senders.get(messageId);
+  if (!sender) return { runId: null, index: 1, total: 1, elapsedMs: 0 };
+  return {
+    runId:     batch.runId,
+    index:     sender.index,
+    total:     batch.senders.size,
+    elapsedMs: Date.now() - sender.startedAt,
+  };
+}
+
+function resolveUnsubscribeRun(userId, messageId) {
+  const sender = unsubscribeRuns.get(userId)?.senders.get(messageId);
+  if (sender) sender.resolved = true;
+}
+
+/// A thrown error, sized for the run log's evidence column. It never reaches
+/// the tray: a stack-shaped string is the machine talking to itself.
+function describeUnsubscribeError(err) {
   const message = String(err?.message ?? '').replace(/\s+/g, ' ').trim();
-  if (!message) return fallback;
-  if (message.length <= 140) return `${fallback}: ${message}`;
-  return `${fallback}: ${message.slice(0, 139)}…`;
+  if (!message) return 'no detail reported';
+  return message.length <= 160 ? message : `${message.slice(0, 159)}…`;
+}
+
+/// The sentence that ships. The model writes it; this decides whether it is
+/// allowed to. An empty sentence, or one that claims success before the page
+/// was read back, loses to the plain static fallback — `done` is the only
+/// state allowed to use the word "unsubscribed", and claiming it early is the
+/// one lie that kills this feature.
+function unsubscribeMessage(step, message, { senderName, fieldLabel }) {
+  const fallback = unsubscribeCopy.fallbackMessage(step, { senderName, fieldLabel });
+  const text = String(message ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return fallback;
+  if (step !== 'done' && unsubscribeCopy.claimsUnsubscribed(text)) return fallback;
+  return text;
+}
+
+function emitUnsubscribeStatus(userId, data) {
+  // The enum drives the tray's shape, its counter and its progress segments,
+  // so it has to be deterministic. Anything that is not a member of the closed
+  // set is dropped rather than guessed at — the last honest status stays on
+  // screen, which is better than a tray that renders a step nobody defined.
+  const step = unsubscribeCopy.sanitizeStep(data.step ?? data.status);
+  if (!step) {
+    console.warn(`[unsubscribe] dropped status with unknown step: ${JSON.stringify(data.step ?? data.status)}`);
+    return;
+  }
+
+  const { runId, index, total, elapsedMs } = unsubscribeRunContext(userId, data.messageId);
+  if (unsubscribeCopy.isTerminal(step)) resolveUnsubscribeRun(userId, data.messageId);
+
+  // The field counter belongs to FILLING and nowhere else — that is where the
+  // counter switches from sites to fields, because that is what is visibly
+  // happening.
+  const fieldScoped = unsubscribeCopy.counterFor(step) === 'field';
+
+  const payload = {
+    // Ties every event of one batch together in the run log.
+    runId:      data.runId ?? runId,
+    messageId:  data.messageId,
+    senderName: data.senderName ?? null,
+    // `status` is the key the shipped client decodes; `step` is what the
+    // contract calls it. Same value under both, so neither has to be wrong.
+    status:     step,
+    step,
+    message:    unsubscribeMessage(step, data.message, { senderName: data.senderName, fieldLabel: data.fieldLabel }),
+    index:      data.index ?? index,
+    total:      data.total ?? total,
+    fieldIndex: fieldScoped ? (data.fieldIndex ?? null) : null,
+    fieldTotal: fieldScoped ? (data.fieldTotal ?? null) : null,
+    elapsedMs:  data.elapsedMs ?? elapsedMs,
+    // What it saw. Shown in the run log, never in the tray.
+    evidence:   data.evidence ?? null,
+  };
+
+  const statuses = getUnsubscribeStatuses(userId);
+  statuses.set(payload.messageId, { ...payload, updatedAt: Date.now() });
+  pruneUnsubscribeStatuses(userId);
+  emitSSE(userId, { type: 'unsubscribe-status', ...payload });
 }
 
 let playwrightInstallPromise = null;
@@ -386,6 +494,99 @@ async function streamDecideActionSurface(email, messageId, userId) {
     await messageStore.setAiField(userId, messageId, field, value);
     emitSSE(userId, { messageId, type: 'field-complete', field, value });
   }
+}
+
+// ─── Risk signals ─────────────────────────────────────────────────────────
+// The card prints one kicker — POSSIBLE SCAM — and the explainer screen prints
+// the evidence, because a label that only flags teaches nothing while a label
+// that shows its working teaches the user to spot the next one themselves.
+
+const RISK_LEVELS = new Set(['none', 'possible_scam']);
+
+// A closed label set, so the explainer's mono column stays a column. A label
+// the model made up is dropped with its line.
+const RISK_EVIDENCE_LABELS = new Set(['THE DOMAIN', 'THE LINK', 'THE ADDRESS', 'THE DEADLINE', 'THE ASK']);
+
+function parseRiskEvidence(raw) {
+  if (!raw) return [];
+  const seen = new Set();
+  return String(raw)
+    .split('\n')
+    .map(line => {
+      const separator = line.indexOf('::');
+      if (separator === -1) return null;
+      const label = line.slice(0, separator).trim().toUpperCase();
+      const text  = line.slice(separator + 2).replace(/\s+/g, ' ').trim();
+      if (!RISK_EVIDENCE_LABELS.has(label) || !text || seen.has(label)) return null;
+      seen.add(label);
+      return { label, text };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+async function detectRiskSignals(email, messageId, userId) {
+  const prompt = renderPrompt(PROMPTS.detectRiskSignals, {
+    senderName:             email.sender.name,
+    senderEmail:            email.sender.email,
+    senderDomain:           email.sender.domain,
+    replyTo:                email.sender.replyTo ?? '(none)',
+    subject:                email.subject,
+    snippet:                email.snippet,
+    plainText:              email.body.plainText?.slice(0, 1500) ?? '',
+    htmlText:               email.body.htmlText?.slice(0, 1500) ?? '',
+    // Unlike everywhere else, the links go in unfiltered and with their URLs
+    // intact: a mismatch between what a link says and where it goes is the
+    // single most checkable piece of evidence there is, and cleanLinks throws
+    // exactly that away.
+    links:                  (email.signals.structuredLinks ?? [])
+                              .slice(0, 25)
+                              .map(l => `- "${l.text}" → ${l.url}`)
+                              .join('\n') || '(none)',
+    freeMailDomain:         email.signals.freeMailDomain,
+    replyToMismatch:        email.signals.replyToMismatch,
+    suspiciousSubjectHints: JSON.stringify(email.signals.suspiciousSubjectHints),
+    greetingGeneric:        email.signals.greetingGeneric,
+    unsubscribePresent:     email.signals.unsubscribePresent,
+    hasAttachments:         email.signals.hasAttachments,
+  });
+
+  let level    = 'none';
+  let evidence = [];
+
+  try {
+    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+    const text = response.output_text ?? '';
+
+    const rawLevel = (parseXmlField(text, 'riskLevel') ?? '').trim().toLowerCase().replace(/[^a-z_]/g, '');
+    if (RISK_LEVELS.has(rawLevel)) level = rawLevel;
+
+    if (level === 'possible_scam') {
+      evidence = parseRiskEvidence(parseXmlField(text, 'riskEvidence'));
+      // The verdict does not survive without the evidence. A flag we cannot
+      // explain is exactly the false positive on a real bank that the prompt
+      // spends half its length trying to prevent.
+      if (evidence.length === 0) {
+        console.warn(`[risk] ${messageId}: possible_scam with no parseable evidence — downgraded to none`);
+        level = 'none';
+      }
+    }
+  } catch (err) {
+    // Unsure is not a flag, and neither is offline. A failed call means the
+    // card says nothing, never that it says POSSIBLE SCAM.
+    console.warn(`[risk] detection failed for ${messageId}: ${err.message}`);
+    level    = 'none';
+    evidence = [];
+  }
+
+  await messageStore.setRiskVerdict(userId, messageId, { level, evidence });
+  // The client's field-complete envelope decodes `value` as a string, so the
+  // verdict goes over the wire and the evidence rides the card — sending an
+  // array here would make the whole event undecodable and the label would
+  // simply never arrive.
+  emitSSE(userId, { messageId, type: 'field-complete', field: 'riskLevel', value: level });
+
+  return { level, evidence };
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────
@@ -604,6 +805,11 @@ app.get('/feed', async (req, res) => {
         avatarUri:          resolveAvatarUri({ sender: { domain } }),
         avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
         unsubscribeUrl:     m.unsubscribeUrl ?? null,
+        // The card prints the verdict; the explainer screen prints the
+        // evidence. Both travel together so tapping through never has to
+        // wait on a second request to answer "why".
+        riskLevel:          m.riskLevel ?? 'none',
+        riskEvidence:       m.riskEvidence ?? [],
         heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
         heroImageBgColor:   cached?.bgColor ?? null,
       };
@@ -742,6 +948,8 @@ app.get('/all-mail', async (req, res) => {
         avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
         interpreted:        m.aiStatus === 'done',
         unsubscribeUrl:     m.unsubscribeUrl ?? null,
+        riskLevel:          m.riskLevel ?? 'none',
+        riskEvidence:       m.riskEvidence ?? [],
         heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
         heroImageBgColor:   cached?.bgColor ?? null,
       };
@@ -972,11 +1180,6 @@ app.get('/test-ai', async (req, res) => {
   }
 });
 
-// Unsubscribe copy — status messages shown to the user during the flow
-const unsubscribeCopy = {
-  queuedMessage: (step = 1) => step === 1 ? 'Getting ready to unsubscribe…' : 'Sending unsubscribe request…',
-};
-
 // Unsubscribe — launch headless browser to complete unsubscribe flow
 app.post('/unsubscribe', async (req, res) => {
   const userId = await resolveUserId(req);
@@ -996,7 +1199,10 @@ app.post('/unsubscribe', async (req, res) => {
   const senderName = directSenderName || record?.fromName || record?.fromEmail || 'Sender';
   if (!unsubscribeUrl) return res.status(400).json({ error: 'no unsubscribe URL for this message' });
 
-  emitUnsubscribeStatus(userId, { messageId, senderName, status: 'queued', message: unsubscribeCopy.queuedMessage() });
+  // Registered before the first emit so `index` / `total` are populated from
+  // the very first event the tray receives.
+  beginUnsubscribeRun(userId, messageId);
+  emitUnsubscribeStatus(userId, { messageId, senderName, step: 'queued', message: null });
 
   // Acknowledge immediately — status updates flow via SSE
   res.json({ success: true });
@@ -1012,36 +1218,56 @@ app.post('/unsubscribe', async (req, res) => {
   const requestAccessToken = authProfile?.token ?? null;
   const userEmail = authProfile?.profile?.email || user?.email || '';
 
-  const emit = (status, message) =>
-    emitUnsubscribeStatus(userId, { messageId, senderName, status, message });
+  const emit = (step, message, extra = {}) =>
+    emitUnsubscribeStatus(userId, { messageId, senderName, step, message, ...extra });
+
+  // `failed` is the retryable outcome, and the contract says it is auto-retried
+  // once before the user ever sees it. So the first failure is swallowed here.
+  // `no_link` and `needs_you` are not retried: they are standing facts about
+  // their page, and running at them again would only be wrong twice.
+  const runTwiceIfItFails = async (attempt) => {
+    let result = await attempt();
+    if (result.step !== 'failed') return result;
+
+    console.warn(`[unsubscribe] first attempt failed for ${senderName}, retrying once`);
+    emit('navigating', 'Trying that again', { evidence: `retry after: ${result.evidence ?? 'no detail'}` });
+    return attempt();
+  };
 
   // Handle mailto: unsubscribe (send an email, no browser needed)
   if (unsubscribeUrl.startsWith('mailto:')) {
-    emit('navigating', unsubscribeCopy.queuedMessage(2));
-    try {
-      const accessToken = requestAccessToken || await userStore.getValidAccessToken(userId);
-      const mailto = new URL(unsubscribeUrl);
-      const to     = mailto.pathname;
-      const subject = mailto.searchParams.get('subject') ?? 'Unsubscribe';
-      const raw = [
-        `To: ${to}`,
-        `Subject: ${subject}`,
-        'Content-Type: text/plain',
-        '',
-        'Unsubscribe',
-      ].join('\r\n');
-      const encoded = Buffer.from(raw).toString('base64url');
-      const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-        method:  'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ raw: encoded }),
-      });
-      if (!gmailRes.ok) throw new Error(`gmail send failed (${gmailRes.status})`);
-      emit('done', 'Unsubscribe request sent ✓');
-    } catch (err) {
-      console.error('[unsubscribe] mailto error:', err.message);
-      emit('error', formatUnsubscribeError(err, 'Failed to send unsubscribe email'));
-    }
+    const sendUnsubscribeMail = async () => {
+      emit('navigating', 'Sending the mail they ask for');
+      try {
+        const accessToken = requestAccessToken || await userStore.getValidAccessToken(userId);
+        const mailto = new URL(unsubscribeUrl);
+        const to     = mailto.pathname;
+        const subject = mailto.searchParams.get('subject') ?? 'Unsubscribe';
+        const raw = [
+          `To: ${to}`,
+          `Subject: ${subject}`,
+          'Content-Type: text/plain',
+          '',
+          'Unsubscribe',
+        ].join('\r\n');
+        const encoded = Buffer.from(raw).toString('base64url');
+        const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+          method:  'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ raw: encoded }),
+        });
+        if (!gmailRes.ok) throw new Error(`gmail send failed (${gmailRes.status})`);
+        // There is no page to read back here, so the sentence says what was
+        // actually done and stops short of claiming they confirmed anything.
+        return { step: 'done', message: 'Sent it to their unsubscribe address', evidence: `mailto:${to}` };
+      } catch (err) {
+        console.error('[unsubscribe] mailto error:', err.message);
+        return { step: 'failed', message: null, evidence: describeUnsubscribeError(err) };
+      }
+    };
+
+    const result = await runTwiceIfItFails(sendUnsubscribeMail);
+    emit(result.step, result.message, { evidence: result.evidence ?? null });
     return;
   }
 
@@ -1052,17 +1278,17 @@ app.post('/unsubscribe', async (req, res) => {
     const { chromium } = require('playwright');
     browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
 
-    let result = await runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone: TONE });
+    const result = await runTwiceIfItFails(() =>
+      runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName })
+        .catch(err => {
+          console.error('[unsubscribe] agent error:', err.message);
+          return { step: 'failed', message: null, evidence: describeUnsubscribeError(err) };
+        }));
 
-    if (result.status === 'error' && result.retryable) {
-      emit('navigating', `Taking another run at it…`);
-      result = await runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone: TONE });
-    }
-
-    emit(result.status, result.message);
+    emit(result.step, result.message, { evidence: result.evidence ?? null });
   } catch (err) {
     console.error('[unsubscribe] browser error:', err.message);
-    emit('error', formatUnsubscribeError(err, 'Could not complete unsubscribe'));
+    emit('failed', null, { evidence: describeUnsubscribeError(err) });
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
@@ -1234,7 +1460,7 @@ async function runUnsubscribeBackfill(userId) {
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────
 
-processingWorker.init({ streamInterpretEmail, streamDecideActionSurface, emitSSE });
+processingWorker.init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE });
 watchManager.startWatchRenewalCron();
 
 const PORT = process.env.PORT || 3001;

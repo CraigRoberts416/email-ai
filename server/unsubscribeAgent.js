@@ -369,39 +369,48 @@ function chooseSelectOption(field) {
   });
 }
 
-async function maybeFillFields(page, snapshot, userEmail, emit) {
-  let changed = 0;
+/// Works out everything the form needs before a single box is touched.
+///
+/// The counter switches from sites to fields at FILLING because that is what
+/// is visibly happening — and a counter cannot say "field 2 of 4" until it
+/// knows about the 4. So the plan is built in one pass and executed in
+/// another; filling as we discovered fields is what left the tray with a
+/// counter it had nothing to count.
+function planFieldActions(snapshot, userEmail) {
+  const plan = [];
   const handledRadioGroups = new Set();
 
   for (const field of snapshot.fields) {
     if (field.disabled) continue;
     const haystack = normalizeText(`${field.text} ${field.name} ${field.placeholder}`);
-    const locator = page.locator(`[data-unsubscribe-agent-id="${field.id}"]`).first();
 
     if (field.tag === 'input' && (field.type === 'email' || matchesAny(haystack, EMAIL_FIELD_PATTERNS))) {
       if (field.value.toLowerCase() !== userEmail.toLowerCase()) {
-        emit('filling', 'Typing in your email address…');
-        await locator.fill(userEmail, { timeout: 5_000 }).catch(() => {});
-        changed += 1;
+        plan.push({
+          kind: 'email', field, value: userEmail,
+          label: truncate(field.text || field.placeholder || field.name, 40),
+          // Your address is the only thing we ever type.
+          sentence: 'Typing your address',
+        });
       }
       continue;
     }
 
     if ((field.tag === 'textarea' || field.type === 'text') && isSurveyField(field, snapshot) && !field.value) {
       const label = truncate(field.text || field.placeholder || field.name, 40);
-      emit('filling', label ? `Answering: "${label}"…` : 'Filling out the exit survey…');
-      await locator.fill(EXIT_SURVEY_TEXT, { timeout: 5_000 }).catch(() => {});
-      changed += 1;
+      plan.push({
+        kind: 'survey', field, label,
+        sentence: label ? `Answering "${label}"` : 'Answering their exit survey',
+      });
       continue;
     }
 
     if (shouldUncheckField(field, snapshot)) {
       const label = truncate(field.text || field.name, 40);
-      emit('filling', label ? `Unchecking "${label}"…` : 'Unchecking a sneaky box…');
-      await locator.uncheck({ timeout: 5_000 }).catch(async () => {
-        await locator.click({ timeout: 5_000, force: true }).catch(() => {});
+      plan.push({
+        kind: 'uncheck', field, label,
+        sentence: label ? `Unchecking "${label}"` : 'Unchecking a pre-ticked box',
       });
-      changed += 1;
       continue;
     }
 
@@ -409,11 +418,10 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
       if (field.type === 'radio' && field.name && handledRadioGroups.has(field.name)) continue;
       if (shouldSelectField(field, snapshot)) {
         const label = truncate(field.text || field.name, 40);
-        emit('filling', label ? `Selecting "${label}"…` : 'Picking the right option…');
-        await locator.check({ timeout: 5_000 }).catch(async () => {
-          await locator.click({ timeout: 5_000, force: true }).catch(() => {});
+        plan.push({
+          kind: 'check', field, label,
+          sentence: label ? `Selecting "${label}"` : 'Selecting their opt-out option',
         });
-        changed += 1;
         if (field.type === 'radio' && field.name) handledRadioGroups.add(field.name);
       }
       continue;
@@ -423,38 +431,107 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
       const option = chooseSelectOption(field);
       if (option && option.value && option.value !== field.value) {
         const label = truncate(option.text || option.value, 40);
-        emit('filling', label ? `Selecting "${label}"…` : 'Picking the right option…');
-        await locator.selectOption(option.value, { timeout: 5_000 }).catch(() => {});
-        changed += 1;
+        plan.push({
+          kind: 'select', field, option, label,
+          sentence: label ? `Choosing "${label}"` : 'Choosing their opt-out option',
+        });
       }
     }
   }
 
-  if (changed > 0) await settlePage(page);
-  return changed;
+  return plan;
 }
 
-async function generateMessage(openai, tone, situation, pageContext = '') {
-  if (!openai) return situation;
+async function applyFieldAction(page, entry) {
+  const locator = page.locator(`[data-unsubscribe-agent-id="${entry.field.id}"]`).first();
+
+  switch (entry.kind) {
+    case 'email':
+      await locator.fill(entry.value, { timeout: 5_000 }).catch(() => {});
+      return;
+    case 'survey':
+      await locator.fill(EXIT_SURVEY_TEXT, { timeout: 5_000 }).catch(() => {});
+      return;
+    case 'uncheck':
+      await locator.uncheck({ timeout: 5_000 }).catch(async () => {
+        await locator.click({ timeout: 5_000, force: true }).catch(() => {});
+      });
+      return;
+    case 'check':
+      await locator.check({ timeout: 5_000 }).catch(async () => {
+        await locator.click({ timeout: 5_000, force: true }).catch(() => {});
+      });
+      return;
+    case 'select':
+      await locator.selectOption(entry.option.value, { timeout: 5_000 }).catch(() => {});
+      return;
+    default:
+      return;
+  }
+}
+
+async function maybeFillFields(page, snapshot, userEmail, emit) {
+  const plan = planFieldActions(snapshot, userEmail);
+  if (plan.length === 0) return 0;
+
+  for (const [i, entry] of plan.entries()) {
+    emit('filling', entry.sentence, {
+      fieldIndex: i + 1,
+      fieldTotal: plan.length,
+      fieldLabel: entry.label,
+      evidence:   `field ${i + 1}/${plan.length}: ${entry.kind} — ${entry.label || '(unlabelled)'}`,
+    });
+    await applyFieldAction(page, entry);
+  }
+
+  await settlePage(page);
+  return plan.length;
+}
+
+// The rules the live sentence is written under — `09 · Status vocabulary`.
+// Note what is *not* here: the app's tone. Everywhere else the voice is
+// playful, but this line runs up to eleven times per sender, and anything
+// witty is grating by the third sender and suspicious by the tenth. The tray
+// is the one place the app speaks plainly on purpose.
+const SENTENCE_RULES = [
+  'RULES',
+  '- Under 12 words. It renders on one line in a narrow tray; longer wraps, and a wrapping tray jumps while the user is reading it.',
+  '- Present tense, active. It is happening now and the user is watching it happen.',
+  '- Describe what you actually found on their page. Quote the real label the page used — "Answering: Why are you leaving?" beats "Filling out the form", and it proves the agent is really there.',
+  '- No promises. Say what is being done, never what will happen.',
+  '- No personality, no jokes, no exclamation marks, no emoji. This line repeats many times per run.',
+  '- Never use the word "unsubscribed". Only the final confirmed state may claim that, and only after the page has been read back.',
+  '- Do not open with the same words as the previous lines.',
+  '- No surrounding quotes, no trailing full stop.',
+];
+
+/// Writes the live sentence. Returns `null` — never a half-English internal
+/// phrase — when the model is unavailable, so the caller falls through to the
+/// plain static fallback rather than shipping debug text to the tray.
+async function generateMessage(openai, situation, pageContext = '', recent = []) {
+  if (!openai) return null;
   try {
     const prompt = [
-      tone ?? '',
+      'You are writing one line of status for an agent that is on a company\'s website right now, unsubscribing a user from their email.',
+      'Write ONE sentence describing what is happening at this moment.',
       '',
-      'Write one short toast notification message (under 12 words).',
-      'Be specific about what is actually happening. Be playful — wit over blandness.',
-      'No filler words. No "I am". No corporate speak. Just the thing.',
-      `What is happening: ${situation}`,
-      pageContext ? `Page: ${pageContext}` : '',
-      'Return only the message text.',
+      ...SENTENCE_RULES,
+      '',
+      `WHAT IS HAPPENING: ${situation}`,
+      pageContext ? `PAGE: ${pageContext}` : '',
+      recent.length ? `PREVIOUS LINES (do not reuse their opening):\n${recent.map(line => `- ${line}`).join('\n')}` : '',
+      '',
+      'Return only the sentence.',
     ].filter(Boolean).join('\n');
     const response = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 40,
     });
-    return response.choices[0]?.message?.content?.trim() || situation;
+    const text = normalizeText(response.choices[0]?.message?.content ?? '').replace(/^["“']|["”'.]$/g, '');
+    return text || null;
   } catch {
-    return situation;
+    return null;
   }
 }
 
@@ -497,7 +574,7 @@ x and y are pixel coordinates in the screenshot (viewport is 1440×1200).`;
   }
 }
 
-async function chooseActionWithAi(snapshot, history, openai, tone) {
+async function chooseActionWithAi(snapshot, history, openai, recent = []) {
   if (!openai || snapshot.actions.length === 0) return null;
 
   const actions = snapshot.actions.slice(0, MAX_ACTIONS_FOR_AI).map(action => ({
@@ -517,8 +594,6 @@ async function chooseActionWithAi(snapshot, history, openai, tone) {
   }));
 
   const prompt = [
-    tone ?? '',
-    '',
     'You are selecting the next safe browser action to unsubscribe a user from email.',
     'Goal: complete the unsubscribe flow without logging in, resubscribing, or visiting unrelated pages.',
     'Preference centers, surveys, and "tell us why" screens are normal. Continue through them if they help finish the unsubscribe.',
@@ -537,10 +612,14 @@ async function chooseActionWithAi(snapshot, history, openai, tone) {
     '{"action":"done","reason":"...","message":"..."}',
     '{"action":"manual","reason":"...","message":"..."}',
     '',
-    'message: one short sentence for the user\'s status toast. Describe what you found on this page or what you\'re about to do. Write it in the app\'s tone.',
-    'Use "done" only if the page clearly confirms the user is unsubscribed.',
+    '',
+    'message: one short sentence for the status line the user is watching, written under these rules:',
+    ...SENTENCE_RULES,
+    recent.length ? `PREVIOUS LINES (do not reuse their opening):\n${recent.map(line => `- ${line}`).join('\n')}` : '',
+    '',
+    'Use "done" only if the page clearly confirms the user is off their list.',
     'Use "manual" if the page requires a captcha, login, or human judgment.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   try {
     const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
@@ -549,18 +628,21 @@ async function chooseActionWithAi(snapshot, history, openai, tone) {
     const jsonEnd = raw.lastIndexOf('}');
     if (jsonStart === -1 || jsonEnd === -1) return null;
     const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+    // Only `action`, `reason` and `message` are read back. Anything the model
+    // volunteers about the step it thinks it is on is dropped on the floor
+    // here: the step is ours, and the sentence is the only thing it writes.
     return {
       action:      parsed.action,
       candidateId: parsed.candidateId,
       reason:      parsed.reason,
-      message:     typeof parsed.message === 'string' ? parsed.message.trim() : null,
+      message:     typeof parsed.message === 'string' ? normalizeText(parsed.message) || null : null,
     };
   } catch {
     return null;
   }
 }
 
-async function chooseNextAction(snapshot, history, openai, tone) {
+async function chooseNextAction(snapshot, history, openai, recent) {
   const scored = snapshot.actions
     .map(action => ({ action, score: scoreAction(action, history, snapshot) }))
     .sort((a, b) => b.score - a.score);
@@ -570,7 +652,7 @@ async function chooseNextAction(snapshot, history, openai, tone) {
     return { action: 'click', candidate: best.action, message: null };
   }
 
-  const aiChoice = await chooseActionWithAi(snapshot, history, openai, tone);
+  const aiChoice = await chooseActionWithAi(snapshot, history, openai, recent);
   if (aiChoice?.action === 'done') return { action: 'done', message: aiChoice.message };
   if (aiChoice?.action === 'manual') return { action: 'manual', reason: aiChoice.reason ?? 'page requires manual action' };
   if (aiChoice?.action === 'click' && aiChoice.candidateId) {
@@ -603,7 +685,14 @@ async function clickAction(page, action) {
   return activePage;
 }
 
-async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone }) {
+/// What the agent saw, for the run log. The tray shows one line; the log shows
+/// every step with what was actually on the page, and it is the only way to
+/// debug a site-specific failure without reproducing it locally.
+function evidenceOf(snapshot) {
+  return truncate(`${snapshot.title || '(untitled)'} — ${snapshot.url}`, 160);
+}
+
+async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName }) {
   const context = await browser.newContext({
     ignoreHTTPSErrors: true,
     viewport: { width: 1440, height: 1200 },
@@ -612,34 +701,71 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
   let page = await context.newPage();
   const history = [];
 
+  // The last two sentences, fed back into the prompt so the next one cannot
+  // open the same way. Uniform sentence shape is what makes an agent feel
+  // fake, and this runs up to eleven times per sender.
+  const recent = [];
+  const remember = (line) => {
+    if (!line) return line;
+    recent.push(line);
+    if (recent.length > 2) recent.shift();
+    return line;
+  };
+
+  // Every emit routes through here so the sentence is remembered exactly once,
+  // whoever wrote it.
+  const say = (step, message, extra) => emit(step, remember(message), extra);
+
+  const finish = async (step, situation, snapshot, message = null) => ({
+    step,
+    message: message ?? await generateMessage(openai, situation, snapshot?.title ?? '', recent),
+    evidence: snapshot ? evidenceOf(snapshot) : null,
+  });
+
+  // ANALYZING is reported once per page, not once per pass of the loop. The
+  // same sentence arriving three times while nothing on screen changes reads
+  // as a stuck agent, and the fallback line is meant never to be seen twice in
+  // one run. A new URL is a new thing to read, and gets its own line.
+  let lastAnalyzed = null;
+  const sayAnalyzing = async (snapshot) => {
+    if (snapshot.url === lastAnalyzed) return;
+    lastAnalyzed = snapshot.url;
+    say(
+      'analyzing',
+      await generateMessage(openai, `reading ${senderName}'s page to find the unsubscribe control`, snapshot.title, recent),
+      { evidence: evidenceOf(snapshot) },
+    );
+  };
+
   try {
-    emit('navigating', `Loading ${senderName}'s unsubscribe page…`);
+    say('navigating', null);
     await page.goto(unsubscribeUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
     await settlePage(page);
 
     for (let step = 0; step < MAX_STEPS; step += 1) {
       let snapshot = await snapshotPage(page);
+      await sayAnalyzing(snapshot);
 
       if (detectSuccess(snapshot)) {
-        const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title);
-        return { status: 'done', message: msg };
+        return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot);
       }
 
+      // We do not solve CAPTCHAs and we do not log in as anyone. Saying why
+      // builds more trust than quietly failing, and solving them is how agents
+      // get the whole product blocked.
       const blocker = detectManualBlocker(snapshot);
       if (blocker) {
-        const msg = await generateMessage(openai, tone, blocker, snapshot.title);
-        return { status: 'error', message: msg, retryable: false };
+        return finish('needs_you', blocker, snapshot);
       }
 
-      await maybeFillFields(page, snapshot, userEmail, emit);
+      await maybeFillFields(page, snapshot, userEmail, say);
       snapshot = await snapshotPage(page);
 
       if (detectSuccess(snapshot)) {
-        const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title);
-        return { status: 'done', message: msg };
+        return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot);
       }
 
-      const choice = await chooseNextAction(snapshot, history, openai, tone);
+      const choice = await chooseNextAction(snapshot, history, openai, recent);
       if (!choice) {
         // Scroll down and try once more before giving up
         const scrolled = await page.evaluate(() => {
@@ -654,70 +780,79 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
 
         // Vision fallback: take a screenshot and let GPT-4o look at the page
         // and decide what to click — works on any page regardless of HTML structure.
-        emit('analyzing', `Taking a closer look at ${senderName}'s page…`);
+        say(
+          'analyzing',
+          await generateMessage(openai, `looking at a screenshot of ${senderName}'s page to find the control`, snapshot.title, recent),
+          { evidence: `vision pass — ${evidenceOf(snapshot)}` },
+        );
         const visionChoice = await chooseActionWithVision(page, senderName, openai);
         if (visionChoice?.action === 'click' && visionChoice.x != null && visionChoice.y != null) {
-          const visionClickMsg = await generateMessage(openai, tone, visionChoice.reason || `clicking a button on ${senderName}'s page`, snapshot.title);
-          emit('clicking', visionClickMsg);
+          say(
+            'clicking',
+            await generateMessage(openai, visionChoice.reason || `clicking a control on ${senderName}'s page`, snapshot.title, recent),
+            { evidence: evidenceOf(snapshot) },
+          );
           await page.mouse.click(visionChoice.x, visionChoice.y);
           await settlePage(page);
           const afterSnapshot = await snapshotPage(page);
           if (detectSuccess(afterSnapshot)) {
-            const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, afterSnapshot.title);
-            return { status: 'done', message: msg };
+            return finish('done', `${senderName}'s own page confirms the user is off their list`, afterSnapshot);
           }
           continue;
         }
         if (visionChoice?.action === 'done') {
-          const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title);
-          return { status: 'done', message: msg };
+          return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot);
         }
         if (visionChoice?.action === 'manual') {
-          const msg = await generateMessage(openai, tone, visionChoice.reason || `${senderName}'s page requires manual action`, snapshot.title);
-          return { status: 'error', message: msg, retryable: false };
+          return finish('needs_you', visionChoice.reason || `${senderName}'s page wants a person`, snapshot);
         }
 
+        // Two different facts, and the difference is the whole point of the
+        // enum. A page that is broken or mid-wobble is worth another attempt;
+        // a page with nothing on it to click is a standing fact about this
+        // sender, and the user gets offered the local fallback instead.
         if (pageLooksRecoverable(snapshot)) {
-          const msg = await generateMessage(openai, tone, `${senderName}'s unsubscribe page appears broken and no safe fallback link was found`, snapshot.title);
-          return { status: 'error', message: msg, retryable: true };
+          return finish('failed', `${senderName}'s unsubscribe page is broken and offers no safe fallback link`, snapshot);
         }
-        const msg = await generateMessage(openai, tone, `could not find a way to unsubscribe from ${senderName} on this page`, snapshot.title);
-        return { status: 'error', message: msg, retryable: true };
+        return finish('no_link', `there is nothing on ${senderName}'s page to click`, snapshot);
       }
 
       if (choice.action === 'done') {
-        return { status: 'done', message: choice.message ?? await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title) };
+        return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot, choice.message);
       }
 
       if (choice.action === 'manual') {
-        const manualMsg = await generateMessage(openai, tone, choice.reason || `${senderName}'s unsubscribe page requires manual action`, snapshot.title);
-        return { status: 'error', message: manualMsg, retryable: false };
+        return finish('needs_you', choice.reason || `${senderName}'s page wants a person`, snapshot);
       }
 
       const actionLabel = choice.candidate ? truncate(describeAction(choice.candidate), 40) : 'next step';
-      const clickMsg = choice.message
-        ?? await generateMessage(openai, tone, `clicking "${actionLabel}" to unsubscribe from ${senderName}`, snapshot.title);
-      emit('clicking', clickMsg);
+      say(
+        'clicking',
+        choice.message ?? await generateMessage(openai, `clicking "${actionLabel}" on ${senderName}'s page`, snapshot.title, recent),
+        { evidence: `clicked "${actionLabel}" — ${evidenceOf(snapshot)}` },
+      );
       page = await clickAction(page, choice.candidate);
       history.push({ signature: normalizeText(`${choice.candidate.text} ${choice.candidate.href}`) });
 
-      const verifyMsg = await generateMessage(openai, tone, `just clicked "${actionLabel}" on ${senderName}'s page — checking if the unsubscribe went through`, snapshot.title);
-      emit('verifying', verifyMsg);
+      // The step that separates a real unsubscribe from a hopeful one: the
+      // page is read back before anything claims it worked.
       const postClickSnapshot = await snapshotPage(page);
+      say(
+        'verifying',
+        await generateMessage(openai, `re-reading ${senderName}'s page to see whether "${actionLabel}" took`, postClickSnapshot.title, recent),
+        { evidence: evidenceOf(postClickSnapshot) },
+      );
       if (detectSuccess(postClickSnapshot)) {
-        const doneMsg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, postClickSnapshot.title);
-        return { status: 'done', message: doneMsg };
+        return finish('done', `${senderName}'s own page confirms the user is off their list`, postClickSnapshot);
       }
     }
 
     const finalSnapshot = await snapshotPage(page);
     if (detectSuccess(finalSnapshot)) {
-      const doneMsg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, finalSnapshot.title);
-      return { status: 'done', message: doneMsg };
+      return finish('done', `${senderName}'s own page confirms the user is off their list`, finalSnapshot);
     }
 
-    const finalMsg = await generateMessage(openai, tone, `reached ${senderName}'s unsubscribe page but could not complete the flow`, finalSnapshot.title);
-    return { status: 'error', message: finalMsg, retryable: true };
+    return finish('failed', `ran out of steps on ${senderName}'s page without reaching a confirmation`, finalSnapshot);
   } finally {
     await context.close().catch(() => {});
   }

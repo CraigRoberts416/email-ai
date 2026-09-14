@@ -11,6 +11,8 @@ struct EmptyStateView: View {
     var actionLabel: String?
     var action: (() -> Void)?
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             Text(headline)
@@ -28,14 +30,19 @@ struct EmptyStateView: View {
                         .foregroundStyle(Ink.primary)
                         .padding(.horizontal, Space.lg)
                         .padding(.vertical, Space.md)
+                        .frame(minHeight: Metric.tapTarget)
                         .overlay(Capsule().strokeBorder(Ink.primary, lineWidth: 1))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TapStyle())
                 .padding(.top, Space.xs)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, Metric.gutter)
-        .padding(.top, 140)
+        // Scale is the illustration here, and the 140pt drop is what provides
+        // it — but at accessibility sizes the copy itself is the scale, and the
+        // same 140 pushes the headline off-screen entirely. That turns "nothing
+        // here" into "nothing at all".
+        .padding(.top, typeSize.isAccessibilitySize ? Space.xxl : 140)
     }
 }

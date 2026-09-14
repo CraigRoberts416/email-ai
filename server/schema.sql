@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS messages (
   action_url          TEXT,
   requires_attention  BOOLEAN NOT NULL DEFAULT FALSE,
   unsubscribe_url     TEXT,
+  risk_level          TEXT NOT NULL DEFAULT 'none',
+  risk_evidence       JSONB,
   PRIMARY KEY (user_id, message_id)
 );
 

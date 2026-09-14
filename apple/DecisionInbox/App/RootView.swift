@@ -7,25 +7,32 @@ struct RootView: View {
     @State private var auth = AuthService()
     @State private var store: FeedStore?
     @State private var push: PushService
+    @State private var tab = 0
+    @State private var scrollTop = 0
 
     var body: some View {
         Group {
             if let store, auth.isAuthenticated {
-                TabView {
-                    Tab("Feed", systemImage: "house") {
-                        FeedView()
+                TabView(selection: $tab) {
+                    Tab("Feed", systemImage: "house", value: 0) {
+                        FeedView(scrollTopSignal: scrollTop)
                     }
-                    Tab("Saved", systemImage: "bookmark") {
+                    Tab("Saved", systemImage: "bookmark", value: 1) {
                         SavedView()
                     }
-                    Tab("You", systemImage: "person.crop.circle") {
+                    Tab("You", systemImage: "person.crop.circle", value: 2) {
                         NavigationStack { SettingsView() }
                     }
-                    Tab("Search", systemImage: "magnifyingglass", role: .search) {
+                    Tab("Search", systemImage: "magnifyingglass", value: 3, role: .search) {
                         SearchView()
                     }
                 }
                 .tint(Ink.primary)
+                // Tapping Feed while already on Feed returns to the top —
+                // the one gesture every feed on the phone shares.
+                .onChange(of: tab) { previous, current in
+                    if previous == 0 && current == 0 { scrollTop += 1 }
+                }
                 .environment(store)
                 .task(id: auth.accounts.count) {
                     await store.start()

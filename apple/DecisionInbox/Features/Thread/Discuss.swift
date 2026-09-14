@@ -63,32 +63,13 @@ struct DiscussSection: View {
                             .foregroundStyle(turn.failed ? Ink.onSheetSecondary : Ink.onSheet)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        ThinkingCaret()
+                        Caret(tint: Ink.onSheet)
                     }
                 }
             }
         }
         .padding(.horizontal, Space.lg)
         .padding(.top, model.turns.isEmpty ? 0 : Space.xxl)
-    }
-}
-
-/// The same 530ms blink as an interpreting card and the unsubscribe run log.
-/// One signal, one meaning: a machine is mid-sentence.
-private struct ThinkingCaret: View {
-    @State private var on = false
-
-    var body: some View {
-        Rectangle()
-            .fill(Ink.onSheet)
-            .frame(width: 2, height: 20)
-            .opacity(on ? 1 : 0.25)
-            .task {
-                while !Task.isCancelled {
-                    withAnimation(.easeInOut(duration: 0.53)) { on.toggle() }
-                    try? await Task.sleep(for: .milliseconds(530))
-                }
-            }
     }
 }
 

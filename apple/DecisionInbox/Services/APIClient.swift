@@ -77,6 +77,9 @@ struct APIClient {
         let avatarFallbackText: String?
         let heroImageUrl: String?
         let heroImageBgColor: String?
+        /// `none` or `possible_scam`. Only ever set when the server could also
+        /// say why — a flag it cannot explain is downgraded server-side.
+        let riskLevel: String?
     }
 
     // MARK: Requests
@@ -262,6 +265,7 @@ extension APIClient.Card {
             threadCount: 1,
             unsubscribeURL: unsubscribeUrl.flatMap(URL.init(string:)),
             requiresAttention: requiresAttention ?? false,
+            isAtRisk: riskLevel == "possible_scam",
             isInterpreting: interpreting
         )
         message.reinterpret(failed: failed)

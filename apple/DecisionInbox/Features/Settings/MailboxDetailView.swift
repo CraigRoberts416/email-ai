@@ -2,16 +2,24 @@ import SwiftUI
 
 /// One mailbox.
 ///
-/// Three switches and a disconnect, and the order is deliberate: the two
-/// reversible choices come first, the irreversible one is last and has to be
-/// confirmed by typing nothing — just a second tap that says what it removes.
+/// Facts first, then the one behaviour that is really a behaviour, then the
+/// irreversible thing last. The order is deliberate, and so is the treatment
+/// of the last one: no red, a weight step on the title, a second tap to
+/// commit, and the sentence about what actually happens set in sentence case
+/// where it can be read.
+///
+/// That sentence — "Nothing is deleted. Your mail stays where it is" — is the
+/// highest-stakes fact in the product. It used to be 10pt upper-case mono,
+/// which is this system's mark for a machine label or a count, not for a human
+/// reassurance about an irreversible choice.
 struct MailboxDetailView: View {
     let mailbox: Mailbox
 
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+
     @State private var tag: String
-    @State private var confirmingRemoval = false
+    @FocusState private var editingTag: Bool
 
     init(mailbox: Mailbox) {
         self.mailbox = mailbox
@@ -21,214 +29,184 @@ struct MailboxDetailView: View {
     private var live: Mailbox { store.mailbox(mailbox.id) ?? mailbox }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: Space.sm) {
-                        Text(mailbox.address)
-                            .typeStyle(Style.display)
-                            .foregroundStyle(Ink.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(status.uppercased())
-                            .typeStyle(Style.chip)
-                            .foregroundStyle(Ink.secondary)
-                    }
-                    .padding(.horizontal, Metric.gutter)
-                    .padding(.top, Space.lg)
-                    .padding(.bottom, Space.xl)
+        SettingsScreen(title: live.address, onBack: { dismiss() }) {
+            SettingsGroup("MAILBOX")
+            Rule()
+            SettingsFact(title: "Provider", value: live.provider.uppercased())
+            Rule()
+            // One row, because "Last synced" over "NEEDS RECONNECTING" is a
+            // label that does not describe its own value.
+            SettingsFact(title: "Status", value: live.stateLabel)
+            Rule()
+            tagEditor
+            Rule()
 
-                    Rule()
-
-                    tagEditor
-                    Rule()
-
-                    SettingsToggle(
-                        title: "Show in the feed",
-                        detail: "Off keeps the mailbox connected but leaves its mail out of here.",
-                        isOn: Binding(
-                            get: { live.includeInUnifiedFeed },
-                            set: { store.setIncluded(mailbox.id, $0) }
-                        )
-                    )
-                    Rule()
-
-                    SettingsToggle(
-                        title: "Notify me",
-                        detail: "Only for mail this mailbox receives that actually needs you.",
-                        isOn: Binding(
-                            get: { live.notificationsEnabled },
-                            set: { store.setNotifications(mailbox.id, $0) }
-                        )
-                    )
-                    Rule()
-
-                    if case .needsReconnect = live.status {
-                        SettingsRow(title: "Reconnect", detail: "Google needs you to say yes again.") {
-                            Task { await store.reconnect(mailbox.id) }
-                        }
-                        Rule()
-                    }
-
-                    removal
-                }
-            }
-            .scrollIndicators(.hidden)
-            .background(Ink.surface)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }.foregroundStyle(Ink.primary)
-                }
-            }
-        }
-    }
-
-    private var status: String {
-        switch live.status {
-        case .active(let synced): return "Synced \(synced.formatted(.dateTime.hour().minute()))"
-        case .needsReconnect(let reason): return reason
-        case .paused: return "Paused"
-        }
-    }
-
-    /// Two to four characters. Editing is allowed because the auto-generated
-    /// tag is a guess, and the user knows which of their addresses is "HOME".
-    private var tagEditor: some View {
-        HStack(spacing: Space.md) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Tag")
-                    .typeStyle(Style.body)
-                    .foregroundStyle(Ink.primary)
-                Text("SHOWN ON POSTS FROM THIS MAILBOX")
-                    .typeStyle(Style.chip)
-                    .foregroundStyle(Ink.secondary)
-            }
-            Spacer(minLength: 0)
-            TextField("", text: $tag)
-                .typeStyle(Style.chip)
-                .foregroundStyle(Ink.primary)
-                .multilineTextAlignment(.center)
-                .textInputAutocapitalization(.characters)
-                .autocorrectionDisabled()
-                .frame(width: Metric.avatar, height: Metric.avatar)
-                .background(Ink.surfaceTertiary, in: RoundedRectangle(cornerRadius: Corner.sm, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
-                        .strokeBorder(Ink.border, lineWidth: 1)
+            SettingsGroup("BEHAVIOUR")
+            Rule()
+            SettingsToggle(
+                title: "Include in this feed",
+                subtitle: "OFF HIDES ITS MAIL",
+                isOn: Binding(
+                    get: { live.includeInUnifiedFeed },
+                    set: { store.setIncluded(mailbox.id, $0) }
                 )
-                .onChange(of: tag) { _, new in
-                    if new.count > 4 { tag = String(new.prefix(4)) }
-                }
-                .onSubmit { store.rename(mailbox.id, tag: tag) }
-        }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.vertical, Space.md)
-    }
+            )
+            Rule()
+            SettingsParagraph("Notifications are decided per message on the server, not per mailbox on this phone, so there is no switch here for them. What arrives is on the Notifications screen.")
 
-    /// Disconnecting is the one destructive thing here, so it says exactly what
-    /// goes and what stays. No mail is deleted — this only drops our access.
-    private var removal: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            Button {
-                if confirmingRemoval {
+            SettingsGroup("TROUBLE")
+            Rule()
+            if case .needsReconnect = live.status {
+                ConsequenceRow(
+                    title: "Reconnect this mailbox",
+                    sentence: "The connection to this mailbox expired. Reconnecting takes one tap, and your other mailboxes keep working through it.",
+                    action: { Task { await store.reconnect(mailbox.id) } }
+                )
+                Rule()
+            }
+            ConsequenceRow(
+                title: "Disconnect this mailbox",
+                sentence: "Nothing is deleted. Your mail stays where it is \u{2014} this only ends our access to it.",
+                confirmTitle: "Tap again to disconnect",
+                destructive: true,
+                action: {
                     store.remove(mailbox.id)
                     dismiss()
-                } else {
-                    withAnimation(Move.crisp) { confirmingRemoval = true }
                 }
-            } label: {
-                Text(confirmingRemoval ? "Tap again to disconnect" : "Disconnect this mailbox")
-                    .typeStyle(Style.body)
-                    .foregroundStyle(confirmingRemoval ? Ink.onInverse : Ink.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, Metric.gutter)
-                    .padding(.vertical, Space.lg)
-                    .background(confirmingRemoval ? Ink.inverse : Ink.surface)
-                    .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-
-            Text("NOTHING IS DELETED. YOUR MAIL STAYS WHERE IT IS \u{2014} THIS ONLY ENDS OUR ACCESS TO IT.")
-                .typeStyle(Style.chip)
-                .foregroundStyle(Ink.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, Metric.gutter)
+            )
+            Rule()
         }
-        .padding(.top, Space.xl)
-        .padding(.bottom, Space.xxl)
+        .onChange(of: editingTag) { _, focused in
+            if !focused { commitTag() }
+        }
+        .onDisappear { commitTag() }
     }
-}
 
-// MARK: - Settings primitives
+    // MARK: Tag
+    //
+    // Two to four characters, and editable because the generated tag is a
+    // guess — the user is the one who knows which of their addresses is HOME.
+    // A collision is refused rather than resolved with an appended counter:
+    // two mailboxes sharing a tag makes the feed unreadable, which is the one
+    // thing the tag exists to prevent.
 
-struct SettingsToggle: View {
-    let title: String
-    var detail: String?
-    @Binding var isOn: Bool
+    private var normalised: String {
+        String(tag.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(4))
+    }
 
-    var body: some View {
-        HStack(spacing: Space.md) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .typeStyle(Style.body)
+    private var collision: Mailbox? {
+        guard normalised.count >= 2 else { return nil }
+        return store.mailboxes.first { $0.id != mailbox.id && $0.tag == normalised }
+    }
+
+    private var suggestions: [String] {
+        guard collision != nil else { return [] }
+        // Drawn from the address itself rather than invented: a tag the user
+        // cannot trace back to the mailbox is no better than a counter.
+        let parts = live.address.split(separator: "@", maxSplits: 1)
+        let local = (parts.first.map(String.init) ?? "").uppercased()
+            .filter { $0.isLetter || $0.isNumber }
+        let domain = (parts.count > 1 ? String(parts[1]) : "").uppercased()
+            .filter { $0.isLetter || $0.isNumber }
+        let taken = Set(store.mailboxes.filter { $0.id != mailbox.id }.map(\.tag))
+        let candidates = [
+            normalised + "2",
+            String(local.prefix(4)),
+            String(domain.prefix(4)),
+        ]
+        var seen: Set<String> = []
+        return candidates.filter { candidate in
+            guard candidate.count >= 2, !taken.contains(candidate),
+                  candidate != normalised, seen.insert(candidate).inserted
+            else { return false }
+            return true
+        }
+    }
+
+    private func commitTag() {
+        guard normalised.count >= 2, collision == nil, normalised != live.tag else { return }
+        store.rename(mailbox.id, tag: normalised)
+    }
+
+    private var tagEditor: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                Text("Tag")
+                    .typeStyle(Style.bodyMedium)
                     .foregroundStyle(Ink.primary)
-                if let detail {
-                    Text(detail)
-                        .typeStyle(Style.bodySmall)
-                        .foregroundStyle(Ink.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("SHOWN ON EVERY POST FROM THIS MAILBOX")
+                    .typeStyle(Style.monoMicro)
+                    .foregroundStyle(Ink.tertiary)
             }
-            Spacer(minLength: Space.md)
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-                .tint(Ink.primary)
-        }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.vertical, Space.md + 2)
-        .accessibilityElement(children: .combine)
-    }
-}
 
-struct SettingsRow: View {
-    let title: String
-    var detail: String?
-    var value: String?
-    var action: (() -> Void)?
-
-    var body: some View {
-        Button {
-            action?()
-        } label: {
             HStack(spacing: Space.md) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .typeStyle(Style.body)
-                        .foregroundStyle(Ink.primary)
-                    if let detail {
-                        Text(detail)
-                            .typeStyle(Style.bodySmall)
-                            .foregroundStyle(Ink.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                TextField("", text: $tag)
+                    .typeStyle(Style.tagInput)
+                    .foregroundStyle(Ink.primary)
+                    .tint(Ink.primary)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .focused($editingTag)
+                    .accessibilityLabel("Mailbox tag, two to four letters")
+                    .onChange(of: tag) { _, new in
+                        let clean = String(new.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(4))
+                        if clean != new { tag = clean }
                     }
-                }
-                Spacer(minLength: Space.md)
-                if let value {
-                    Text(value)
-                        .typeStyle(Style.meta)
-                        .foregroundStyle(Ink.secondary)
-                }
-                if action != nil {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Ink.tertiary)
-                }
+                    .onSubmit { commitTag() }
+                Text("\(normalised.count) / 4")
+                    .typeStyle(Style.monoCaption)
+                    .foregroundStyle(Ink.tertiary)
             }
             .padding(.horizontal, Metric.gutter)
-            .padding(.vertical, Space.md + 2)
-            .contentShape(.rect)
+            .padding(.vertical, 14)
+            .overlay(
+                RoundedRectangle(cornerRadius: Corner.md, style: .continuous)
+                    // The error is carried by a heavier black border and the
+                    // explanation below it. There is no red in this product,
+                    // and inventing one for a two-letter clash would make it
+                    // the loudest thing on the screen.
+                    .strokeBorder(Ink.primary, lineWidth: collision == nil ? 1 : 2)
+                    .opacity(collision == nil ? 0.15 : 1)
+            )
+
+            if let collision {
+                VStack(alignment: .leading, spacing: Space.xs + 2) {
+                    Text("ALREADY TAKEN")
+                        .typeStyle(Style.chip)
+                        .foregroundStyle(Ink.primary)
+                    Text("\(collision.address) is using \(normalised). Two mailboxes with the same tag makes the feed unreadable, which is the one thing the tag exists to prevent.")
+                        .typeStyle(Style.bodyMedium)
+                        .foregroundStyle(Ink.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.leading, Space.md)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(Ink.primary).frame(width: 2)
+                }
+
+                HStack(spacing: Space.sm) {
+                    ForEach(suggestions, id: \.self) { suggestion in
+                        Button { tag = suggestion } label: {
+                            Text(suggestion)
+                                .typeStyle(Style.tagChip)
+                                .foregroundStyle(Ink.primary)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, Space.sm)
+                                .overlay(Capsule().strokeBorder(Ink.primary, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(action == nil)
+        .padding(.horizontal, Metric.gutter)
+        .padding(.vertical, Space.lg)
     }
+}
+
+#Preview {
+    NavigationStack {
+        MailboxDetailView(mailbox: Sample.mailboxes[0])
+    }
+    .environment(FeedStore(sample: true))
 }

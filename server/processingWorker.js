@@ -5,11 +5,13 @@ const { cleanEmailForAI } = require('./emailCleaner');
 // Injected by index.js to avoid circular imports
 let _streamInterpretEmail     = null;
 let _streamDecideActionSurface = null;
+let _detectRiskSignals        = null;
 let _emitSSE                  = null;
 
-function init({ streamInterpretEmail, streamDecideActionSurface, emitSSE }) {
+function init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE }) {
   _streamInterpretEmail      = streamInterpretEmail;
   _streamDecideActionSurface = streamDecideActionSurface;
+  _detectRiskSignals         = detectRiskSignals;
   _emitSSE                   = emitSSE;
 }
 
@@ -42,8 +44,23 @@ async function processNext(userId) {
       _emitSSE(userId, { type: 'field-complete', messageId, field: 'unsubscribeUrl', value: email.unsubscribeUrl });
     }
 
+    // Fraud is checked alongside interpretation rather than after it. The
+    // verdict is one non-streaming call and the two summaries are the visible
+    // ones, so running it in parallel costs the card nothing — and a scam
+    // label that lands after the user has already read the summary has
+    // arrived too late to do the only job it has.
+    //
+    // It never throws: a message the risk check could not reach still gets
+    // its card, and still gets it without a POSSIBLE SCAM on it.
+    const riskVerdict = _detectRiskSignals(email, messageId, userId)
+      .catch(err => {
+        console.warn(`[worker] risk detection failed on ${messageId}: ${err.message}`);
+        return null;
+      });
+
     await _streamInterpretEmail(email, messageId, userId);
     await _streamDecideActionSurface(email, messageId, userId);
+    await riskVerdict;
 
     // Consolidate final AI fields from DB (set field-by-field during streaming)
     const record = await messageStore.getMessage(userId, messageId);

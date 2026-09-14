@@ -385,36 +385,112 @@ enum Metric {
 // is on card commit, where it lands as punctuation.
 
 enum Move {
+    /// Underdamped on purpose, and therefore only ever correct on something
+    /// with no body text in it — the overshoot lands as punctuation on a
+    /// commit and as wobble under a paragraph. It is deliberately NOT used to
+    /// admit the pending batch, which was its only call site and the one place
+    /// it was demonstrably wrong; that is `layout` now.
+    ///
+    /// NO CALL SITE. Either it finds a real card commit or it is deleted and
+    /// its damping raised into `crisp`. Do not reach for it because the name
+    /// sounds right.
     static let enter = Animation.spring(response: 0.34, dampingFraction: 0.78)
     static let crisp = Animation.spring(response: 0.30, dampingFraction: 0.86)
+    /// NO CALL SITE. Sheets are system-presented and the system owns their
+    /// motion; this exists for a hand-built one that has not shipped.
     static let sheet = Animation.spring(response: 0.28, dampingFraction: 0.90)
     static let layout = Animation.spring(response: 0.38, dampingFraction: 0.82)
+
+    /// A gesture released past its threshold. Shorter than `layout` because the
+    /// user has already decided; the animation is confirming, not deliberating.
+    static let commit = Animation.spring(response: 0.26, dampingFraction: 0.86)
+
+    /// A gesture released short of its threshold. Critically damped — a cancel
+    /// that wobbles reads as a failed commit.
+    static let settle = Animation.spring(response: 0.30, dampingFraction: 1.0)
+
+    /// Things leaving. Exits are decisive; the user has moved on.
+    static let exit = Animation.easeIn(duration: 0.14)
 
     static let pressIn = Animation.easeOut(duration: 0.09)
     static let pressOut = Animation.easeOut(duration: 0.12)
     static let crossfade = Animation.easeInOut(duration: 0.16)
     static let reveal = Animation.easeOut(duration: 0.24)
 
+    /// NO CALL SITE. The only stagger the motion thesis permits is over a set
+    /// of three or fewer with a clear order, which is `Pill.avatarStagger` and
+    /// nothing else. A generic stagger is how a waterfall gets in.
     static let stagger: Double = 0.04
 
     /// Hold a skeleton this long once shown, or it flashes.
     static let skeletonMinHold: Double = 0.4
-    /// Show nothing at all below this.
+    /// Show nothing at all below this. NO CALL SITE yet — it belongs on
+    /// `ThreadView`'s `.redacted` placeholder, which currently shows instantly
+    /// and can vanish in 80ms. It deliberately does not apply to pull to
+    /// refresh: the user pulled, so the acknowledgement is immediate.
     static let loadingDelay: Double = 0.15
     static let undoWindow: Double = 5
     static let sendUndoWindow: Double = 8
+
+    /// The caret ramp is HALF its hold. Matching the two — a 530ms animation
+    /// on a 530ms sleep — makes opacity ramp continuously and never rest,
+    /// which is a pulse rather than a caret. 265 on 530 gives a 265ms ramp and
+    /// a 265ms hold in each direction.
+    static let caretRamp = Animation.easeInOut(duration: 0.265)
+    static let caretHold: Double = 0.530
 
     enum Swipe {
         static let threshold: CGFloat = 96
         static let rubberBand: CGFloat = 0.45
         static let rubberBandAt: CGFloat = 160
+        /// The gesture does not count as horizontal until it has travelled
+        /// this far, so the scroll view keeps every vertical sample.
+        static let axisLatch: CGFloat = 10
+        /// Horizontal has to beat vertical by this ratio to latch. A diagonal
+        /// drag belongs to the scroll view.
+        static let axisRatio: CGFloat = 1.5
+        /// A flick this fast commits without ever crossing `threshold` —
+        /// velocity is a decision too.
+        static let flickDistance: CGFloat = 220
+        /// Swipe-down-to-dismiss on a bottom-edge overlay. Far shorter than
+        /// `threshold`: a toast is 60pt tall and a 96pt drag would leave the
+        /// screen before the gesture resolved.
+        static let dismissAt: CGFloat = 40
+    }
+
+    /// Pull-to-refresh, driven from the scroll offset rather than
+    /// `.refreshable`, because the system's indeterminate ring is the one
+    /// loading idiom this product rejected outright.
+    enum Pull {
+        /// Nothing is drawn below this. Prevents an indicator flashing on the
+        /// ordinary bounce at the top of the feed.
+        static let showAt: CGFloat = 36
+        /// Release at or past this and the refresh runs.
+        static let armAt: CGFloat = 72
+        /// The strip holds open this long while refreshing.
+        static let holdOpen: CGFloat = 56
+        /// The freshness stamp is held this long before the strip collapses.
+        static let stampHold: Double = 1.2
+        /// A failure is held longer, because the user may need to act on it.
+        static let failureHold: Double = 3
     }
 
     enum Pill {
         /// The pill only appears once the user is genuinely away from the top.
         static let showBelowScrollY: CGFloat = 260
+        /// Hysteresis. One threshold makes the pill flicker on a slow scroll
+        /// across it.
+        static let hideBelowScrollY: CGFloat = 200
         static let avatarStagger: Double = 0.034
         static let maxAvatars = 3
+    }
+
+    /// Reduce Motion is a *different* motion design, not "animation off".
+    /// Travel and springs become a short crossfade; the state change stays
+    /// legible. Call sites read identically in both modes, which is what stops
+    /// the reduced path rotting the first time the ordinary one is retuned.
+    static func resolved(_ animation: Animation, _ reduceMotion: Bool) -> Animation {
+        reduceMotion ? crossfade : animation
     }
 }
 

@@ -6,75 +6,107 @@ import SwiftUI
 /// one is "the main one" a second address becomes a second-class citizen and
 /// people go back to the stock client for it.
 ///
-/// Scale changes the shape, not the rules: under five, rows carry the address
-/// and its state; past that the list gains a search field, and past a dozen it
-/// groups by provider. Nothing is hidden at any size.
+/// Scale changes the shape, not the rules. Up to six it is a flat list; past
+/// that it groups by status and gains a search field, and the mailboxes that
+/// need something float to the top. Nothing is hidden at any size.
 struct MailboxesView: View {
     @Environment(FeedStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+
     @State private var query = ""
-    @State private var editing: Mailbox?
+    @State private var selected: Mailbox?
+
+    /// Past six, status grouping and search. The threshold is the scale
+    /// board's, not a guess.
+    private var isLarge: Bool { store.mailboxes.count > 6 }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                header
-
-                if store.mailboxes.count >= 5 {
-                    SearchField(text: $query, placeholder: "Filter")
-                        .padding(.horizontal, Metric.gutter)
-                        .padding(.bottom, Space.md)
-                    Rule()
-                }
-
-                ForEach(filtered) { mailbox in
-                    MailboxRow(mailbox: mailbox, showsAddress: store.mailboxes.count < 12) {
-                        editing = mailbox
-                    }
-                    Rule()
-                }
-
-                if filtered.isEmpty && !query.isEmpty {
-                    Text("NO MAILBOX MATCHES \u{201C}\(query.uppercased())\u{201D}")
-                        .typeStyle(Style.chip)
-                        .foregroundStyle(Ink.secondary)
-                        .padding(.horizontal, Metric.gutter)
-                        .padding(.vertical, Space.xl)
-                }
-
-                Button { Task { await store.add() } } label: {
-                    HStack(spacing: Space.md) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 15, weight: .medium))
-                            .frame(width: Metric.avatar, height: Metric.avatar)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Corner.md, style: .continuous)
-                                    .strokeBorder(Ink.primary, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                            )
-                        Text("Add a mailbox")
-                            .typeStyle(Style.body)
-                        Spacer(minLength: 0)
-                    }
-                    .foregroundStyle(Ink.primary)
+        SettingsScreen(title: "Mailboxes", onBack: { dismiss() }) {
+            if isLarge {
+                SearchField(text: $query, placeholder: "Filter")
                     .padding(.horizontal, Metric.gutter)
-                    .padding(.vertical, Space.lg)
-                }
-                .buttonStyle(.plain)
-                .disabled(store.auth.isConnecting)
-
-                Text("EACH MAILBOX KEEPS ITS OWN CONNECTION. REMOVING ONE LEAVES THE REST UNTOUCHED.")
-                    .typeStyle(Style.chip)
-                    .foregroundStyle(Ink.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, Metric.gutter)
-                    .padding(.top, Space.md)
+                    .padding(.top, Space.xs)
+                    .padding(.bottom, Space.md)
             }
+
+            if isLarge {
+                group("NEEDS YOU", mailboxes: filtered.filter { !$0.isHealthy })
+                group("ACTIVE", mailboxes: filtered.filter(\.isHealthy).filter { !$0.isPaused })
+                group("PAUSED", mailboxes: filtered.filter(\.isPaused))
+            } else {
+                SettingsGroup("CONNECTED")
+                Rule()
+                rows(filtered)
+            }
+
+            if filtered.isEmpty, !query.isEmpty {
+                Text("No mailbox matches \u{201C}\(query)\u{201D}.")
+                    .typeStyle(Style.bodySmall)
+                    .foregroundStyle(Ink.tertiary)
+                    .padding(.horizontal, Metric.gutter)
+                    .padding(.vertical, Space.xl)
+                Rule()
+            }
+
+            SettingsGroup("ADD")
+            Rule()
+            ListRow(
+                title: "Add a mailbox",
+                subtitle: "NO LIMIT",
+                action: { Task { await store.add() } },
+                trailing: { RowArrow() }
+            )
+            .disabled(store.auth.isConnecting)
+            Rule()
+
+            VStack(alignment: .leading, spacing: Space.sm) {
+                Text(store.mailboxes.count == 1
+                     ? "One mailbox, one feed."
+                     : "\(store.mailboxes.count) mailboxes, one feed.")
+                    .typeStyle(Style.bodyMedium)
+                    .foregroundStyle(Ink.primary)
+                Text("Each mailbox gets a short tag, and it sits on every post so you can tell streams apart without spending the one colour this product has. Each keeps its own connection \u{2014} removing one leaves the rest untouched.")
+                    .typeStyle(Style.bodySmall)
+                    .foregroundStyle(Ink.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.top, Space.lg)
         }
-        .scrollIndicators(.hidden)
-        .background(Ink.surface)
-        .navigationTitle("Mailboxes")
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $editing) { mailbox in
+        .navigationDestination(item: $selected) { mailbox in
             MailboxDetailView(mailbox: mailbox)
+        }
+    }
+
+    // MARK: Rows
+
+    @ViewBuilder
+    private func group(_ title: String, mailboxes: [Mailbox]) -> some View {
+        if !mailboxes.isEmpty {
+            SettingsGroup("\(title) \u{00B7} \(mailboxes.count)")
+            Rule()
+            rows(mailboxes)
+        }
+    }
+
+    @ViewBuilder
+    private func rows(_ mailboxes: [Mailbox]) -> some View {
+        ForEach(mailboxes) { mailbox in
+            ListRow(
+                title: mailbox.address,
+                subtitle: "\(mailbox.provider.uppercased()) \u{00B7} \(mailbox.stateLabel)",
+                // A paused mailbox is the one place a row greys out: it is
+                // still connected, so "off" has to be visible without being a
+                // failure.
+                muted: mailbox.isPaused,
+                action: { selected = mailbox },
+                leading: {
+                    MailboxTag(mailbox.tag, size: Metric.avatarRow)
+                        .opacity(mailbox.isPaused ? 0.4 : 1)
+                },
+                trailing: { RowArrow() }
+            )
+            Rule()
         }
     }
 
@@ -85,88 +117,17 @@ struct MailboxesView: View {
                 || $0.tag.localizedCaseInsensitiveContains(query)
         }
     }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            Text(store.mailboxes.count == 1
-                 ? "One mailbox."
-                 : "\(store.mailboxes.count) mailboxes, one feed.")
-                .typeStyle(Style.display)
-                .foregroundStyle(Ink.primary)
-            if store.mailboxes.count > 1 {
-                Text("Posts carry a tag so you can tell them apart without opening anything.")
-                    .typeStyle(Style.body)
-                    .foregroundStyle(Ink.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.top, Space.lg)
-        .padding(.bottom, Space.xl)
-    }
 }
 
-// MARK: - Row
+// MARK: - Tag tile
 
-private struct MailboxRow: View {
-    let mailbox: Mailbox
-    let showsAddress: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: Space.md) {
-                MailboxTag(mailbox.tag, size: Metric.avatar)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    if showsAddress {
-                        Text(mailbox.address)
-                            .typeStyle(Style.body)
-                            .foregroundStyle(Ink.primary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    } else {
-                        Text(mailbox.tag)
-                            .typeStyle(Style.sender)
-                            .foregroundStyle(Ink.primary)
-                    }
-                    Text(state)
-                        .typeStyle(Style.chip)
-                        .foregroundStyle(Ink.secondary)
-                }
-
-                Spacer(minLength: 0)
-
-                if !mailbox.includeInUnifiedFeed {
-                    Text("NOT IN FEED")
-                        .typeStyle(Style.chip)
-                        .foregroundStyle(Ink.secondary)
-                }
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Ink.tertiary)
-            }
-            .padding(.horizontal, Metric.gutter)
-            .padding(.vertical, Space.md + 2)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var state: String {
-        switch mailbox.status {
-        case .active(let synced): return "SYNCED \(synced.formatted(.dateTime.hour().minute()))"
-        case .needsReconnect(let reason): return reason.uppercased()
-        case .paused: return "PAUSED"
-        }
-    }
-}
-
-/// The tag tile. A rounded rect, never a circle — a circle is a person, and a
-/// mailbox is a place.
+/// The mailbox mark. A rounded rect, never a circle — a circle is a person,
+/// and a mailbox is a place. Two to four characters is all the identity a
+/// monochrome product can spend on an address.
 struct MailboxTag: View {
     let tag: String
     let size: CGFloat
+
     init(_ tag: String, size: CGFloat = Metric.avatarRow) {
         self.tag = tag
         self.size = size
@@ -176,11 +137,30 @@ struct MailboxTag: View {
         Text(tag)
             .typeStyle(Style.chip)
             .foregroundStyle(Ink.primary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, 2)
             .frame(width: size, height: size)
-            .background(Ink.surfaceTertiary, in: RoundedRectangle(cornerRadius: Corner.sm, style: .continuous))
+            .background(
+                Ink.surfaceTertiary,
+                in: RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
                     .strokeBorder(Ink.border, lineWidth: 1)
             )
+            .accessibilityHidden(true)
     }
+}
+
+extension Mailbox {
+    var isPaused: Bool {
+        if case .paused = status { return true }
+        return false
+    }
+}
+
+#Preview {
+    NavigationStack { MailboxesView() }
+        .environment(FeedStore(sample: true))
 }

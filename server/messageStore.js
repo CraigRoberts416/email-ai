@@ -20,6 +20,8 @@ function rowToRecord(row) {
     actionUrl:         row.action_url ?? null,
     requiresAttention: row.requires_attention ?? false,
     unsubscribeUrl:    row.unsubscribe_url ?? null,
+    riskLevel:         row.risk_level ?? 'none',
+    riskEvidence:      row.risk_evidence ?? [],
   };
 }
 
@@ -172,6 +174,16 @@ async function setUnsubscribeUrl(userId, messageId, url) {
   );
 }
 
+/// The fraud verdict and the evidence behind it, written together so a card
+/// can never print POSSIBLE SCAM with nothing to show the user when they tap
+/// through to ask why.
+async function setRiskVerdict(userId, messageId, { level, evidence }) {
+  await query(
+    'UPDATE messages SET risk_level = $3, risk_evidence = $4 WHERE user_id = $1 AND message_id = $2',
+    [userId, messageId, level ?? 'none', JSON.stringify(evidence ?? [])]
+  );
+}
+
 async function getMessageIdsNeedingUnsubscribeBackfill(userId) {
   const { rows } = await query(
     'SELECT message_id FROM messages WHERE user_id = $1 AND unsubscribe_url IS NULL',
@@ -184,4 +196,5 @@ module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
   getNextToProcess, setAiStatus, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, getMessageIdsNeedingUnsubscribeBackfill,
+  setRiskVerdict,
 };

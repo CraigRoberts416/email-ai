@@ -8,34 +8,54 @@ import SwiftUI
 /// failure of "you're caught up" is mail landing mid-triage and pushing the
 /// end invisibly further away.
 ///
-/// Deliberately silent: no haptic, no badge, no sound. The user did not cause
-/// this, and the frequency is unbounded.
+/// Its **appearance** is deliberately silent: no haptic, no badge, no sound.
+/// The user did not cause it, and the frequency is unbounded. Its **tap** is
+/// the one place `Haptics.announce()` fires — the lightest cue in the set on
+/// the heaviest visual event in the product.
 struct NewPostsPill: View {
     let senders: [Sender]
     let count: Int
     let action: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     /// The pill gets physically heavier as the batch grows, so weight carries
     /// urgency in a system with no colour to spend.
-    private var heavy: Bool { count >= 3 }
+    private var heavy: Bool { count >= Move.Pill.maxAvatars }
+    /// Three avatars plus "3 NEW" exceeds the screen at accessibility sizes.
+    /// The count is the information; the faces are the flavour, so the faces
+    /// are what goes.
+    private var showsAvatars: Bool { typeSize < .accessibility2 }
 
     var body: some View {
-        Button(action: action) {
+        Button {
+            // H6 — the feed is about to change wholesale AND the viewport is
+            // about to move several hundred points. The lightest cue on the
+            // heaviest visual event, fired at touch-down so it arrives with the
+            // decision rather than after it.
+            Haptics.announce()
+            action()
+        } label: {
             HStack(spacing: Space.sm) {
-                AvatarStack(
-                    senders: senders,
-                    size: Metric.avatarPill,
-                    ringColor: heavy ? Ink.inverse : Ink.surface
-                )
+                if showsAvatars {
+                    AvatarStack(
+                        senders: senders,
+                        size: Metric.avatarPill,
+                        ringColor: heavy ? Ink.inverse : Ink.surface,
+                        staggered: true
+                    )
+                }
                 Text("\(count) NEW")
                     .typeStyle(Style.kicker)
                     .foregroundStyle(heavy ? Ink.onInverse : Ink.primary)
                     // Tabular mono, so the count never jitters the width.
                     .monospacedDigit()
+                    .lineLimit(1)
             }
-            .padding(.leading, 6)
+            .padding(.leading, showsAvatars ? 6 : Space.md + 2)
             .padding(.trailing, Space.md + 2)
             .padding(.vertical, 6)
+            .frame(minHeight: Metric.tapTarget)
             .background {
                 Capsule()
                     .fill(heavy ? Ink.inverse : Ink.surface)
@@ -49,8 +69,10 @@ struct NewPostsPill: View {
                     )
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TapStyle())
         .accessibilityLabel(accessibilityLabel)
+        // The action now moves the viewport, and the old label did not say so.
+        .accessibilityHint("Scrolls to the top and shows them")
         .accessibilityAddTraits(.isButton)
     }
 
@@ -122,32 +144,84 @@ struct ToastView: View {
     var detail: String?
     var actionLabel: String?
     var action: (() -> Void)?
+    /// Swiping a receipt away is fine — unless it is carrying the only undo
+    /// there is, in which case the escape hatch would be spent invisibly.
+    var onDismiss: (() -> Void)?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drag: CGFloat = 0
+
+    private var carriesUndo: Bool { actionLabel != nil && action != nil }
 
     var body: some View {
-        HStack(spacing: Space.md) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(message)
-                    .typeStyle(Style.bodySmall)
-                    .foregroundStyle(Ink.onInverse)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let detail {
-                    Text(detail)
-                        .typeStyle(Style.chip)
-                        .foregroundStyle(Ink.onInverseSecondary)
-                }
-            }
-            Spacer(minLength: 0)
-            if let actionLabel, let action {
-                Button(actionLabel, action: action)
-                    .typeStyle(Style.bodySmall)
-                    .foregroundStyle(Ink.onInverse)
-                    .buttonStyle(.plain)
+        // The message and the action cannot share one row at accessibility
+        // sizes — the message gets squeezed to nothing — so the action moves
+        // beneath it rather than competing with it.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Space.md) { copy; Spacer(minLength: 0); undoButton }
+            VStack(alignment: .leading, spacing: Space.md) {
+                copy
+                undoButton.frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.horizontal, Space.lg)
         .padding(.vertical, Space.md + 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Ink.inverse, in: RoundedRectangle(cornerRadius: Corner.xl, style: .continuous))
         .padding(.horizontal, Metric.gutter)
+        .offset(y: drag)
+        .gesture(dismissDrag)
+    }
+
+    @ViewBuilder private var copy: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(message)
+                .typeStyle(Style.bodySmall)
+                .foregroundStyle(Ink.onInverse)
+                .fixedSize(horizontal: false, vertical: true)
+            if let detail {
+                Text(detail)
+                    .typeStyle(Style.chip)
+                    .foregroundStyle(Ink.onInverseSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private var undoButton: some View {
+        if let actionLabel, let action {
+            Button(actionLabel) {
+                // H5 — the user reversed a committed state. Same class of
+                // event as the commit itself, so the same cue.
+                Haptics.commit()
+                action()
+            }
+            .typeStyle(Style.bodySmall)
+            .foregroundStyle(Ink.onInverse)
+            .buttonStyle(TapStyle())
+            .frame(minHeight: Metric.tapTarget)
+        }
+    }
+
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: Move.Swipe.axisLatch)
+            .onChanged { value in
+                guard value.translation.height > 0 else { return }
+                // While a receipt carries an Undo it rubber-bands back rather
+                // than dismissing. The window is short; the escape hatch is
+                // not the user's to throw away by accident.
+                drag = carriesUndo
+                    ? value.translation.height * Move.Swipe.rubberBand
+                    : value.translation.height
+            }
+            .onEnded { value in
+                if !carriesUndo, value.translation.height > Move.Swipe.dismissAt {
+                    // Exits are decisive; the user has moved on.
+                    withAnimation(Move.resolved(Move.exit, reduceMotion)) { onDismiss?() }
+                } else {
+                    withAnimation(Move.resolved(Move.settle, reduceMotion)) { drag = 0 }
+                }
+            }
     }
 }
 

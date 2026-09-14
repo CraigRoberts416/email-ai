@@ -41,6 +41,18 @@ async function runMigrations() {
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT
   `);
+  // The fraud verdict and the evidence behind it. Two columns, because the
+  // card prints the verdict and the explainer screen prints the evidence —
+  // and a verdict with nothing to show for it is a vibe, not a finding.
+  // Defaults to 'none': a database that has never been asked must not imply
+  // that every message in it is clean-by-inspection, but it must also never
+  // imply the opposite.
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS risk_level TEXT NOT NULL DEFAULT 'none'
+  `);
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS risk_evidence JSONB
+  `);
 }
 
 runMigrations().catch(err =>

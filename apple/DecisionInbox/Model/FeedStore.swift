@@ -248,7 +248,7 @@ final class FeedStore {
             return Mailbox(
                 id: account.id, address: account.id, provider: "Gmail",
                 status: .active(lastSynced: .now), tag: account.tag,
-                includeInUnifiedFeed: true, notificationsEnabled: true
+                includeInUnifiedFeed: true
             )
         }
     }
@@ -282,10 +282,6 @@ final class FeedStore {
         mailboxes[i].includeInUnifiedFeed = included
     }
 
-    func setNotifications(_ mailboxID: String, _ enabled: Bool) {
-        guard let i = mailboxes.firstIndex(where: { $0.id == mailboxID }) else { return }
-        mailboxes[i].notificationsEnabled = enabled
-    }
 
     /// Re-consent for one mailbox. Every other mailbox keeps working through it.
     func reconnect(_ mailboxID: String? = nil) async {
@@ -377,6 +373,7 @@ final class FeedStore {
                 case "actionUrl": message.actionURL = value.flatMap(URL.init(string:))
                 case "unsubscribeUrl": message.unsubscribeURL = value.flatMap(URL.init(string:))
                 case "requiresAttention": message.requiresAttention = (value == "true")
+                case "riskLevel": message.isAtRisk = (value == "possible_scam")
                 default: break
                 }
                 message.reinterpret()
@@ -491,6 +488,7 @@ final class FeedStore {
                     senderName: message.sender.displayName
                 )
             } catch {
+                Haptics.failed()
                 unsubscribes[message.id] = .init(
                     messageId: message.id,
                     senderName: message.sender.displayName,
@@ -526,6 +524,7 @@ final class FeedStore {
                 // The request never came back. That is not the same as a
                 // refusal — the message may well be in their inbox already,
                 // and saying "didn't send" would send it twice.
+                Haptics.failed()
                 receipt = Receipt(
                     message: "We couldn\u{2019}t confirm that send.",
                     detail: "CHECK YOUR SENT MAIL BEFORE WRITING IT AGAIN"
@@ -533,6 +532,7 @@ final class FeedStore {
             } catch {
                 // Gmail answered and refused. No retry offered: a duplicate
                 // send is worse than ambiguity.
+                Haptics.failed()
                 receipt = Receipt(
                     message: "Gmail wouldn\u{2019}t take that one.",
                     detail: error.localizedDescription.uppercased()
@@ -585,7 +585,7 @@ private extension Message {
             actionUrl: actionURL?.absoluteString, requiresAttention: requiresAttention,
             unsubscribeUrl: unsubscribeURL?.absoluteString,
             avatarUri: nil, avatarFallbackText: nil,
-            heroImageUrl: nil, heroImageBgColor: nil
+            heroImageUrl: nil, heroImageBgColor: nil, riskLevel: nil
         )
     }
 }
@@ -599,10 +599,10 @@ enum Sample {
     static let mailboxes: [Mailbox] = [
         Mailbox(id: "mb1", address: "craig@gmail.com", provider: "Gmail",
                 status: .active(lastSynced: .now), tag: "GM",
-                includeInUnifiedFeed: true, notificationsEnabled: true),
+                includeInUnifiedFeed: true),
         Mailbox(id: "mb2", address: "craig@northwind.co", provider: "Outlook",
                 status: .active(lastSynced: .now), tag: "WORK",
-                includeInUnifiedFeed: true, notificationsEnabled: true),
+                includeInUnifiedFeed: true),
     ]
 
     static let priya = Sender(name: "Priya Raman", address: "priya@northwind.co", kind: .person, logoURL: nil)

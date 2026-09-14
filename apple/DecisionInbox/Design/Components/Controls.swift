@@ -7,6 +7,58 @@ import SwiftUI
 // with a shadow. Every one of those defaults would put back the colour and
 // the containers this design spent its whole argument removing.
 
+// MARK: - Press feedback
+//
+// Input is acknowledged on touch-down everywhere, and it is acknowledged
+// visually. No press-down in this product fires a haptic: presses are the most
+// frequent event there is, and spending the tactile budget on them is what
+// trains people to stop noticing the cues that carry real information. Cues
+// fire at commit — see Haptics.swift.
+//
+// These live here rather than in Tokens.swift because this is the file that
+// already owns the product's buttons.
+
+/// A post acknowledges a press with a **fill change and no scale**.
+///
+/// The reason is specific rather than a preference: a full-width decontained
+/// post that scales pulls its edge-to-edge hairlines out of alignment with its
+/// neighbours' and momentarily reads as a card — undoing the single decision
+/// the whole feed is built on.
+///
+/// The fill is reported to the row rather than drawn on the label, because a
+/// post's tappable region ends above its action row while its ground does not:
+/// the action row's own buttons cannot live inside a button's label and still
+/// receive taps.
+struct PostPressStyle: ButtonStyle {
+    @Binding var pressed: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                withAnimation(isPressed ? Move.pressIn : Move.pressOut) {
+                    pressed = isPressed
+                }
+            }
+    }
+}
+
+/// Small controls — anything that is not a whole post. A scale step is legible
+/// on a 44pt target in a way a fill change is not, and nothing structural is
+/// pulled out of alignment by it.
+struct TapStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // Reduce Motion drops the scale and keeps the opacity: the
+            // acknowledgement survives, the travel does not.
+            .scaleEffect(reduceMotion || !configuration.isPressed ? 1 : 0.94)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(configuration.isPressed ? Move.pressIn : Move.pressOut,
+                       value: configuration.isPressed)
+    }
+}
+
 // MARK: - Toggle
 
 /// 44×26 with a 20pt knob on a 3pt inset. Black when on, `#EEEEEE` when off.

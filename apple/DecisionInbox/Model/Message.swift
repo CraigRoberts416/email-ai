@@ -128,6 +128,11 @@ struct Message: Identifiable, Hashable {
     /// the kicker; everything else about the card follows from it.
     var requiresAttention: Bool = false
 
+    /// Structural risk signals were found — a domain that does not match the
+    /// brand it claims, a link that goes elsewhere, urgency attached to a
+    /// credential ask. Set only when the server could also say why.
+    var isAtRisk: Bool = false
+
     /// True while the model is still writing. The quote slot is reserved at
     /// build time so nothing jumps when it lands.
     var isInterpreting: Bool
@@ -150,6 +155,10 @@ struct Message: Identifiable, Hashable {
 
         if isInterpreting {
             kicker = .reading
+        } else if isAtRisk {
+            // Outranks everything, including a promotion: the most dangerous
+            // mail in an inbox is the mail that looks like routine business.
+            kicker = .possibleScam
         } else if isPromotion {
             kicker = .promotion
         } else if requiresAttention {
@@ -163,7 +172,11 @@ struct Message: Identifiable, Hashable {
         // NEEDS YOU post with nothing to click rendered byte-identical to an
         // FYI — the one distinction the feed exists to draw, lost to a field
         // that is about links.
-        if isPromotion && quote == nil {
+        if isAtRisk {
+            // Never compact. A suspected scam is not allowed to be the
+            // quietest thing on the screen.
+            density = .standard
+        } else if isPromotion && quote == nil {
             density = .compact
         } else if requiresAttention || actionLabel?.isEmpty == false {
             density = .lead
@@ -193,7 +206,6 @@ struct Mailbox: Identifiable, Hashable {
     var tag: String
 
     var includeInUnifiedFeed: Bool
-    var notificationsEnabled: Bool
 
     var isHealthy: Bool {
         if case .active = status { return true }
