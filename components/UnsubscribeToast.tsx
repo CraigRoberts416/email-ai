@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Animated, StyleSheet, Text, View } from 'react-native';
-import { Colors, InterFonts, Radius, Spacing } from '@/constants/theme';
+import { Radius, Spacing, Theme, Type } from '@/constants/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -16,15 +16,15 @@ type Props = {
 };
 
 function statusColor(status: UnsubscribeJob['status']): string {
-  if (status === 'done')  return '#4CD964';
-  if (status === 'error') return '#FF3B30';
-  return '#AAAAAA';
+  if (status === 'done')  return Theme.success;
+  if (status === 'error') return Theme.danger;
+  return Theme.warning;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────
 
 export default function UnsubscribeToast({ jobs }: Props) {
-  const translateY = useRef(new Animated.Value(100)).current;
+  const translateY = useRef(new Animated.Value(120)).current;
   const opacity    = useRef(new Animated.Value(0)).current;
 
   const activeJobs = jobs.filter(j => j.status !== 'done' && j.status !== 'error');
@@ -33,20 +33,20 @@ export default function UnsubscribeToast({ jobs }: Props) {
   const total      = jobs.length;
   const visible    = jobs.length > 0;
 
-  // Current job to narrate — first non-done, non-error one; else last done/error
+  // Narrate the first in-flight job; fall back to the last resolved one.
   const current = activeJobs[0] ?? jobs[jobs.length - 1] ?? null;
 
   useEffect(() => {
     Animated.parallel([
       Animated.spring(translateY, {
-        toValue: visible ? 0 : 100,
+        toValue: visible ? 0 : 120,
         useNativeDriver: true,
-        damping: 20,
-        stiffness: 200,
+        damping: 22,
+        stiffness: 260,
       }),
       Animated.timing(opacity, {
         toValue: visible ? 1 : 0,
-        duration: 200,
+        duration: 180,
         useNativeDriver: true,
       }),
     ]).start();
@@ -56,12 +56,11 @@ export default function UnsubscribeToast({ jobs }: Props) {
 
   const completedCount = doneCount + errorCount;
   const showProgress   = total > 1;
-  const dotColor       = statusColor(current.status);
 
   return (
     <Animated.View style={[styles.container, { transform: [{ translateY }], opacity }]}>
       <View style={styles.toast}>
-        <View style={[styles.dot, { backgroundColor: dotColor }]} />
+        <View style={[styles.dot, { backgroundColor: statusColor(current.status) }]} />
         <View style={styles.left}>
           <Text style={styles.senderName} numberOfLines={1}>
             {current.senderName}
@@ -85,24 +84,26 @@ export default function UnsubscribeToast({ jobs }: Props) {
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    bottom: Spacing.lg,
+    bottom: Spacing.xl,
     left: Spacing.md,
     right: Spacing.md,
     zIndex: 100,
   },
   toast: {
-    backgroundColor: Colors.light.textPrimary,
-    borderRadius: Radius.xl,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 14,
+    backgroundColor: Theme.elevated,
+    borderRadius: Radius.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Theme.border,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: Spacing.md,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 8,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    elevation: 10,
   },
   dot: {
     width: 8,
@@ -115,29 +116,22 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   senderName: {
-    fontFamily: InterFonts.medium,
-    fontSize: 14,
-    fontWeight: '500',
-    color: Colors.light.background,
-    letterSpacing: -0.2,
+    ...Type.sender,
+    color: Theme.textPrimary,
   },
   statusText: {
-    fontFamily: InterFonts.regular,
-    fontSize: 12,
-    fontWeight: '400',
-    color: '#AAAAAA',
+    ...Type.caption,
+    color: Theme.textSecondary,
   },
   badge: {
-    backgroundColor: '#333333',
+    backgroundColor: Theme.surface,
     borderRadius: Radius.round,
     paddingHorizontal: Spacing.sm,
     paddingVertical: Spacing.xs,
     flexShrink: 0,
   },
   badgeText: {
-    fontFamily: InterFonts.medium,
-    fontSize: 12,
-    fontWeight: '500',
-    color: Colors.light.background,
+    ...Type.metaBold,
+    color: Theme.textSecondary,
   },
 });

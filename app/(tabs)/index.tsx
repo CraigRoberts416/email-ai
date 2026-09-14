@@ -1,56 +1,44 @@
-import EmailCard from '@/components/EmailCard';
-import EmailCardSkeleton from '@/components/EmailCardSkeleton';
-import InboxRecapHeader from '@/components/InboxRecapHeader';
-import UnsubscribeToast, { UnsubscribeJob } from '@/components/UnsubscribeToast';
-import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
-import { Colors, Radius, Spacing, Typography } from '@/constants/theme';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import Animated, {
+  useAnimatedScrollHandler,
+  useSharedValue,
+} from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
+import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, Linking, Pressable, SafeAreaView, StyleSheet, Text, View } from 'react-native';
-import { DdRum, RumActionType } from '@datadog/mobile-react-native';
+import { trackAction } from '@/components/observability';
 
-// ─── Feed ─────────────────────────────────────────────────────────────────
+import CaughtUp from '@/components/CaughtUp';
+import DiscussSheet, { DiscussMessage } from '@/components/DiscussSheet';
+import EmptyState from '@/components/EmptyState';
+import FeedCard from '@/components/FeedCard';
+import FeedHeader, { FeedMode } from '@/components/FeedHeader';
+import OverflowMenu, { OverflowItem } from '@/components/OverflowMenu';
+import { StatusKind } from '@/components/StatusPill';
+import UnsubscribeToast, { UnsubscribeJob } from '@/components/UnsubscribeToast';
+import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
+import { Spacing, Theme } from '@/constants/theme';
+
+const AnimatedFlatList = Animated.createAnimatedComponent(FlatList);
+
+// ─── Backend endpoints ───────────────────────────────────────────────────
 
 const FEED_BASE_URL = process.env.EXPO_PUBLIC_FEED_BASE_URL || 'https://email-ai-server.onrender.com';
 const UNSUBSCRIBE_BASE_URL = process.env.EXPO_PUBLIC_UNSUBSCRIBE_BASE_URL || FEED_BASE_URL;
 
-// ─── UI copy ─────────────────────────────────────────────────────────────
-
-type UiCopy = {
-  connectGmail: string;
-  mailFeed: string;
-  allMail: string;
-  loadingMore: string;
-  loadMore: string;
-  unsubscribeStart: string;
-  inView: string;
-  needAttention: string;
-};
-
-const DEFAULT_UI_COPY: UiCopy = {
-  connectGmail: 'Connect Gmail',
-  mailFeed: 'Mail Feed',
-  allMail: 'All Mail',
-  loadingMore: 'Loading…',
-  loadMore: 'Load More',
-  unsubscribeStart: 'Initiating unsubscribe heist…',
-  inView: 'in view',
-  needAttention: 'need attention',
-};
-
-async function fetchUiCopy(token: string): Promise<UiCopy | null> {
-  try {
-    const res = await fetch(`${FEED_BASE_URL}/ui-copy`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return null;
-    return res.json();
-  } catch {
-    return null;
-  }
-}
+// ─── Data types ──────────────────────────────────────────────────────────
 
 type MessageRecord = {
   messageId:         string;
@@ -69,55 +57,48 @@ type MessageRecord = {
   actionUrl:         string | null;
   requiresAttention: boolean;
   unsubscribeUrl:    string | null;
-  // Computed server-side
   avatarUri:         string | null;
   avatarFallbackText: string;
-  // Only on All Mail cards from server
   interpreted?:      boolean;
 };
+
+// ─── HTTP helpers ────────────────────────────────────────────────────────
 
 const FETCH_TIMEOUT_MS = 15_000;
 
 function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
-    clearTimeout(timer)
-  );
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
-async function fetchFeed(accessToken: string): Promise<{ cards: MessageRecord[] }> {
-  const res = await fetchWithTimeout(`${FEED_BASE_URL}/feed`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) throw new Error(`/feed returned ${res.status}`);
-  return res.json();
+async function fetchFeed(token: string) {
+  const res = await fetchWithTimeout(`${FEED_BASE_URL}/feed`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`feed ${res.status}`);
+  return res.json() as Promise<{ cards: MessageRecord[] }>;
 }
 
-async function fetchAllMail(
-  accessToken: string,
-  cursor?: number
-): Promise<{ cards: MessageRecord[]; nextCursor: number | null }> {
-  const url = cursor
-    ? `${FEED_BASE_URL}/all-mail?cursor=${cursor}`
-    : `${FEED_BASE_URL}/all-mail`;
-  const res = await fetchWithTimeout(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+async function fetchAllMail(token: string, cursor?: number) {
+  const url = cursor ? `${FEED_BASE_URL}/all-mail?cursor=${cursor}` : `${FEED_BASE_URL}/all-mail`;
+  const res = await fetchWithTimeout(url, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`all-mail ${res.status}`);
+  return res.json() as Promise<{ cards: MessageRecord[]; nextCursor: number | null }>;
+}
+
+async function markAsRead(token: string, messageId: string) {
+  await fetch(`${FEED_BASE_URL}/messages/${messageId}/read`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error(`/all-mail returned ${res.status}`);
-  return res.json();
 }
 
 async function requestUnsubscribe(
-  accessToken: string,
-  messageId: string,
-  unsubscribeUrl: string,
-  senderName: string
+  token: string, messageId: string, unsubscribeUrl: string, senderName: string
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const res = await fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe`, {
       method:  'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body:    JSON.stringify({ messageId, unsubscribeUrl, senderName }),
     });
     if (!res.ok) {
@@ -130,16 +111,13 @@ async function requestUnsubscribe(
   }
 }
 
-async function fetchUnsubscribeStatus(
-  accessToken: string,
-  messageId: string
-): Promise<UnsubscribeJob | null> {
+async function fetchUnsubscribeStatus(token: string, messageId: string): Promise<UnsubscribeJob | null> {
   try {
     const res = await fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe/${encodeURIComponent(messageId)}/status`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`status returned ${res.status}`);
+    if (!res.ok) throw new Error(`status ${res.status}`);
     return res.json();
   } catch (err) {
     console.warn('[unsubscribe] status poll failed:', err);
@@ -147,56 +125,25 @@ async function fetchUnsubscribeStatus(
   }
 }
 
-async function markAsRead(accessToken: string, messageId: string): Promise<void> {
-  await fetch(`${FEED_BASE_URL}/messages/${messageId}/read`, {
-    method:  'PATCH',
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-}
-
-async function registerWithBackend(
-  accessToken: string,
-  refreshToken: string,
-  expiresAt: number
-): Promise<void> {
+async function registerWithBackend(accessToken: string, refreshToken: string, expiresAt: number) {
   try {
-    const res = await fetch(`${FEED_BASE_URL}/auth/register`, {
+    await fetch(`${FEED_BASE_URL}/auth/register`, {
       method:  'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body:    JSON.stringify({ refreshToken, expiresAt }),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      console.error('[register] backend registration failed:', JSON.stringify(err));
-    } else {
-      console.log('[register] backend registration success');
-    }
   } catch (err) {
-    console.error('[register] backend registration error:', err);
+    console.error('[register] error:', err);
   }
 }
 
-// ─── Auth storage ─────────────────────────────────────────────────────────
+// ─── Auth storage ────────────────────────────────────────────────────────
 
 const AUTH_STORAGE_KEY = 'gmail_auth';
-const USER_NAME_KEY = 'user_name';
-
-type RecapData = {
-  greeting: string;
-  summary: string;
-  totalInView: number;
-  requireAttention: number;
-};
-
-async function saveUserName(name: string) {
-  await AsyncStorage.setItem(USER_NAME_KEY, name);
-}
-async function loadUserName(): Promise<string> {
-  return (await AsyncStorage.getItem(USER_NAME_KEY)) ?? '';
-}
+const USER_NAME_KEY    = 'user_name';
 
 async function saveAuth(accessToken: string, refreshToken: string | null, expiresAt: number) {
-  await SecureStore.setItemAsync(AUTH_STORAGE_KEY, JSON.stringify({ accessToken, refreshToken: refreshToken ?? null, expiresAt }));
+  await SecureStore.setItemAsync(AUTH_STORAGE_KEY, JSON.stringify({ accessToken, refreshToken, expiresAt }));
 }
 
 async function loadAuth(): Promise<{ accessToken: string; refreshToken: string | null; expiresAt: number } | null> {
@@ -205,7 +152,7 @@ async function loadAuth(): Promise<{ accessToken: string; refreshToken: string |
   try { return JSON.parse(raw); } catch { return null; }
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string; expiresAt: number } | null> {
+async function refreshAccessToken(refreshToken: string) {
   const body = new URLSearchParams({
     client_id: GOOGLE_IOS_CLIENT_ID,
     grant_type: 'refresh_token',
@@ -216,126 +163,158 @@ async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: 
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
   });
+  if (!res.ok) return null;
   const json = await res.json();
-  if (!res.ok) {
-    console.error('[auth] refresh failed:', json);
-    return null;
-  }
   return { accessToken: json.access_token, expiresAt: Date.now() + json.expires_in * 1000 };
 }
 
-// ─── Relative time formatter ──────────────────────────────────────────────
+// ─── Status derivation ───────────────────────────────────────────────────
+// The server doesn't yet return an enum status, so we derive one client-side.
+// TODO: move to server once the AI pipeline emits `status` directly.
 
-function formatRelativeTime(dateStr: string): string {
-  if (!dateStr) return '';
-  // Gmail internalDate is epoch ms as a string; fall back to RFC 2822 string
-  const asMs = Number(dateStr);
-  const date = isNaN(asMs) ? new Date(dateStr) : new Date(asMs);
-  if (isNaN(date.getTime())) return '';
-  const diffMs = Date.now() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  if (diffMins < 1) return 'Just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffDays === 1) return 'Yesterday';
-  if (diffDays < 7) return `${diffDays} days ago`;
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+function deriveStatus(m: MessageRecord): StatusKind {
+  if (m.unsubscribeUrl)     return 'promotion';
+  if (m.requiresAttention)  return 'waiting-on-you';
+  return 'fyi';
 }
 
-// ─── Screen ───────────────────────────────────────────────────────────────
+function deriveKind(m: MessageRecord): 'standard' | 'marketing' {
+  return m.unsubscribeUrl ? 'marketing' : 'standard';
+}
+
+// ─── Relative time ───────────────────────────────────────────────────────
+
+function relativeTime(ms: number): string {
+  const diff = Date.now() - ms;
+  const m = Math.floor(diff / 60_000);
+  if (m < 1)  return 'now';
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d`;
+  return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+// ─── Screen ──────────────────────────────────────────────────────────────
 
 export default function Index() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [userName, setUserName] = useState('');
-  const [recap] = useState<RecapData | null>(null);
-  const [uiCopy, setUiCopy] = useState<UiCopy>(DEFAULT_UI_COPY);
-  const activeUnsubscribePolls = useRef(new Set<string>());
+  const [userName, setUserName]       = useState('');
+  const [mode, setMode]               = useState<FeedMode>('feed');
+  const [refreshing, setRefreshing]   = useState(false);
 
-  // ── Feed state ────────────────────────────────────────────────────────
+  // Feed state
   const [feedMessages, setFeedMessages] = useState<MessageRecord[]>([]);
 
-  // ── Unsubscribe toast state ────────────────────────────────────────────
-  const [unsubscribeJobs, setUnsubscribeJobs] = useState<UnsubscribeJob[]>([]);
-
-  const pollUnsubscribeStatus = useCallback(async (token: string, messageId: string) => {
-    if (activeUnsubscribePolls.current.has(messageId)) return;
-    activeUnsubscribePolls.current.add(messageId);
-
-    try {
-      const deadline = Date.now() + 90_000;
-
-      while (Date.now() < deadline) {
-        const status = await fetchUnsubscribeStatus(token, messageId);
-        if (status) {
-          console.log('[unsubscribe] polled status:', JSON.stringify(status));
-          setUnsubscribeJobs(prev => {
-            const exists = prev.find(j => j.messageId === messageId);
-            if (exists) return prev.map(j => j.messageId === messageId ? status : j);
-            return [...prev, status];
-          });
-
-          if (status.status === 'done' || status.status === 'error') return;
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
-
-      setUnsubscribeJobs(prev => prev.map(j =>
-        j.messageId === messageId && (j.status === 'queued' || j.status === 'navigating' || j.status === 'analyzing' || j.status === 'filling' || j.status === 'clicking' || j.status === 'verifying')
-          ? { ...j, status: 'error', message: 'Timed out waiting for unsubscribe progress' }
-          : j
-      ));
-    } finally {
-      activeUnsubscribePolls.current.delete(messageId);
-    }
-  }, []);
-
-  // Clear successful jobs quickly, but leave errors around longer so we can read them.
-  useEffect(() => {
-    const doneJobs = unsubscribeJobs.filter(j => j.status === 'done');
-    if (doneJobs.length === 0) return;
-    const timer = setTimeout(() => {
-      setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'done'));
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, [unsubscribeJobs]);
-
-  useEffect(() => {
-    const errorJobs = unsubscribeJobs.filter(j => j.status === 'error');
-    if (errorJobs.length === 0) return;
-    const timer = setTimeout(() => {
-      setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'error'));
-    }, 12000);
-    return () => clearTimeout(timer);
-  }, [unsubscribeJobs]);
-
-  useEffect(() => {
-    return () => {
-      activeUnsubscribePolls.current.clear();
-    };
-  }, []);
-
-  // ── All Mail state ────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<'feed' | 'allMail'>('feed');
-  const [allMailMessages, setAllMailMessages] = useState<MessageRecord[]>([]);
+  // All-mail state
+  const [allMail, setAllMail]           = useState<MessageRecord[]>([]);
   const [allMailCursor, setAllMailCursor] = useState<number | null>(null);
   const [loadingAllMail, setLoadingAllMail] = useState(false);
 
-  // Reset All Mail cache when auth changes so a new user gets a fresh fetch
-  useEffect(() => {
-    setAllMailMessages([]);
-    setAllMailCursor(null);
-  }, [accessToken]);
+  // Unsubscribe jobs
+  const [unsubscribeJobs, setUnsubscribeJobs] = useState<UnsubscribeJob[]>([]);
+  const activePolls = useRef(new Set<string>());
 
-  // Fetch AI-generated UI copy once per session when auth is available
-  useEffect(() => {
-    if (!accessToken) return;
-    fetchUiCopy(accessToken).then(copy => { if (copy) setUiCopy(copy); });
-  }, [accessToken]);
+  // Overflow menu state
+  const [overflowFor, setOverflowFor] = useState<string | null>(null);
 
-  // Load feed on mount / when access token becomes available
+  // Discuss sheet state
+  const [discussFor, setDiscussFor] = useState<string | null>(null);
+  const [discussMessages, setDiscussMessages] = useState<Record<string, DiscussMessage[]>>({});
+
+  // Scroll-driven header
+  const scrollY = useSharedValue(0);
+  const onScroll = useAnimatedScrollHandler({
+    onScroll: (e) => { scrollY.value = e.contentOffset.y; },
+  });
+
+  // Cards that arrived via SSE after the initial load. Only these get an
+  // entry animation — FlatList remounts recycled rows while scrolling, and
+  // animating those makes the whole list twitch.
+  const [newIds, setNewIds] = useState<Set<string>>(new Set());
+  const markNew = useCallback((id: string) => {
+    setNewIds(prev => new Set(prev).add(id));
+    setTimeout(() => {
+      setNewIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }, 1000);
+  }, []);
+
+  // ── Auth restore on launch ──────────────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      const stored = await loadAuth();
+      if (!stored) return;
+      const expired = Date.now() >= stored.expiresAt - 60_000;
+      if (expired) {
+        if (!stored.refreshToken) { await SecureStore.deleteItemAsync(AUTH_STORAGE_KEY); return; }
+        const r = await refreshAccessToken(stored.refreshToken);
+        if (!r) { await SecureStore.deleteItemAsync(AUTH_STORAGE_KEY); return; }
+        await saveAuth(r.accessToken, stored.refreshToken, r.expiresAt);
+        await registerWithBackend(r.accessToken, stored.refreshToken, r.expiresAt);
+        setAccessToken(r.accessToken);
+      } else {
+        if (stored.refreshToken) await registerWithBackend(stored.accessToken, stored.refreshToken, stored.expiresAt);
+        setAccessToken(stored.accessToken);
+      }
+    })().catch(err => console.error('[auth] restore error:', err));
+  }, []);
+
+  useEffect(() => {
+    AsyncStorage.getItem(USER_NAME_KEY).then(n => n && setUserName(n));
+  }, []);
+
+  // ── Google OAuth ────────────────────────────────────────────────────
+  const [request, response, promptAsync] = Google.useAuthRequest({
+    iosClientId: GOOGLE_IOS_CLIENT_ID,
+    scopes: ['openid', 'profile', 'email', 'https://mail.google.com/'],
+    shouldAutoExchangeCode: false,
+  });
+
+  useEffect(() => {
+    if (response?.type !== 'success') return;
+    const code = response.params.code;
+    const codeVerifier = request?.codeVerifier;
+    const redirectUri  = request?.redirectUri;
+    if (!code || !codeVerifier || !redirectUri) return;
+
+    (async () => {
+      const body = new URLSearchParams({
+        client_id: GOOGLE_IOS_CLIENT_ID,
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        code_verifier: codeVerifier,
+      }).toString();
+      const res = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+      const json = await res.json();
+      if (!res.ok) { console.error('[auth] token error:', json); return; }
+      const newAccessToken = json.access_token;
+      const existing = await loadAuth();
+      const refreshToken = json.refresh_token ?? existing?.refreshToken ?? null;
+      const expiresAt    = Date.now() + json.expires_in * 1000;
+      await saveAuth(newAccessToken, refreshToken, expiresAt);
+      if (refreshToken) await registerWithBackend(newAccessToken, refreshToken, expiresAt);
+      setAccessToken(newAccessToken);
+
+      const uiRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${newAccessToken}` },
+      });
+      const ui = await uiRes.json();
+      const firstName = ui.given_name ?? '';
+      if (firstName) { setUserName(firstName); AsyncStorage.setItem(USER_NAME_KEY, firstName); }
+    })().catch(err => console.error('[auth] exchange failed:', err));
+  }, [response, request]);
+
+  // ── Feed load ───────────────────────────────────────────────────────
   const loadFeed = useCallback(async () => {
     if (!accessToken) return;
     try {
@@ -346,686 +325,427 @@ export default function Index() {
     }
   }, [accessToken]);
 
-  useEffect(() => {
-    loadFeed();
-  }, [loadFeed]);
+  useEffect(() => { loadFeed(); }, [loadFeed]);
 
-  // SSE connection — receives real-time message events while the user is in the app.
-  // Handles: message-added, processing, chunk, field-complete, message-ready, message-read
+  // ── SSE ─────────────────────────────────────────────────────────────
+  // handleEvent only closes over stable setters and markNew, so the SSE
+  // effect below can depend on it without churning the connection.
+  const handleEvent = useCallback((event: any) => {
+    const { messageId, type } = event;
+    if (type === 'message-added') {
+      const record: MessageRecord = {
+        messageId:          event.messageId,
+        threadId:           event.threadId ?? null,
+        labelIds:           event.labelIds ?? [],
+        subject:            event.subject ?? '',
+        fromName:           event.fromName ?? '',
+        fromEmail:          event.fromEmail ?? '',
+        snippet:            event.snippet ?? '',
+        internalDate:       event.internalDate ?? Date.now(),
+        postCutoff:         event.postCutoff ?? false,
+        aiStatus:           event.aiStatus ?? 'none',
+        quote:              null,
+        summary:            null,
+        action:             null,
+        actionUrl:          null,
+        requiresAttention:  false,
+        unsubscribeUrl:     null,
+        avatarUri:          event.avatarUri ?? null,
+        avatarFallbackText: event.avatarFallbackText ?? '',
+      };
+      setFeedMessages(prev => {
+        if (prev.some(m => m.messageId === record.messageId)) return prev;
+        markNew(record.messageId);
+        return [record, ...prev].sort((a, b) => b.internalDate - a.internalDate);
+      });
+    } else if (type === 'processing') {
+      setFeedMessages(prev => prev.map(m => m.messageId === messageId ? { ...m, aiStatus: 'processing' } : m));
+    } else if (type === 'field-complete') {
+      setFeedMessages(prev => prev.map(m => m.messageId === messageId ? { ...m, [event.field]: event.value } : m));
+    } else if (type === 'message-ready') {
+      setFeedMessages(prev => prev.map(m => m.messageId === messageId ? { ...m, aiStatus: 'done' } : m));
+    } else if (type === 'message-read') {
+      setFeedMessages(prev => prev.filter(m => m.messageId !== messageId));
+    } else if (type === 'unsubscribe-status') {
+      setUnsubscribeJobs(prev => {
+        const job: UnsubscribeJob = {
+          messageId,
+          senderName: event.senderName ?? '',
+          status:     event.status,
+          message:    event.message ?? '',
+        };
+        const existing = prev.find(j => j.messageId === messageId);
+        if (existing) return prev.map(j => j.messageId === messageId ? job : j);
+        return [...prev, job];
+      });
+    }
+  }, [markNew]);
+
   useEffect(() => {
     if (!accessToken) return;
-
     const controller = new AbortController();
-    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
 
     (async () => {
-      let retryDelay = 1000;
-
+      let backoff = 1000;
       while (!controller.signal.aborted) {
-        let connectTimer: ReturnType<typeof setTimeout> | null = null;
-        const attemptController = new AbortController();
-        const abortAttempt = () => attemptController.abort();
-        controller.signal.addEventListener('abort', abortAttempt);
-
         try {
-          connectTimer = setTimeout(() => attemptController.abort(), FETCH_TIMEOUT_MS);
           const response = await fetch(`${FEED_BASE_URL}/feed/events`, {
             headers: { Authorization: `Bearer ${accessToken}` },
-            signal: attemptController.signal,
+            signal: controller.signal,
           });
-          clearTimeout(connectTimer);
-          connectTimer = null;
-
-          if (!response.ok) throw new Error(`connect failed: ${response.status}`);
-
+          if (!response.ok) throw new Error(`connect ${response.status}`);
           const reader = response.body?.getReader();
-          if (!reader) throw new Error('SSE response body unavailable');
-
-          retryDelay = 1000;
-
-          const decoder = new TextDecoder();
-          let buffer = '';
-
+          if (!reader) throw new Error('no body');
+          backoff = 1000;
+          const dec = new TextDecoder();
+          let buf = '';
           while (!controller.signal.aborted) {
             const { done, value } = await reader.read();
             if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-
+            buf += dec.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop() ?? '';
             for (const line of lines) {
               if (!line.startsWith('data: ')) continue;
               try {
-                const event = JSON.parse(line.slice(6));
-                const { messageId, type: evtType } = event;
-
-                if (evtType === 'message-added') {
-                  // New message arrived — add to feed
-                  const newRecord: MessageRecord = {
-                    messageId:          event.messageId,
-                    threadId:           event.threadId ?? null,
-                    labelIds:           event.labelIds ?? [],
-                    subject:            event.subject ?? '',
-                    fromName:           event.fromName ?? '',
-                    fromEmail:          event.fromEmail ?? '',
-                    snippet:            event.snippet ?? '',
-                    internalDate:       event.internalDate ?? Date.now(),
-                    postCutoff:         event.postCutoff ?? false,
-                    aiStatus:           event.aiStatus ?? 'none',
-                    quote:              null,
-                    summary:            null,
-                    action:             null,
-                    actionUrl:          null,
-                    requiresAttention:  false,
-                    unsubscribeUrl:     null,
-                    avatarUri:          event.avatarUri ?? null,
-                    avatarFallbackText: event.avatarFallbackText ?? '',
-                  };
-                  setFeedMessages(prev => {
-                    const exists = prev.some(m => m.messageId === newRecord.messageId);
-                    if (exists) return prev;
-                    return [newRecord, ...prev].sort((a, b) => b.internalDate - a.internalDate);
-                  });
-                } else if (evtType === 'processing') {
-                  // Mark message as processing
-                  setFeedMessages(prev => prev.map(m =>
-                    m.messageId === messageId ? { ...m, aiStatus: 'processing' } : m
-                  ));
-                } else if (evtType === 'field-complete') {
-                  // Field fully resolved — set final value
-                  setFeedMessages(prev => prev.map(m =>
-                    m.messageId === messageId ? { ...m, [event.field]: event.value } : m
-                  ));
-                } else if (evtType === 'message-ready') {
-                  // All AI fields done
-                  setFeedMessages(prev => prev.map(m =>
-                    m.messageId === messageId ? { ...m, aiStatus: 'done' } : m
-                  ));
-                } else if (evtType === 'message-read') {
-                  // Message marked as read — remove from unread feed
-                  setFeedMessages(prev => prev.filter(m => m.messageId !== messageId));
-                } else if (evtType === 'unsubscribe-status') {
-                  setUnsubscribeJobs(prev => {
-                    const exists = prev.find(j => j.messageId === messageId);
-                    const job: UnsubscribeJob = {
-                      messageId,
-                      senderName: event.senderName ?? '',
-                      status:     event.status,
-                      message:    event.message ?? '',
-                    };
-                    if (exists) return prev.map(j => j.messageId === messageId ? job : j);
-                    return [...prev, job];
-                  });
-                }
-              } catch {
-                // Skip malformed events.
-              }
+                const evt = JSON.parse(line.slice(6));
+                handleEvent(evt);
+              } catch { /* skip malformed */ }
             }
           }
-
-          // SSE disconnected — reload feed to catch any missed events, then reconnect.
-          if (!controller.signal.aborted) {
-            await loadFeed();
-            await wait(1000);
-          }
+          if (!controller.signal.aborted) { await loadFeed(); await wait(1000); }
         } catch (err: any) {
           if (err.name !== 'AbortError') console.warn('[sse] error:', err.message);
           if (controller.signal.aborted) break;
-          await wait(retryDelay);
-          retryDelay = Math.min(retryDelay * 2, 10_000);
-        } finally {
-          if (connectTimer) clearTimeout(connectTimer);
-          controller.signal.removeEventListener('abort', abortAttempt);
+          await wait(backoff);
+          backoff = Math.min(backoff * 2, 10_000);
         }
       }
     })();
 
     return () => controller.abort();
-  }, [accessToken, loadFeed]);
+  }, [accessToken, loadFeed, handleEvent]);
+
+  // ── Unsubscribe job cleanup ─────────────────────────────────────────
+  useEffect(() => {
+    const done = unsubscribeJobs.filter(j => j.status === 'done');
+    if (done.length === 0) return;
+    const t = setTimeout(() => setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'done')), 5000);
+    return () => clearTimeout(t);
+  }, [unsubscribeJobs]);
 
   useEffect(() => {
-    if (!accessToken) return;
-    if (UNSUBSCRIBE_BASE_URL === FEED_BASE_URL) return;
+    const errored = unsubscribeJobs.filter(j => j.status === 'error');
+    if (errored.length === 0) return;
+    const t = setTimeout(() => setUnsubscribeJobs(prev => prev.filter(j => j.status !== 'error')), 12000);
+    return () => clearTimeout(t);
+  }, [unsubscribeJobs]);
 
-    const controller = new AbortController();
-    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-    (async () => {
-      let retryDelay = 1000;
-
-      while (!controller.signal.aborted) {
-        let connectTimer: ReturnType<typeof setTimeout> | null = null;
-        const attemptController = new AbortController();
-        const abortAttempt = () => attemptController.abort();
-        controller.signal.addEventListener('abort', abortAttempt);
-
-        try {
-          connectTimer = setTimeout(() => attemptController.abort(), FETCH_TIMEOUT_MS);
-          const response = await fetch(`${UNSUBSCRIBE_BASE_URL}/feed/events`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-            signal: attemptController.signal,
+  const pollUnsubStatus = useCallback(async (token: string, messageId: string) => {
+    if (activePolls.current.has(messageId)) return;
+    activePolls.current.add(messageId);
+    try {
+      const deadline = Date.now() + 90_000;
+      while (Date.now() < deadline) {
+        const status = await fetchUnsubscribeStatus(token, messageId);
+        if (status) {
+          setUnsubscribeJobs(prev => {
+            const exists = prev.find(j => j.messageId === messageId);
+            return exists ? prev.map(j => j.messageId === messageId ? status : j) : [...prev, status];
           });
-          clearTimeout(connectTimer);
-          connectTimer = null;
-
-          if (!response.ok) throw new Error(`unsubscribe SSE failed: ${response.status}`);
-
-          const reader = response.body?.getReader();
-          if (!reader) throw new Error('unsubscribe SSE response body unavailable');
-
-          retryDelay = 1000;
-
-          const decoder = new TextDecoder();
-          let buffer = '';
-
-          while (!controller.signal.aborted) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-
-            for (const line of lines) {
-              if (!line.startsWith('data: ')) continue;
-              try {
-                const event = JSON.parse(line.slice(6));
-                if (event.type !== 'unsubscribe-status') continue;
-
-                setUnsubscribeJobs(prev => {
-                  const exists = prev.find(j => j.messageId === event.messageId);
-                  const job: UnsubscribeJob = {
-                    messageId: event.messageId,
-                    senderName: event.senderName ?? '',
-                    status: event.status,
-                    message: event.message ?? '',
-                  };
-                  if (exists) return prev.map(j => j.messageId === event.messageId ? job : j);
-                  return [...prev, job];
-                });
-              } catch {
-                // Skip malformed events.
-              }
-            }
-          }
-
-          if (!controller.signal.aborted) await wait(1000);
-        } catch (err: any) {
-          if (err.name !== 'AbortError') console.warn('[unsubscribe-sse] error:', err.message);
-          if (controller.signal.aborted) break;
-          await wait(retryDelay);
-          retryDelay = Math.min(retryDelay * 2, 10_000);
-        } finally {
-          if (connectTimer) clearTimeout(connectTimer);
-          controller.signal.removeEventListener('abort', abortAttempt);
+          if (status.status === 'done' || status.status === 'error') return;
         }
+        await new Promise(r => setTimeout(r, 1500));
       }
-    })();
+    } finally {
+      activePolls.current.delete(messageId);
+    }
+  }, []);
 
-    return () => controller.abort();
+  // ── Actions ─────────────────────────────────────────────────────────
+
+  const startUnsubscribe = useCallback((m: MessageRecord) => {
+    if (!accessToken || !m.unsubscribeUrl) return;
+    setUnsubscribeJobs(prev => {
+      if (prev.find(j => j.messageId === m.messageId)) return prev;
+      return [...prev, {
+        messageId: m.messageId,
+        senderName: m.fromName || m.fromEmail,
+        status: 'queued',
+        message: 'Starting unsubscribe…',
+      }];
+    });
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    requestUnsubscribe(accessToken, m.messageId, m.unsubscribeUrl, m.fromName || m.fromEmail)
+      .then(result => {
+        if (!result.ok) {
+          setUnsubscribeJobs(prev => prev.map(j =>
+            j.messageId === m.messageId ? { ...j, status: 'error', message: result.error ?? 'Failed' } : j
+          ));
+        } else {
+          pollUnsubStatus(accessToken, m.messageId).catch(err => console.warn('[unsub] poll failed:', err));
+        }
+      });
+  }, [accessToken, pollUnsubStatus]);
+
+  const archiveMessage = useCallback((m: MessageRecord) => {
+    if (!accessToken) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    // Archive == mark read for this MVP; leaves a hook for a real archive
+    // endpoint later. Layout animation on removal is handled by FeedCard's
+    // Reanimated Layout.
+    setFeedMessages(prev => prev.filter(x => x.messageId !== m.messageId));
+    markAsRead(accessToken, m.messageId).catch(err => console.error('[read]', err));
   }, [accessToken]);
 
-  const handleTabChange = useCallback(async (tab: 'feed' | 'allMail') => {
-    const screen = tab === 'feed' ? 'inbox' : 'all_mail';
-    DdRum.addAction(RumActionType.TAP, 'tab_tapped', { feed_mode: tab, current_screen: screen });
-    DdRum.addViewAttribute('feed_mode', tab);
-    DdRum.addViewAttribute('current_screen', screen);
-    setActiveTab(tab);
-    if (tab === 'allMail' && accessToken) {
-      DdRum.addViewAttribute('sync_in_progress', true);
+  const openDiscuss = useCallback((m: MessageRecord) => {
+    setDiscussFor(m.messageId);
+    trackAction('discuss_tapped', { feed_mode: mode });
+  }, [mode]);
+
+  const sendDiscussMessage = useCallback(async (text: string) => {
+    if (!discussFor) return;
+    const userMsg: DiscussMessage = { id: `u-${Date.now()}`, role: 'user', content: text };
+    setDiscussMessages(prev => ({
+      ...prev,
+      [discussFor]: [...(prev[discussFor] ?? []), userMsg],
+    }));
+    // TODO: wire to /discuss endpoint. Until then, land a friendly placeholder.
+    const stubId = `a-${Date.now()}`;
+    setDiscussMessages(prev => ({
+      ...prev,
+      [discussFor]: [...(prev[discussFor] ?? []), {
+        id: stubId,
+        role: 'ai',
+        content: 'Discuss is wired up here — the backend prompt lands next. In the meantime, this is where the model would answer.',
+      }],
+    }));
+  }, [discussFor]);
+
+  const buildOverflowItems = useCallback((m: MessageRecord): OverflowItem[] => {
+    const items: OverflowItem[] = [];
+    if (m.unsubscribeUrl) items.push({ key: 'unsub', label: 'Unsubscribe', icon: 'xmark', onPress: () => startUnsubscribe(m) });
+    items.push({ key: 'save', label: 'Save', icon: 'bookmark', onPress: () => {} });
+    items.push({ key: 'mute', label: 'Mute thread', icon: 'eye.slash', onPress: () => {} });
+    items.push({ key: 'block', label: 'Block sender', icon: 'lock', destructive: true, onPress: () => {} });
+    items.push({ key: 'report', label: 'Report scam', icon: 'flag', destructive: true, onPress: () => {} });
+    return items;
+  }, [startUnsubscribe]);
+
+  const onRefresh = useCallback(async () => {
+    if (!accessToken) return;
+    setRefreshing(true);
+    Haptics.selectionAsync().catch(() => {});
+    try {
+      await loadFeed();
+    } finally {
+      // Hold the affordance 300ms so refresh reads as an event, not a flicker.
+      setTimeout(() => setRefreshing(false), 300);
+    }
+  }, [accessToken, loadFeed]);
+
+  // ── Mode switching ──────────────────────────────────────────────────
+  const onModeChange = useCallback(async (m: FeedMode) => {
+    setMode(m);
+    trackAction('mode_tapped', { mode: m });
+    if (m === 'all-mail' && accessToken && allMail.length === 0) {
       setLoadingAllMail(true);
       try {
         const { cards, nextCursor } = await fetchAllMail(accessToken);
-        setAllMailMessages(cards);
+        setAllMail(cards);
         setAllMailCursor(nextCursor);
-        DdRum.addAction(RumActionType.CUSTOM, 'all_mail_loaded', { card_count: cards.length, feed_mode: 'all_mail' });
-        DdRum.addViewAttribute('card_count', cards.length);
       } catch (err) {
         console.error('[all-mail] fetch failed:', err);
       } finally {
         setLoadingAllMail(false);
-        DdRum.addViewAttribute('sync_in_progress', false);
       }
     }
-  }, [accessToken]);
+  }, [accessToken, allMail.length]);
 
-  const handleLoadMoreAllMail = useCallback(async () => {
+  const loadMoreAllMail = useCallback(async () => {
     if (!accessToken || !allMailCursor || loadingAllMail) return;
     setLoadingAllMail(true);
     try {
       const { cards, nextCursor } = await fetchAllMail(accessToken, allMailCursor);
-      setAllMailMessages(prev => [...prev, ...cards]);
+      setAllMail(prev => [...prev, ...cards]);
       setAllMailCursor(nextCursor);
-    } catch (err) {
-      console.error('[all-mail] load more failed:', err);
     } finally {
       setLoadingAllMail(false);
     }
   }, [accessToken, allMailCursor, loadingAllMail]);
 
-  // Re-render every minute so relative timestamps stay current
-  const [, setTick] = useState(0);
+  // ── Rerender every minute so relative times stay honest ─────────────
+  const [, tick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick(t => t + 1), 60_000);
+    const id = setInterval(() => tick(t => t + 1), 60_000);
     return () => clearInterval(id);
   }, []);
 
-  // Restore auth on launch
-  useEffect(() => {
-    (async () => {
-      try {
-        const stored = await loadAuth();
-        if (!stored) { console.log('[auth] no stored session'); return; }
-        const isExpired = Date.now() >= stored.expiresAt - 60_000;
-        if (isExpired) {
-          console.log('[auth] stored token expired, refreshing...');
-          if (!stored.refreshToken) {
-            console.log('[auth] token expired and no refresh token, clearing session');
-            await SecureStore.deleteItemAsync(AUTH_STORAGE_KEY);
-          } else {
-            const refreshed = await refreshAccessToken(stored.refreshToken);
-            if (refreshed) {
-              await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
-              console.log('[auth] session restored via refresh');
-              // Register first so incremental sync runs before loadFeed fires
-              await registerWithBackend(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
-              setAccessToken(refreshed.accessToken);
-            } else {
-              await SecureStore.deleteItemAsync(AUTH_STORAGE_KEY);
-              console.log('[auth] refresh failed, cleared stored session');
-            }
-          }
-        } else {
-          console.log('[auth] session restored from storage');
-          // Register first so incremental sync runs before loadFeed fires
-          if (stored.refreshToken) {
-            await registerWithBackend(stored.accessToken, stored.refreshToken, stored.expiresAt);
-          }
-          setAccessToken(stored.accessToken);
-        }
-      } catch (err) {
-        console.error('[auth] restore error:', err);
-      }
-    })();
-  }, []);
+  // ── Current dataset ─────────────────────────────────────────────────
+  const activeMessages = mode === 'feed' ? feedMessages : allMail;
+  const unreadCount = feedMessages.filter(m => m.requiresAttention).length;
+  const unreadLabel = useMemo(() => {
+    if (mode !== 'feed') return undefined;
+    if (feedMessages.length === 0) return undefined;
+    if (unreadCount > 0) return `${unreadCount} waiting on you`;
+    return `${feedMessages.length} in view`;
+  }, [mode, feedMessages.length, unreadCount]);
 
-  // Restore user name on launch
-  useEffect(() => {
-    loadUserName().then(n => { if (n) setUserName(n); });
-  }, []);
+  const activeOverflow = overflowFor && activeMessages.find(m => m.messageId === overflowFor);
+  const activeDiscuss  = discussFor  && activeMessages.find(m => m.messageId === discussFor);
 
-  // Set initial RUM attributes when the screen mounts.
-  useEffect(() => {
-    DdRum.addViewAttribute('current_screen', 'inbox');
-    DdRum.addViewAttribute('feed_mode', 'feed');
-    DdRum.addViewAttribute('overlay_visible', false);
-    DdRum.addViewAttribute('card_count', 0);
-    DdRum.addViewAttribute('sync_in_progress', false);
-  }, []);
-
-  // Keep sync_in_progress and card_count current as feed state changes.
-  useEffect(() => {
-    DdRum.addViewAttribute('sync_in_progress', feedMessages.some(m => m.aiStatus === 'processing'));
-    DdRum.addViewAttribute('card_count', feedMessages.length);
-  }, [feedMessages]);
-
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    iosClientId: GOOGLE_IOS_CLIENT_ID,
-    scopes: ['openid', 'profile', 'email', 'https://mail.google.com/'],
-    shouldAutoExchangeCode: false,
-  });
-
-  useEffect(() => {
-    if (response?.type !== 'success') return;
-
-    const code = response.params.code;
-    const codeVerifier = request?.codeVerifier;
-    const redirectUri = request?.redirectUri;
-
-    console.log('[auth] code received:', code);
-    console.log('[auth] code_verifier (PKCE):', codeVerifier);
-    console.log('[auth] redirect_uri used:', redirectUri);
-    console.log('[auth] client_id:', GOOGLE_IOS_CLIENT_ID);
-
-    if (!code || !codeVerifier || !redirectUri) {
-      console.error('[auth] missing values:', { code: !!code, codeVerifier: !!codeVerifier, redirectUri: !!redirectUri });
-      return;
-    }
-
-    const exchangeToken = async () => {
-      const body = new URLSearchParams({
-        client_id: GOOGLE_IOS_CLIENT_ID,
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: redirectUri,
-        code_verifier: codeVerifier,
-      }).toString();
-
-      try {
-        const res = await fetch('https://oauth2.googleapis.com/token', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body,
-        });
-        const json = await res.json();
-        console.log('[auth] token response:', JSON.stringify(json, null, 2));
-        if (!res.ok) {
-          console.error('[auth] token error:', JSON.stringify(json, null, 2));
-          return;
-        }
-
-        const newAccessToken = json.access_token;
-        const existingAuth = await loadAuth();
-        const refreshToken = json.refresh_token ?? existingAuth?.refreshToken ?? null;
-        const expiresAt = Date.now() + json.expires_in * 1000;
-        await saveAuth(newAccessToken, refreshToken, expiresAt);
-        console.log('[auth] refresh_token present:', !!refreshToken);
-        console.log('[auth] tokens saved to secure storage');
-
-        // Register with backend — starts initial sync, worker, and watch
-        if (refreshToken) {
-          await registerWithBackend(newAccessToken, refreshToken, expiresAt);
-        }
-        setAccessToken(newAccessToken);
-
-        console.log('[gmail] fetching profile with access_token:', newAccessToken);
-
-        const profileRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
-          headers: { Authorization: `Bearer ${newAccessToken}` },
-        });
-        const profileJson = await profileRes.json();
-        console.log('[gmail] profile:', JSON.stringify(profileJson, null, 2));
-
-        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: { Authorization: `Bearer ${newAccessToken}` },
-        });
-        const userInfoJson = await userInfoRes.json();
-        const firstName = userInfoJson.given_name ?? '';
-        if (firstName) { setUserName(firstName); await saveUserName(firstName); }
-      } catch (err) {
-        console.error('[auth] token exchange failed:', err);
-      }
-    };
-
-    exchangeToken();
-  }, [response]);
-
-  const listHeader = (
-    <>
-      {recap && <InboxRecapHeader recap={recap} inViewLabel={uiCopy.inView} needAttentionLabel={uiCopy.needAttention} />}
-      <Pressable
-        style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed]}
-        onPress={() => promptAsync()}
-        disabled={!request}
-      >
-        <Text style={styles.connectLabel}>{uiCopy.connectGmail}</Text>
-      </Pressable>
-      {/* DEV ONLY — auth state diagnostic, remove before launch */}
-      <Text style={styles.devStatus}>
-        {accessToken ? `token: live (${accessToken.slice(0, 8)}…)` : 'token: none — tap Connect Gmail to re-authorise'}
-      </Text>
-      {/* ── Surface toggle ──────────────────────────────────────── */}
-      <View style={styles.toggle}>
-        <Pressable
-          style={[styles.toggleBtn, activeTab === 'feed' && styles.toggleBtnActive]}
-          onPress={() => handleTabChange('feed')}
-        >
-          <Text style={[styles.toggleLabel, activeTab === 'feed' && styles.toggleLabelActive]}>
-            {uiCopy.mailFeed}
-          </Text>
-        </Pressable>
-        <Pressable
-          style={[styles.toggleBtn, activeTab === 'allMail' && styles.toggleBtnActive]}
-          onPress={() => handleTabChange('allMail')}
-        >
-          <Text style={[styles.toggleLabel, activeTab === 'allMail' && styles.toggleLabelActive]}>
-            {uiCopy.allMail}
-          </Text>
-        </Pressable>
-      </View>
-      {activeTab === 'allMail' && loadingAllMail && allMailMessages.length === 0 && (
-        <EmailCardSkeleton />
-      )}
-    </>
+  const renderItem = ({ item: m }: { item: MessageRecord }) => (
+    <FeedCard
+      sender={{
+        name:  m.fromName || m.fromEmail.split('@')[0],
+        email: m.fromEmail,
+        avatarUri: m.avatarUri,
+        avatarFallbackText: m.avatarFallbackText,
+      }}
+      kind={deriveKind(m)}
+      status={deriveStatus(m)}
+      headline={m.quote}
+      body={m.summary}
+      timestamp={relativeTime(m.internalDate)}
+      unread={m.labelIds?.includes('UNREAD') ?? true}
+      loading={m.aiStatus !== 'done' && m.aiStatus !== 'error'}
+      isNew={newIds.has(m.messageId)}
+      onOpen={() => trackAction('card_tapped', { mode })}
+      onReply={() => {}}
+      onDiscuss={() => openDiscuss(m)}
+      onForward={() => {}}
+      onSave={() => {}}
+      onArchive={() => archiveMessage(m)}
+      onUnsubscribe={() => startUnsubscribe(m)}
+      onOverflow={() => setOverflowFor(m.messageId)}
+    />
   );
 
-  const activeMessages = activeTab === 'feed' ? feedMessages : allMailMessages;
-
+  // ── Render ──────────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={styles.safe}>
-      <UnsubscribeToast jobs={unsubscribeJobs} />
-      <FlatList
-        data={activeMessages}
-        keyExtractor={m => m.messageId}
-        contentContainerStyle={styles.content}
-        ListHeaderComponent={listHeader}
-        ItemSeparatorComponent={() => <View style={{ height: Spacing.sm }} />}
-        onEndReached={activeTab === 'allMail' ? handleLoadMoreAllMail : undefined}
-        onEndReachedThreshold={0.3}
-        ListFooterComponent={
-          activeTab === 'allMail' && allMailCursor ? (
-            <Pressable
-              style={({ pressed }) => [styles.connectBtn, pressed && styles.connectBtnPressed, { marginTop: Spacing.sm }]}
-              onPress={handleLoadMoreAllMail}
-              disabled={loadingAllMail}
-            >
-              <Text style={styles.connectLabel}>{loadingAllMail ? uiCopy.loadingMore : uiCopy.loadMore}</Text>
-            </Pressable>
-          ) : null
-        }
-        renderItem={({ item: m }) => {
-          if (activeTab === 'feed') {
-            return (
-              <Pressable
-                onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
-                  feed_mode: 'feed',
-                  current_screen: 'inbox',
-                  ai_status: m.aiStatus,
-                })}
-              >
-                {!m.fromName ? (
-                  <EmailCardSkeleton />
-                ) : (
-                  <EmailCard
-                    sender={{
-                      name: m.fromName,
-                      email: m.fromEmail,
-                      avatarUri: m.avatarUri ?? undefined,
-                      avatarFallbackText: m.avatarFallbackText,
-                    }}
-                    content={{
-                      contentType: 'structured',
-                      headline: m.quote,
-                      subtitle: m.subject,
-                      body: m.summary,
-                      bodySummary: true,
-                      cta: m.action && m.actionUrl
-                        ? { label: m.action, onPress: () => Linking.openURL(m.actionUrl!) }
-                        : undefined,
-                      actionLabel: m.action && !m.actionUrl ? m.action : undefined,
-                    }}
-                    tag={m.unsubscribeUrl ? 'Unsubscribe' : undefined}
-                    loading={m.aiStatus !== 'done'}
-                    timestamp={formatRelativeTime(String(m.internalDate))}
-                    actions={{
-                      aiSuggestionCount: 0,
-                      onReply: () => DdRum.addAction(RumActionType.TAP, 'reply_tapped', {
-                        feed_mode: 'feed',
-                        current_screen: 'inbox',
-                      }),
-                      onAI: () => DdRum.addAction(RumActionType.TAP, 'discuss_tapped', {
-                        feed_mode: 'feed',
-                        current_screen: 'inbox',
-                      }),
-                      onDelete: accessToken
-                        ? () => markAsRead(accessToken, m.messageId).catch(err =>
-                            console.error('[read] markAsRead failed:', err)
-                          )
-                        : undefined,
-                      onUnsubscribe: accessToken && m.unsubscribeUrl
-                        ? () => {
-                            setUnsubscribeJobs(prev => {
-                              if (prev.find(j => j.messageId === m.messageId)) return prev;
-                              return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: uiCopy.unsubscribeStart }];
-                            });
-                            requestUnsubscribe(
-                              accessToken,
-                              m.messageId,
-                              m.unsubscribeUrl!,
-                              m.fromName || m.fromEmail
-                            ).then(result => {
-                              if (!result.ok) {
-                                setUnsubscribeJobs(prev => prev.map(j =>
-                                  j.messageId === m.messageId
-                                    ? { ...j, status: 'error', message: result.error ?? 'Failed' }
-                                    : j
-                                ));
-                              } else {
-                                pollUnsubscribeStatus(accessToken, m.messageId).catch(err =>
-                                  console.warn('[unsubscribe] poll failed:', err)
-                                );
-                              }
-                            });
-                          }
-                        : undefined,
-                    }}
-                  />
-                )}
-              </Pressable>
-            );
-          }
+    <View style={styles.root}>
+      <StatusBar barStyle="light-content" backgroundColor={Theme.bg} />
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <FeedHeader
+          scrollY={scrollY}
+          mode={mode}
+          onModeChange={onModeChange}
+          unreadLabel={unreadLabel}
+        />
 
-          // All Mail
-          const headline = m.quote   || m.subject || null;
-          const body     = m.summary || (m.snippet ? m.snippet + ' See more...' : null);
-          return (
-            <Pressable
-              onPress={() => DdRum.addAction(RumActionType.TAP, 'card_tapped', {
-                feed_mode: 'all_mail',
-                current_screen: 'all_mail',
-                interpreted: m.interpreted ?? false,
-              })}
-            >
-              <EmailCard
-                sender={{
-                  name: m.fromName,
-                  email: m.fromEmail,
-                  avatarUri: m.avatarUri ?? undefined,
-                  avatarFallbackText: m.avatarFallbackText,
-                }}
-                content={{
-                  contentType: 'structured',
-                  headline,
-                  subtitle: m.interpreted ? m.subject : null,
-                  body,
-                  bodySummary: !!m.interpreted,
-                  cta: m.action && m.actionUrl
-                    ? { label: m.action, onPress: () => Linking.openURL(m.actionUrl!) }
-                    : undefined,
-                  actionLabel: m.action && !m.actionUrl ? m.action : undefined,
-                }}
-                tag={m.unsubscribeUrl ? 'Unsubscribe' : undefined}
-                loading={false}
-                timestamp={formatRelativeTime(String(m.internalDate))}
-                actions={{
-                  aiSuggestionCount: 0,
-                  onReply: () => DdRum.addAction(RumActionType.TAP, 'reply_tapped', {
-                    feed_mode: 'all_mail',
-                    current_screen: 'all_mail',
-                  }),
-                  onAI: () => DdRum.addAction(RumActionType.TAP, 'discuss_tapped', {
-                    feed_mode: 'all_mail',
-                    current_screen: 'all_mail',
-                  }),
-                  onUnsubscribe: accessToken && m.unsubscribeUrl
-                    ? () => {
-                        setUnsubscribeJobs(prev => {
-                          if (prev.find(j => j.messageId === m.messageId)) return prev;
-                          return [...prev, { messageId: m.messageId, senderName: m.fromName || m.fromEmail, status: 'queued', message: uiCopy.unsubscribeStart }];
-                        });
-                        requestUnsubscribe(
-                          accessToken,
-                          m.messageId,
-                          m.unsubscribeUrl!,
-                          m.fromName || m.fromEmail
-                        ).then(result => {
-                          if (!result.ok) {
-                            setUnsubscribeJobs(prev => prev.map(j =>
-                              j.messageId === m.messageId
-                                ? { ...j, status: 'error', message: result.error ?? 'Failed' }
-                                : j
-                            ));
-                          } else {
-                            pollUnsubscribeStatus(accessToken, m.messageId).catch(err =>
-                              console.warn('[unsubscribe] poll failed:', err)
-                            );
-                          }
-                        });
-                      }
-                    : undefined,
-                }}
+        {!accessToken ? (
+          <EmptyState
+            icon="envelope"
+            title="Connect your inbox"
+            detail="Sign in with Google to turn your mail into a feed you can actually read."
+            cta={request ? { label: 'Connect Gmail', onPress: () => promptAsync() } : undefined}
+          />
+        ) : activeMessages.length === 0 ? (
+          mode === 'feed' ? (
+            <CaughtUp
+              line={userName ? `You're caught up, ${userName}.` : "You're caught up."}
+              detail="Come back when something needs you."
+            />
+          ) : loadingAllMail ? (
+            <View style={styles.spinner}><ActivityIndicator color={Theme.textSecondary} /></View>
+          ) : (
+            <EmptyState
+              icon="envelope"
+              title="All mail is empty"
+              detail="Nothing has been synced here yet."
+            />
+          )
+        ) : (
+          <AnimatedFlatList
+            data={activeMessages as any}
+            keyExtractor={(item: any) => (item as MessageRecord).messageId}
+            renderItem={renderItem as any}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={Theme.textSecondary}
+                progressBackgroundColor={Theme.surface}
               />
-            </Pressable>
-          );
-        }}
+            }
+            contentContainerStyle={styles.list}
+            ItemSeparatorComponent={() => <View style={styles.separator} />}
+            onEndReached={mode === 'all-mail' ? loadMoreAllMail : undefined}
+            onEndReachedThreshold={0.5}
+            ListFooterComponent={
+              mode === 'all-mail' && allMailCursor ? (
+                <View style={styles.footer}>
+                  {loadingAllMail
+                    ? <ActivityIndicator color={Theme.textSecondary} />
+                    : <Pressable onPress={loadMoreAllMail} style={styles.footerBtn}>
+                        <Text style={styles.footerLabel}>Load more</Text>
+                      </Pressable>}
+                </View>
+              ) : mode === 'feed' ? <CaughtUp line={null} /> : null
+            }
+          />
+        )}
+      </SafeAreaView>
+
+      <UnsubscribeToast jobs={unsubscribeJobs} />
+
+      <OverflowMenu
+        visible={!!activeOverflow}
+        onClose={() => setOverflowFor(null)}
+        items={activeOverflow ? buildOverflowItems(activeOverflow) : []}
+        title={activeOverflow ? (activeOverflow.fromName || activeOverflow.fromEmail) : undefined}
       />
-    </SafeAreaView>
+
+      <DiscussSheet
+        visible={!!activeDiscuss}
+        onClose={() => setDiscussFor(null)}
+        context={activeDiscuss ? {
+          messageId: activeDiscuss.messageId,
+          senderName: activeDiscuss.fromName || activeDiscuss.fromEmail,
+          headline: activeDiscuss.quote,
+        } : null}
+        onSend={sendDiscussMessage}
+        messages={discussFor ? (discussMessages[discussFor] ?? []) : []}
+        proactive={activeDiscuss && activeDiscuss.summary
+          ? `Here's the short of it: ${activeDiscuss.summary}`
+          : null}
+      />
+    </View>
   );
 }
 
+// ─── Styles ──────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: Theme.bg,
+  },
   safe: {
     flex: 1,
-    backgroundColor: Colors.light.background,
+    backgroundColor: Theme.bg,
   },
-  content: {
-    padding: Spacing.sm,
+  list: {
+    paddingBottom: Spacing['3xl'],
   },
-  connectBtn: {
-    backgroundColor: Colors.light.surface,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+  separator: {
+    height: 0, // separation is baked into the card's bottom pad
+  },
+  spinner: {
+    padding: Spacing.xl,
     alignItems: 'center',
-    marginBottom: Spacing.lg,
   },
-  connectBtnPressed: {
-    opacity: 0.6,
-  },
-  devStatus: {
-    ...Typography.bodySm,
-    color: Colors.light.textSecondary,
-    textAlign: 'center',
-    marginBottom: Spacing.lg,
-  },
-  toggle: {
-    flexDirection: 'row',
-    backgroundColor: Colors.light.surface,
-    borderRadius: Radius.md,
-    padding: 2,
-    marginBottom: Spacing.lg,
-  },
-  toggleBtn: {
-    flex: 1,
-    paddingVertical: Spacing.sm,
+  footer: {
+    padding: Spacing.xl,
     alignItems: 'center',
-    borderRadius: Radius.md,
   },
-  toggleBtnActive: {
-    backgroundColor: Colors.light.background,
-    borderWidth: 1,
-    borderColor: Colors.light.border,
+  footerBtn: {
+    padding: Spacing.md,
   },
-  toggleLabel: {
-    ...Typography.bodySm,
-    color: Colors.light.textSecondary,
-  },
-  toggleLabelActive: {
-    color: Colors.light.textPrimary,
-  },
-  connectLabel: {
-    ...Typography.bodySm,
-    color: Colors.light.textPrimary,
+  footerLabel: {
+    color: Theme.textSecondary,
   },
 });
