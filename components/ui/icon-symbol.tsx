@@ -40,6 +40,7 @@ const MAPPING = {
   'arrow.turn.up.right':         'forward',
   'arrow.clockwise':             'refresh',
   'arrow.up':                    'arrow-upward',
+  'arrow.up.circle':             'arrow-upward',
   'face.smiling':                'sentiment-satisfied-alt',
   'magnifyingglass':             'search',
   'gearshape':                   'settings',

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   Pressable,
   RefreshControl,
   StatusBar,
@@ -17,8 +18,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Google from 'expo-auth-session/providers/google';
 import * as Haptics from 'expo-haptics';
+import * as Notifications from 'expo-notifications';
+import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { trackAction } from '@/components/observability';
+import { registerBackgroundFetch } from '@/tasks/backgroundFetch';
 
 import CaughtUp from '@/components/CaughtUp';
 import DiscussSheet, { DiscussMessage } from '@/components/DiscussSheet';
@@ -32,6 +36,18 @@ import { GOOGLE_IOS_CLIENT_ID } from '@/constants/auth';
 import { Spacing, Theme } from '@/constants/theme';
 
 const AnimatedFlatList = Animated.createAnimatedComponent(FlatList);
+
+// Push arrives silently — it exists to wake background fetch so the feed is
+// already warm when the user opens the app, not to interrupt them.
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert:  false,
+    shouldShowBanner: false,
+    shouldShowList:   false,
+    shouldPlaySound:  false,
+    shouldSetBadge:   false,
+  }),
+});
 
 // ─── Backend endpoints ───────────────────────────────────────────────────
 
@@ -59,7 +75,19 @@ type MessageRecord = {
   unsubscribeUrl:    string | null;
   avatarUri:         string | null;
   avatarFallbackText: string;
+  heroImageUrl:      string | null;
+  heroImageBgColor:  string | null;
+  // Only on All Mail cards from server
   interpreted?:      boolean;
+};
+
+// AI-written greeting + tally for the feed header. Zero-shot: the server
+// generates the wording, the client never templates it.
+type RecapData = {
+  greeting:         string;
+  summary:          string;
+  totalInView:      number;
+  requireAttention: number;
 };
 
 // ─── HTTP helpers ────────────────────────────────────────────────────────
@@ -75,7 +103,32 @@ function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> 
 async function fetchFeed(token: string) {
   const res = await fetchWithTimeout(`${FEED_BASE_URL}/feed`, { headers: { Authorization: `Bearer ${token}` } });
   if (!res.ok) throw new Error(`feed ${res.status}`);
-  return res.json() as Promise<{ cards: MessageRecord[] }>;
+  return res.json() as Promise<{ cards: MessageRecord[]; recap?: RecapData | null }>;
+}
+
+async function registerPushToken(accessToken: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  try {
+    const { status: existing } = await Notifications.getPermissionsAsync();
+    const { status } = existing === 'granted'
+      ? { status: existing }
+      : await Notifications.requestPermissionsAsync();
+    if (status !== 'granted') return;
+
+    const { data: pushToken } = await Notifications.getExpoPushTokenAsync({
+      projectId: '5abdcca5-eea7-41f6-bf4e-ab6b45ed62eb',
+    });
+
+    await fetch(`${FEED_BASE_URL}/auth/push-token`, {
+      method:  'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ pushToken }),
+    });
+
+    await registerBackgroundFetch();
+  } catch (err: any) {
+    console.warn('[push] registration failed:', err.message);
+  }
 }
 
 async function fetchAllMail(token: string, cursor?: number) {
@@ -93,14 +146,32 @@ async function markAsRead(token: string, messageId: string) {
 }
 
 async function requestUnsubscribe(
-  token: string, messageId: string, unsubscribeUrl: string, senderName: string
-): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const res = await fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe`, {
+  accessToken: string, messageId: string, unsubscribeUrl: string, senderName: string
+): Promise<{ ok: boolean; error?: string; refreshedToken?: string }> {
+  const doRequest = (token: string) =>
+    fetch(`${UNSUBSCRIBE_BASE_URL}/unsubscribe`, {
       method:  'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body:    JSON.stringify({ messageId, unsubscribeUrl, senderName }),
     });
+
+  try {
+    let res = await doRequest(accessToken);
+
+    // A 401 here means the token expired mid-session. Refresh once and retry
+    // rather than surfacing an auth error for something the user can't fix.
+    if (res.status === 401) {
+      const stored = await loadAuth();
+      if (stored?.refreshToken) {
+        const refreshed = await refreshAccessToken(stored.refreshToken);
+        if (refreshed) {
+          await saveAuth(refreshed.accessToken, stored.refreshToken, refreshed.expiresAt);
+          res = await doRequest(refreshed.accessToken);
+          if (res.ok) return { ok: true, refreshedToken: refreshed.accessToken };
+        }
+      }
+    }
+
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       return { ok: false, error: body.error ?? `server error ${res.status}` };
@@ -141,6 +212,7 @@ async function registerWithBackend(accessToken: string, refreshToken: string, ex
 
 const AUTH_STORAGE_KEY = 'gmail_auth';
 const USER_NAME_KEY    = 'user_name';
+const FEED_CACHE_KEY   = 'feed_cache';
 
 async function saveAuth(accessToken: string, refreshToken: string | null, expiresAt: number) {
   await SecureStore.setItemAsync(AUTH_STORAGE_KEY, JSON.stringify({ accessToken, refreshToken, expiresAt }));
@@ -199,10 +271,12 @@ function relativeTime(ms: number): string {
 // ─── Screen ──────────────────────────────────────────────────────────────
 
 export default function Index() {
+  const router = useRouter();
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userName, setUserName]       = useState('');
   const [mode, setMode]               = useState<FeedMode>('feed');
   const [refreshing, setRefreshing]   = useState(false);
+  const [recap, setRecap]             = useState<RecapData | null>(null);
 
   // Feed state
   const [feedMessages, setFeedMessages] = useState<MessageRecord[]>([]);
@@ -318,14 +392,35 @@ export default function Index() {
   const loadFeed = useCallback(async () => {
     if (!accessToken) return;
     try {
-      const { cards } = await fetchFeed(accessToken);
+      const { cards, recap: incoming } = await fetchFeed(accessToken);
       setFeedMessages(cards);
+      if (incoming) setRecap(incoming);
+      AsyncStorage.setItem(FEED_CACHE_KEY, JSON.stringify(cards)).catch(() => {});
     } catch (err) {
       console.warn('[feed] load failed:', err);
     }
   }, [accessToken]);
 
   useEffect(() => { loadFeed(); }, [loadFeed]);
+
+  // Hydrate from the last cached feed before auth resolves, so opening the
+  // app lands on content instead of an empty screen. Background fetch keeps
+  // this warm between sessions.
+  useEffect(() => {
+    AsyncStorage.getItem(FEED_CACHE_KEY).then(raw => {
+      if (!raw) return;
+      try {
+        const cached = JSON.parse(raw) as MessageRecord[];
+        setFeedMessages(prev => (prev.length > 0 ? prev : cached));
+      } catch {}
+    });
+  }, []);
+
+  // Register for silent push once we have a token.
+  useEffect(() => {
+    if (!accessToken) return;
+    registerPushToken(accessToken);
+  }, [accessToken]);
 
   // ── SSE ─────────────────────────────────────────────────────────────
   // handleEvent only closes over stable setters and markNew, so the SSE
@@ -352,6 +447,8 @@ export default function Index() {
         unsubscribeUrl:     null,
         avatarUri:          event.avatarUri ?? null,
         avatarFallbackText: event.avatarFallbackText ?? '',
+        heroImageUrl:       event.heroImageUrl ?? null,
+        heroImageBgColor:   event.heroImageBgColor ?? null,
       };
       setFeedMessages(prev => {
         if (prev.some(m => m.messageId === record.messageId)) return prev;
@@ -484,7 +581,11 @@ export default function Index() {
             j.messageId === m.messageId ? { ...j, status: 'error', message: result.error ?? 'Failed' } : j
           ));
         } else {
-          pollUnsubStatus(accessToken, m.messageId).catch(err => console.warn('[unsub] poll failed:', err));
+          // A refreshed token means the original expired mid-request; adopt it
+          // so the status poll and everything after it stay authorised.
+          const token = result.refreshedToken ?? accessToken;
+          if (result.refreshedToken) setAccessToken(result.refreshedToken);
+          pollUnsubStatus(token, m.messageId).catch(err => console.warn('[unsub] poll failed:', err));
         }
       });
   }, [accessToken, pollUnsubStatus]);
@@ -585,12 +686,35 @@ export default function Index() {
   // ── Current dataset ─────────────────────────────────────────────────
   const activeMessages = mode === 'feed' ? feedMessages : allMail;
   const unreadCount = feedMessages.filter(m => m.requiresAttention).length;
+  // Zero-shot first: if the server wrote a recap line, that's what the user
+  // reads. The counted fallback only covers the gap before it arrives.
   const unreadLabel = useMemo(() => {
     if (mode !== 'feed') return undefined;
     if (feedMessages.length === 0) return undefined;
+    if (recap?.summary) return recap.summary;
     if (unreadCount > 0) return `${unreadCount} waiting on you`;
     return `${feedMessages.length} in view`;
-  }, [mode, feedMessages.length, unreadCount]);
+  }, [mode, feedMessages.length, unreadCount, recap]);
+
+  const openThread = useCallback((m: MessageRecord) => {
+    trackAction('card_tapped', { mode });
+    router.push({
+      pathname: '/email/[messageId]',
+      params: {
+        messageId:          m.messageId,
+        fromName:           m.fromName,
+        fromEmail:          m.fromEmail,
+        avatarUri:          m.avatarUri ?? '',
+        avatarFallbackText: m.avatarFallbackText,
+        subject:            m.subject,
+        summary:            m.summary ?? '',
+        snippet:            m.snippet,
+        internalDate:       String(m.internalDate),
+        heroImageUrl:       m.heroImageUrl ?? '',
+        heroImageBgColor:   m.heroImageBgColor ?? '',
+      },
+    } as any);
+  }, [mode, router]);
 
   const activeOverflow = overflowFor && activeMessages.find(m => m.messageId === overflowFor);
   const activeDiscuss  = discussFor  && activeMessages.find(m => m.messageId === discussFor);
@@ -611,10 +735,10 @@ export default function Index() {
       unread={m.labelIds?.includes('UNREAD') ?? true}
       loading={m.aiStatus !== 'done' && m.aiStatus !== 'error'}
       isNew={newIds.has(m.messageId)}
-      onOpen={() => trackAction('card_tapped', { mode })}
-      onReply={() => {}}
+      onOpen={() => openThread(m)}
+      onReply={() => openThread(m)}
       onDiscuss={() => openDiscuss(m)}
-      onForward={() => {}}
+      onForward={() => openThread(m)}
       onSave={() => {}}
       onArchive={() => archiveMessage(m)}
       onUnsubscribe={() => startUnsubscribe(m)}

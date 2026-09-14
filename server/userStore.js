@@ -1,6 +1,6 @@
 const { query } = require('./db');
 
-async function upsertUser(userId, { email, accessToken, refreshToken, tokenExpiry, onboardingHistoryId }) {
+async function upsertUser(userId, { email, accessToken, refreshToken, tokenExpiry, onboardingHistoryId, pushToken }) {
   await query(`
     INSERT INTO users (user_id, email, access_token, refresh_token, token_expiry, onboarding_history_id, updated_at)
     VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -12,6 +12,20 @@ async function upsertUser(userId, { email, accessToken, refreshToken, tokenExpir
       onboarding_history_id = COALESCE(users.onboarding_history_id, EXCLUDED.onboarding_history_id),
       updated_at            = NOW()
   `, [userId, email ?? null, accessToken, refreshToken ?? null, new Date(tokenExpiry), onboardingHistoryId ?? null]);
+
+  if (pushToken) {
+    await query(
+      'UPDATE users SET push_token = $2 WHERE user_id = $1',
+      [userId, pushToken]
+    );
+  }
+}
+
+async function updatePushToken(userId, pushToken) {
+  await query(
+    'UPDATE users SET push_token = $2, updated_at = NOW() WHERE user_id = $1',
+    [userId, pushToken]
+  );
 }
 
 async function getUser(userId) {
@@ -78,4 +92,4 @@ async function getAllUsers() {
   return rows;
 }
 
-module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken };
+module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken };

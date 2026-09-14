@@ -1,4 +1,4 @@
-const MAX_STEPS = 6;
+const MAX_STEPS = 10;
 const MAX_BODY_TEXT = 4000;
 const MAX_ACTIONS_FOR_AI = 12;
 
@@ -78,11 +78,11 @@ const SUCCESS_PATTERNS = [
 ];
 
 const MANUAL_PATTERNS = [
-  { pattern: /\bcaptcha\b/i, message: 'Unsubscribe page needs a captcha' },
-  { pattern: /\bi am not a robot\b/i, message: 'Unsubscribe page needs a captcha' },
-  { pattern: /\bsign in\b/i, message: 'Unsubscribe page requires a login' },
-  { pattern: /\blog in\b/i, message: 'Unsubscribe page requires a login' },
-  { pattern: /\bpassword\b/i, message: 'Unsubscribe page requires a login' },
+  { pattern: /\bcaptcha\b/i, situation: 'the unsubscribe page is blocked by a captcha' },
+  { pattern: /\bi am not a robot\b/i, situation: 'the unsubscribe page is blocked by a captcha' },
+  { pattern: /\bsign in\b/i, situation: 'the unsubscribe page requires the user to log in' },
+  { pattern: /\blog in\b/i, situation: 'the unsubscribe page requires the user to log in' },
+  { pattern: /\bpassword\b/i, situation: 'the unsubscribe page requires the user to log in' },
 ];
 
 const EMAIL_FIELD_PATTERNS = [
@@ -289,11 +289,11 @@ function detectSuccess(snapshot) {
 function detectManualBlocker(snapshot) {
   const haystack = normalizeText(`${snapshot.title} ${snapshot.bodyText}`);
   for (const rule of MANUAL_PATTERNS.slice(0, 2)) {
-    if (rule.pattern.test(haystack)) return rule.message;
+    if (rule.pattern.test(haystack)) return rule.situation;
   }
 
   const hasPasswordField = snapshot.fields.some(field => field.type === 'password');
-  if (hasPasswordField) return 'Unsubscribe page requires a login';
+  if (hasPasswordField) return 'the unsubscribe page requires the user to log in';
 
   return null;
 }
@@ -434,6 +434,69 @@ async function maybeFillFields(page, snapshot, userEmail, emit) {
   return changed;
 }
 
+async function generateMessage(openai, tone, situation, pageContext = '') {
+  if (!openai) return situation;
+  try {
+    const prompt = [
+      tone ?? '',
+      '',
+      'Write one short toast notification message (under 12 words).',
+      'Be specific about what is actually happening. Be playful — wit over blandness.',
+      'No filler words. No "I am". No corporate speak. Just the thing.',
+      `What is happening: ${situation}`,
+      pageContext ? `Page: ${pageContext}` : '',
+      'Return only the message text.',
+    ].filter(Boolean).join('\n');
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 40,
+    });
+    return response.choices[0]?.message?.content?.trim() || situation;
+  } catch {
+    return situation;
+  }
+}
+
+async function chooseActionWithVision(page, senderName, openai) {
+  if (!openai) return null;
+  try {
+    const screenshot = await page.screenshot({ type: 'jpeg', quality: 80 });
+    const base64 = screenshot.toString('base64');
+
+    const prompt = `This is a screenshot of a web page for unsubscribing from "${senderName}" emails.
+
+Look at the page carefully. What should I click to complete the unsubscribe?
+
+Return JSON only — one of:
+{"action":"click","x":NUMBER,"y":NUMBER,"reason":"brief explanation"}
+{"action":"done","reason":"already unsubscribed"}
+{"action":"manual","reason":"needs login, captcha, or human judgment"}
+
+x and y are pixel coordinates in the screenshot (viewport is 1440×1200).`;
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}`, detail: 'high' } },
+          { type: 'text', text: prompt },
+        ],
+      }],
+      max_tokens: 200,
+    });
+
+    const raw = response.choices[0]?.message?.content ?? '';
+    const jsonStart = raw.indexOf('{');
+    const jsonEnd = raw.lastIndexOf('}');
+    if (jsonStart === -1 || jsonEnd === -1) return null;
+    return JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
+  } catch {
+    return null;
+  }
+}
+
 async function chooseActionWithAi(snapshot, history, openai, tone) {
   if (!openai || snapshot.actions.length === 0) return null;
 
@@ -558,56 +621,103 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
       let snapshot = await snapshotPage(page);
 
       if (detectSuccess(snapshot)) {
-        return { status: 'done', message: 'Done ✓' };
+        const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title);
+        return { status: 'done', message: msg };
       }
 
       const blocker = detectManualBlocker(snapshot);
       if (blocker) {
-        return { status: 'error', message: blocker };
+        const msg = await generateMessage(openai, tone, blocker, snapshot.title);
+        return { status: 'error', message: msg, retryable: false };
       }
 
       await maybeFillFields(page, snapshot, userEmail, emit);
       snapshot = await snapshotPage(page);
 
       if (detectSuccess(snapshot)) {
-        return { status: 'done', message: 'Done ✓' };
+        const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title);
+        return { status: 'done', message: msg };
       }
 
       const choice = await chooseNextAction(snapshot, history, openai, tone);
       if (!choice) {
-        if (pageLooksRecoverable(snapshot)) {
-          return { status: 'error', message: 'Their unsubscribe page looks busted, and the backup route was not safe to click' };
+        // Scroll down and try once more before giving up
+        const scrolled = await page.evaluate(() => {
+          const before = window.scrollY;
+          window.scrollBy(0, 600);
+          return window.scrollY !== before;
+        });
+        if (scrolled) {
+          await page.waitForTimeout(800);
+          continue;
         }
-        return { status: 'error', message: 'Could not find a safe unsubscribe action' };
+
+        // Vision fallback: take a screenshot and let GPT-4o look at the page
+        // and decide what to click — works on any page regardless of HTML structure.
+        emit('analyzing', `Taking a closer look at ${senderName}'s page…`);
+        const visionChoice = await chooseActionWithVision(page, senderName, openai);
+        if (visionChoice?.action === 'click' && visionChoice.x != null && visionChoice.y != null) {
+          const visionClickMsg = await generateMessage(openai, tone, visionChoice.reason || `clicking a button on ${senderName}'s page`, snapshot.title);
+          emit('clicking', visionClickMsg);
+          await page.mouse.click(visionChoice.x, visionChoice.y);
+          await settlePage(page);
+          const afterSnapshot = await snapshotPage(page);
+          if (detectSuccess(afterSnapshot)) {
+            const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, afterSnapshot.title);
+            return { status: 'done', message: msg };
+          }
+          continue;
+        }
+        if (visionChoice?.action === 'done') {
+          const msg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title);
+          return { status: 'done', message: msg };
+        }
+        if (visionChoice?.action === 'manual') {
+          const msg = await generateMessage(openai, tone, visionChoice.reason || `${senderName}'s page requires manual action`, snapshot.title);
+          return { status: 'error', message: msg, retryable: false };
+        }
+
+        if (pageLooksRecoverable(snapshot)) {
+          const msg = await generateMessage(openai, tone, `${senderName}'s unsubscribe page appears broken and no safe fallback link was found`, snapshot.title);
+          return { status: 'error', message: msg, retryable: true };
+        }
+        const msg = await generateMessage(openai, tone, `could not find a way to unsubscribe from ${senderName} on this page`, snapshot.title);
+        return { status: 'error', message: msg, retryable: true };
       }
 
       if (choice.action === 'done') {
-        return { status: 'done', message: choice.message ?? 'Done ✓' };
+        return { status: 'done', message: choice.message ?? await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, snapshot.title) };
       }
 
       if (choice.action === 'manual') {
-        return { status: 'error', message: choice.reason || 'Unsubscribe page needs manual action' };
+        const manualMsg = await generateMessage(openai, tone, choice.reason || `${senderName}'s unsubscribe page requires manual action`, snapshot.title);
+        return { status: 'error', message: manualMsg, retryable: false };
       }
 
+      const actionLabel = choice.candidate ? truncate(describeAction(choice.candidate), 40) : 'next step';
       const clickMsg = choice.message
-        ?? (choice.candidate ? `Clicking "${truncate(describeAction(choice.candidate), 30)}"…` : 'Clicking…');
+        ?? await generateMessage(openai, tone, `clicking "${actionLabel}" to unsubscribe from ${senderName}`, snapshot.title);
       emit('clicking', clickMsg);
       page = await clickAction(page, choice.candidate);
       history.push({ signature: normalizeText(`${choice.candidate.text} ${choice.candidate.href}`) });
 
-      emit('verifying', 'Checking if that did it…');
+      const verifyMsg = await generateMessage(openai, tone, `just clicked "${actionLabel}" on ${senderName}'s page — checking if the unsubscribe went through`, snapshot.title);
+      emit('verifying', verifyMsg);
       const postClickSnapshot = await snapshotPage(page);
       if (detectSuccess(postClickSnapshot)) {
-        return { status: 'done', message: 'Done ✓' };
+        const doneMsg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, postClickSnapshot.title);
+        return { status: 'done', message: doneMsg };
       }
     }
 
     const finalSnapshot = await snapshotPage(page);
     if (detectSuccess(finalSnapshot)) {
-      return { status: 'done', message: 'Done ✓' };
+      const doneMsg = await generateMessage(openai, tone, `successfully unsubscribed from ${senderName}`, finalSnapshot.title);
+      return { status: 'done', message: doneMsg };
     }
 
-    return { status: 'error', message: 'Reached the unsubscribe page but could not finish the flow' };
+    const finalMsg = await generateMessage(openai, tone, `reached ${senderName}'s unsubscribe page but could not complete the flow`, finalSnapshot.title);
+    return { status: 'error', message: finalMsg, retryable: true };
   } finally {
     await context.close().catch(() => {});
   }

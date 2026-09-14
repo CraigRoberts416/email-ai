@@ -45,3 +45,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_worker
   ON messages(user_id, internal_date DESC)
   WHERE ai_status IN ('none', 'queued')
   AND ('UNREAD' = ANY(label_ids) OR post_cutoff = TRUE);
+
+CREATE TABLE IF NOT EXISTS sender_domain_assets (
+  domain       TEXT PRIMARY KEY,
+  image_bytes  BYTEA NOT NULL,
+  image_mime   TEXT NOT NULL DEFAULT 'image/png',
+  bg_color     TEXT NOT NULL,
+  created_at   TIMESTAMPTZ DEFAULT NOW()
+);

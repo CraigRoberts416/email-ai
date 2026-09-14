@@ -23,10 +23,28 @@ const messageStore     = require('./messageStore');
 const gmailSync        = require('./gmailSync');
 const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
+const heroImage        = require('./heroImageGenerator');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const { cleanEmailForAI } = require('./emailCleaner');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const { Expo } = require('expo-server-sdk');
+const expo = new Expo();
+
+async function sendSilentPush(pushToken) {
+  if (!pushToken || !Expo.isExpoPushToken(pushToken)) return;
+  try {
+    await expo.sendPushNotificationsAsync([{
+      to:               pushToken,
+      _contentAvailable: true,
+      data:             { type: 'new-mail' },
+      priority:         'high',
+    }]);
+  } catch (err) {
+    console.warn('[push] send failed:', err.message);
+  }
+}
 
 const app = express();
 app.use(cors());
@@ -525,6 +543,21 @@ app.post('/auth/register', async (req, res) => {
   }
 });
 
+// Store push token for a user
+app.post('/auth/push-token', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const { pushToken } = req.body;
+  if (!pushToken) return res.status(400).json({ error: 'pushToken required' });
+  try {
+    await userStore.updatePushToken(userId, pushToken);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[push-token] error:', err.message);
+    res.status(500).json({ error: 'failed to store push token' });
+  }
+});
+
 // Mail Feed — unread messages, prioritized
 app.get('/feed', async (req, res) => {
   const userId = await resolveUserId(req);
@@ -533,18 +566,96 @@ app.get('/feed', async (req, res) => {
   try {
     const messages = await messageStore.getUnread(userId);
 
-    // Attach avatar fields (computed server-side)
-    const cards = messages.map(m => ({
-      ...m,
-      avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
-      avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
-      unsubscribeUrl:     m.unsubscribeUrl ?? null,
+    // Collect unique sender domains and look up cached hero assets in parallel.
+    // Missing ones trigger fire-and-forget generation so the next /feed response
+    // (or a pull-to-refresh) will return the image once ready.
+    const domainToSender = new Map();
+    for (const m of messages) {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      if (!domain) continue;
+      if (!domainToSender.has(domain)) domainToSender.set(domain, m.fromName || domain);
+    }
+
+    const heroByDomain = new Map();
+    await Promise.all(Array.from(domainToSender.keys()).map(async domain => {
+      const senderName = domainToSender.get(domain);
+      const cached = await heroImage.getCachedAsset(domain);
+      if (cached) {
+        heroByDomain.set(domain, cached);
+      } else {
+        heroImage.ensureHeroAsset(openai, domain, senderName);
+      }
     }));
+
+    const cards = messages.map(m => {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      const cached = heroByDomain.get(domain) ?? null;
+      return {
+        ...m,
+        avatarUri:          resolveAvatarUri({ sender: { domain } }),
+        avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+        unsubscribeUrl:     m.unsubscribeUrl ?? null,
+        heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
+        heroImageBgColor:   cached?.bgColor ?? null,
+      };
+    });
 
     res.json({ cards });
   } catch (err) {
     console.error('[feed] error:', err.message);
     res.status(500).json({ error: 'feed failed' });
+  }
+});
+
+// Message body — returns the full email body (plain text + raw HTML).
+// Used by the detail screen to render the actual message, not just the snippet.
+app.get('/messages/:messageId/body', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { messageId } = req.params;
+  try {
+    const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
+
+    // Extract plain text + raw HTML directly so the client can choose how to
+    // render. cleanEmailForAI strips all tags and collapses whitespace, which
+    // is useful for AI but destroys paragraph breaks for display.
+    function decodeBody(data) {
+      if (!data) return '';
+      return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    }
+    function extractBody(payload, mimeType) {
+      if (!payload) return '';
+      if (payload.mimeType === mimeType && payload.body?.data) return decodeBody(payload.body.data);
+      for (const part of payload.parts ?? []) {
+        const result = extractBody(part, mimeType);
+        if (result) return result;
+      }
+      return '';
+    }
+
+    const plainText = extractBody(rawMsg.payload, 'text/plain');
+    const htmlRaw   = extractBody(rawMsg.payload, 'text/html');
+
+    res.json({ plainText, htmlRaw });
+  } catch (err) {
+    console.error('[message-body] error:', err.message);
+    res.status(500).json({ error: 'failed to load message body' });
+  }
+});
+
+// Hero image — streams cached per-domain image bytes from DB
+app.get('/hero-image/:domain', async (req, res) => {
+  try {
+    const { domain } = req.params;
+    const asset = await heroImage.getCachedImageBytes(domain);
+    if (!asset) return res.status(404).end();
+    res.setHeader('Content-Type', asset.mime || 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+    res.send(asset.bytes);
+  } catch (err) {
+    console.error('[hero-image] error:', err.message);
+    res.status(500).end();
   }
 });
 
@@ -588,13 +699,37 @@ app.get('/all-mail', async (req, res) => {
     const cursor = req.query.cursor ? Number(req.query.cursor) : undefined;
     const { records, nextCursor } = await messageStore.getAll(userId, { limit: 50, cursor });
 
-    const cards = records.map(m => ({
-      ...m,
-      avatarUri:          resolveAvatarUri({ sender: { domain: m.fromEmail.split('@')[1] ?? '' } }),
-      avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
-      interpreted:        m.aiStatus === 'done',
-      unsubscribeUrl:     m.unsubscribeUrl ?? null,
+    const domainToSender = new Map();
+    for (const m of records) {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      if (!domain) continue;
+      if (!domainToSender.has(domain)) domainToSender.set(domain, m.fromName || domain);
+    }
+
+    const heroByDomain = new Map();
+    await Promise.all(Array.from(domainToSender.keys()).map(async domain => {
+      const senderName = domainToSender.get(domain);
+      const cached = await heroImage.getCachedAsset(domain);
+      if (cached) {
+        heroByDomain.set(domain, cached);
+      } else {
+        heroImage.ensureHeroAsset(openai, domain, senderName);
+      }
     }));
+
+    const cards = records.map(m => {
+      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+      const cached = heroByDomain.get(domain) ?? null;
+      return {
+        ...m,
+        avatarUri:          resolveAvatarUri({ sender: { domain } }),
+        avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+        interpreted:        m.aiStatus === 'done',
+        unsubscribeUrl:     m.unsubscribeUrl ?? null,
+        heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
+        heroImageBgColor:   cached?.bgColor ?? null,
+      };
+    });
 
     res.json({ cards, nextCursor });
   } catch (err) {
@@ -717,6 +852,8 @@ app.post('/webhooks/gmail', async (req, res) => {
     // Wake the worker immediately for new unread mail
     if (newUnreadIds.length > 0) {
       processingWorker.wakeWorker(userId);
+      // Silent push to wake the app in background so the feed cache stays fresh
+      sendSilentPush(user.push_token);
     }
   } catch (err) {
     console.error('[webhook] processing error:', err.message);
@@ -789,7 +926,7 @@ app.post('/session-recap', async (req, res) => {
   const attentionCards = cards.filter(c => c.requiresAttention === true);
   const requireAttention = attentionCards.length;
   const formatCards = (arr) =>
-    arr.map(c => `- From: ${c.senderName} | Subject: ${c.subject} | Summary: ${c.summary}${c.action ? ` | Action: ${c.action}` : ''}`).join('\n') || '(none)';
+    arr.map(c => `- From: ${c.fromName || c.fromEmail} | Subject: ${c.subject} | Summary: ${c.summary ?? c.snippet}${c.action ? ` | Action: ${c.action}` : ''}`).join('\n') || '(none)';
 
   const prompt = renderPrompt(PROMPTS.sessionRecap, {
     timeOfDay: timeOfDay ?? 'morning', userName: userName ?? '',
@@ -818,6 +955,11 @@ app.get('/test-ai', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// Unsubscribe copy — status messages shown to the user during the flow
+const unsubscribeCopy = {
+  queuedMessage: (step = 1) => step === 1 ? 'Getting ready to unsubscribe…' : 'Sending unsubscribe request…',
+};
 
 // Unsubscribe — launch headless browser to complete unsubscribe flow
 app.post('/unsubscribe', async (req, res) => {
@@ -892,16 +1034,15 @@ app.post('/unsubscribe', async (req, res) => {
   try {
     await ensurePlaywrightChromium();
     const { chromium } = require('playwright');
-    browser = await chromium.launch({ headless: true });
-    const result = await runUnsubscribeAgent({
-      browser,
-      unsubscribeUrl,
-      userEmail,
-      emit,
-      openai,
-      senderName,
-      tone: TONE,
-    });
+    browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+
+    let result = await runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone: TONE });
+
+    if (result.status === 'error' && result.retryable) {
+      emit('navigating', `Taking another run at it…`);
+      result = await runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName, tone: TONE });
+    }
+
     emit(result.status, result.message);
   } catch (err) {
     console.error('[unsubscribe] browser error:', err.message);

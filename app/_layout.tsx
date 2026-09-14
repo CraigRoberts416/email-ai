@@ -1,3 +1,4 @@
+import { DMSans_400Regular } from '@expo-google-fonts/dm-sans';
 import {
   Inter_300Light,
   Inter_400Regular,
@@ -14,6 +15,7 @@ import 'react-native-reanimated';
 
 import { Observability, startView, stopView } from '@/components/observability';
 import { Theme } from '@/constants/theme';
+import '@/tasks/backgroundFetch';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -57,6 +59,7 @@ export default function RootLayout() {
     Inter_300Light,
     Inter_400Regular,
     Inter_500Medium,
+    DMSans_400Regular,
   });
 
   useEffect(() => {
@@ -72,6 +75,7 @@ export default function RootLayout() {
         <ThemeProvider value={navTheme}>
           <Stack screenOptions={{ contentStyle: { backgroundColor: Theme.bg } }}>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="email/[messageId]" options={{ headerShown: false }} />
             <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
           </Stack>
           <StatusBar style="light" />
