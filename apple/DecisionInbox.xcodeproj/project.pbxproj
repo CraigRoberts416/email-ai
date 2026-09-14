@@ -201,7 +201,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.anonymous.email-ai";
+				PRODUCT_BUNDLE_IDENTIFIER = com.craigroberts.decisioninbox;
 				DEVELOPMENT_TEAM = 48X38356RX;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -230,7 +230,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.anonymous.email-ai";
+				PRODUCT_BUNDLE_IDENTIFIER = com.craigroberts.decisioninbox;
 				DEVELOPMENT_TEAM = 48X38356RX;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
