@@ -172,14 +172,23 @@ struct Message: Identifiable, Hashable {
         // NEEDS YOU post with nothing to click rendered byte-identical to an
         // FYI — the one distinction the feed exists to draw, lost to a field
         // that is about links.
+        // Density answers one question: does this ask for something only you
+        // can give — a decision, a reply, money, or your time?
+        //
+        // The old rule made a promotion compact only when it had no quote, and
+        // the server now writes a quote for everything. So nothing was ever
+        // compact, and a discount code got the same 28pt treatment as a
+        // declined payment. In a real mailbox that is most of the feed at full
+        // height, which is why it stopped being scannable.
         if isAtRisk {
             // Never compact. A suspected scam is not allowed to be the
             // quietest thing on the screen.
             density = .standard
-        } else if isPromotion && quote == nil {
-            density = .compact
         } else if requiresAttention || actionLabel?.isEmpty == false {
             density = .lead
+        } else if isPromotion || kicker == .receipt || kicker == .newsletter {
+            // Broadcast. Nobody needs a pulled quote from a discount code.
+            density = .compact
         } else {
             density = .standard
         }

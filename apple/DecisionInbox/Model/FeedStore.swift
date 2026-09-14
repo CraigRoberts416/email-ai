@@ -71,8 +71,12 @@ final class FeedStore {
         syncMailboxes()
     }
 
+    /// True only for the design-time store.
+    private(set) var isSample = false
+
     /// Preview / design-time store. Never used by the running app.
     init(sample: Bool) {
+        self.isSample = true
         self.auth = AuthService()
         self.mailboxes = Sample.mailboxes
         self.messages = Sample.messages
@@ -122,6 +126,16 @@ final class FeedStore {
     }
 
     private func bring(up accountID: String) async {
+        // Disk first. The feed you were reading a minute ago is still true,
+        // and showing it immediately is the difference between opening a mail
+        // app and watching one boot.
+        if messages.isEmpty, let cached = FeedCache.load(for: accountID) {
+            messages = cached.cards
+                .map { $0.asMessage(mailboxID: accountID) }
+                .sorted { $0.receivedAt > $1.receivedAt }
+            recap = cached.recap
+        }
+
         // Registering hands the server a refresh token so it can keep syncing
         // while the app is closed. It also kicks off the first backlog pull,
         // so it has to happen before the feed is worth reading.
@@ -148,6 +162,8 @@ final class FeedStore {
     /// someone delete the app.
     private func settle(_ accountID: String) async {
         guard messages.isEmpty else { return }
+        // A hydrated feed already gave the user something true to read, so the
+        // "reading your mailbox" state is only for a genuinely cold start.
         syncing.insert(accountID)
         defer { syncing.remove(accountID) }
 
@@ -197,6 +213,7 @@ final class FeedStore {
             mark(accountID, healthy: true)
             lastSynced = .now
             loadFailure = nil
+            FeedCache.save(response.cards, recap: recap, for: accountID)
         } catch APIError.unauthorized, AuthError.signedOut {
             mark(accountID, healthy: false, reason: "needs reconnecting")
             loadFailure = "That mailbox needs reconnecting."
@@ -262,6 +279,7 @@ final class FeedStore {
     }
 
     func remove(_ mailboxID: String) {
+        FeedCache.clear(for: mailboxID)
         Task { await streams[mailboxID]?.disconnect() }
         streams[mailboxID] = nil
         loaded.remove(mailboxID)

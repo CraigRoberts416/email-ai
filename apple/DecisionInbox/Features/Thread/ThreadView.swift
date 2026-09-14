@@ -183,10 +183,10 @@ struct ThreadView: View {
                 onUnsubscribe: { store.unsubscribe(from: message); dismiss() }
             )
         }
-        .padding(Space.xxl)
+        .padding(Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Ink.surface, in: RoundedRectangle(cornerRadius: Corner.lg, style: .continuous))
-        .padding(.horizontal, Space.lg)
+        .padding(.horizontal, Space.md)
     }
 
     @ViewBuilder private var content: some View {
@@ -195,8 +195,12 @@ struct ThreadView: View {
                 // The sender's own layout, on their own card — which is why the
                 // card is white. Their HTML was never designed for our ground.
                 VStack(alignment: .leading, spacing: Space.md) {
+                    // The card already provides the margin. The email used to
+                    // add its own 16pt inside that, so a 390pt screen gave the
+                    // sender 286pt to lay out in — every table squeezed, every
+                    // line broken early. One margin, owned by the card.
                     EmailBodyWeb(html: body_.htmlRaw, loadRemoteContent: showRemoteContent)
-                        .padding(.horizontal, -Space.md)
+                        .padding(.horizontal, -Space.lg)
                     if !showRemoteContent { remoteContentNotice }
                 }
             } else {

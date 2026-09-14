@@ -12,7 +12,7 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if let store, auth.isAuthenticated {
+            if let store, auth.isAuthenticated || store.isSample {
                 TabView(selection: $tab) {
                     Tab("Feed", systemImage: "house", value: 0) {
                         FeedView(scrollTopSignal: scrollTop)
@@ -51,6 +51,15 @@ struct RootView: View {
         // One store for the life of the session. Rebuilding it on sign-in
         // would throw away the feed every time a mailbox is added.
         .task {
+            #if DEBUG
+            // Lets the feed be driven in a simulator without credentials —
+            // the keychain refuses writes in an unsigned build, so sign-in
+            // cannot complete there and the UI was untestable by hand.
+            if ProcessInfo.processInfo.arguments.contains("-sampleFeed") {
+                store = FeedStore(sample: true)
+                return
+            }
+            #endif
             store = FeedStore(auth: auth)
             AppDelegate.onToken = { token in
                 Task { await push.submit(deviceToken: token) }

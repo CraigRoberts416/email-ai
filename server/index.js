@@ -51,6 +51,27 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
+// ─── Text safety ──────────────────────────────────────────────────────────
+
+// Gmail truncates snippets by UTF-16 code unit, which cuts emoji in half and
+// leaves an unpaired surrogate. JSON.stringify happily emits it as \uD83D,
+// and every strict decoder — including Swift's — rejects the whole payload.
+// Two such messages were dropping two cards from every feed response.
+function stripLoneSurrogates(value) {
+  if (typeof value === 'string') {
+    return value
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+      .replace(/(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '$1');
+  }
+  if (Array.isArray(value)) return value.map(stripLoneSurrogates);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) out[key] = stripLoneSurrogates(item);
+    return out;
+  }
+  return value;
+}
+
 // ─── HTML entity decoder ──────────────────────────────────────────────────
 
 function decodeHtmlEntities(text) {
@@ -360,7 +381,8 @@ async function ensurePlaywrightChromium() {
   return playwrightInstallPromise;
 }
 
-function emitSSE(userId, data) {
+function emitSSE(userId, rawData) {
+  const data = stripLoneSurrogates(rawData);
   const clients = getSseClients(userId);
   const payload = `data: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) {
@@ -815,7 +837,7 @@ app.get('/feed', async (req, res) => {
       };
     });
 
-    res.json({ cards });
+    res.json(stripLoneSurrogates({ cards }));
   } catch (err) {
     console.error('[feed] error:', err.message);
     res.status(500).json({ error: 'feed failed' });
@@ -955,7 +977,7 @@ app.get('/all-mail', async (req, res) => {
       };
     });
 
-    res.json({ cards, nextCursor });
+    res.json(stripLoneSurrogates({ cards, nextCursor }));
   } catch (err) {
     console.error('[all-mail] error:', err.message);
     res.status(500).json({ error: 'all-mail failed' });

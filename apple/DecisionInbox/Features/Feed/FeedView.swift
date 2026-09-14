@@ -9,7 +9,12 @@ struct FeedView: View {
     /// is deliberately not reimplemented here.
     var scrollTopSignal: Int = 0
 
-    @State private var position = ScrollPosition()
+    /// A `ScrollPosition` binding re-applies its last requested position on
+    /// re-render, so once anything asked it for `.top` the feed was pinned
+    /// there and could not be scrolled at all. An anchor id is a one-shot
+    /// request and cannot latch.
+    @State private var scroller: ScrollViewProxy?
+    private static let topAnchor = "feed.top"
     @State private var open: Message?
     @State private var compose: ComposeView.Intent?
     @State private var showRunLog = false
@@ -44,6 +49,7 @@ struct FeedView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
+                ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         // The space the pull strip holds open while it works.
@@ -59,6 +65,7 @@ struct FeedView: View {
                         // action for free. Driving the pull by hand removes
                         // that, so it is put back explicitly rather than lost.
                         .accessibilityAction(named: "Refresh") { Task { await refreshNow() } }
+                        .id(Self.topAnchor)
 
                         ForEach(store.messages(), id: \.0) { section, items in
                             Dateline(section)
@@ -119,7 +126,7 @@ struct FeedView: View {
                     .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
                 }
                 .scrollIndicators(.hidden)
-                .scrollPosition($position)
+                .onAppear { scroller = proxy }
                 // Two geometry observers, both of which return a value that is
                 // CONSTANT during ordinary scrolling, so `body` is not
                 // re-evaluated on scroll frames. The old
@@ -154,6 +161,7 @@ struct FeedView: View {
                     // H2 — identical physical meaning to the swipe threshold,
                     // so identical cue. Arming is news; disarming is not.
                     if nowArmed { Haptics.threshold() }
+                }
                 }
                 .onScrollPhaseChange { old, phase in
                     // No cue on release: H2 already reported the decision, and
@@ -218,8 +226,8 @@ struct FeedView: View {
     private func scrollToTop() {
         // A 2000pt animated camera move is the clearest vestibular trigger in
         // this app, and the destination is what matters, not the journey.
-        guard !reduceMotion else { position.scrollTo(edge: .top); return }
-        withAnimation(Move.layout) { position.scrollTo(edge: .top) }
+        guard !reduceMotion else { scroller?.scrollTo(Self.topAnchor, anchor: .top); return }
+        withAnimation(Move.layout) { scroller?.scrollTo(Self.topAnchor, anchor: .top) }
     }
 
     // MARK: The new-posts pill
@@ -255,7 +263,7 @@ struct FeedView: View {
         let batch = Set(store.pending.map(\.id))
 
         let land = {
-            position.scrollTo(edge: .top)
+            scroller?.scrollTo(Self.topAnchor, anchor: .top)
             store.admitPending()
             pillVisible = false
         }

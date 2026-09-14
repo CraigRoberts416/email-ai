@@ -48,7 +48,7 @@ struct APIClient {
         let nextCursor: Int?
     }
 
-    struct Recap: Decodable, Equatable {
+    struct Recap: Codable, Equatable {
         let greeting: String?
         let summary: String?
         let totalInView: Int?
@@ -57,7 +57,7 @@ struct APIClient {
 
     /// The server's card. Every AI field is optional because interpretation
     /// arrives after the message does — the UI reserves the slot and fills it.
-    struct Card: Decodable {
+    struct Card: Codable {
         let messageId: String
         let threadId: String?
         let labelIds: [String]?
@@ -198,6 +198,10 @@ struct APIClient {
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
+        // The feed answered 304 and URLSession served a stale body from its
+        // own cache. This data is the point of the app; it is never revalidated
+        // against a local copy. Our own on-disk cache is the offline story.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")

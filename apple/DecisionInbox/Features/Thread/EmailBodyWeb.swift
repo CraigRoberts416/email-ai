@@ -89,7 +89,10 @@ private struct WebBody: UIViewRepresentable {
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
           :root { color-scheme: light; }
-          html, body { margin: 0; padding: 0 16px; background: transparent;
+          /* No horizontal padding: the card that hosts this already owns the
+             margin, and adding a second one cost the sender 32pt of the 358
+             they had — enough to break a 320px table layout. */
+          html, body { margin: 0; padding: 0; background: transparent;
             font: 16px/1.45 -apple-system, system-ui, sans-serif; color: #000;
             -webkit-text-size-adjust: 100%; word-break: break-word; }
           img, video, table, pre { max-width: 100% !important; height: auto; }

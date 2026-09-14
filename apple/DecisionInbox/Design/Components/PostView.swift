@@ -73,7 +73,13 @@ struct PostView: View {
         // row insets, separators and a container fill, and the post's defining
         // decision is that it is decontained. The platform component's cost
         // here is a design regression.
-        .simultaneousGesture(swipe)
+        //
+        // `.gesture`, NOT `.simultaneousGesture`. A simultaneous drag claims
+        // the touch stream alongside the scroll view, which stops the scroll
+        // from cancelling the reading surface's button — so every vertical
+        // scroll also fired it and opened a thread. Arbitrated, the scroll
+        // wins vertically and this never starts.
+        .gesture(swipe)
         // Attached AFTER the drag gesture on purpose. A long press that then
         // moves cancels the menu's recogniser, so a slow swipe still works.
         //
