@@ -59,7 +59,8 @@ struct FeedView: View {
                         Masthead(
                             recap: store.recap,
                             waiting: store.waitingCount,
-                            total: store.messages.count
+                            total: store.messages.count,
+                            isReading: store.isFirstSync
                         )
                         .accessibilityElement(children: .contain)
                         // `.refreshable` supplied the VoiceOver rotor's Refresh
@@ -488,6 +489,8 @@ struct Masthead: View {
     let recap: APIClient.Recap?
     let waiting: Int
     let total: Int
+    /// The mailbox has not been read yet, so there is no count to print.
+    var isReading = false
 
     var body: some View {
         // Inverted from what shipped. The greeting was 28pt sans — the face
@@ -501,14 +504,20 @@ struct Masthead: View {
                 .contentTransition(.opacity)
 
             HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                Text("\(waiting > 0 ? waiting : total)")
+                // A zero here is an assertion about someone's mailbox, and
+                // during the first pass it is one the app has not earned — it
+                // has not finished looking. An em dash is the honest glyph for
+                // a number that does not exist yet, and it holds the same
+                // baseline so nothing shifts when the count arrives.
+                Text(isReading ? "\u{2014}" : "\(waiting > 0 ? waiting : total)")
                     .typeStyle(Style.tickCount)
-                    .foregroundStyle(Ink.primary)
+                    .foregroundStyle(isReading ? Ink.tertiary : Ink.primary)
                     .monospacedDigit()
-                Text(waiting > 0 ? "NEED YOU" : "NEW")
+                    .contentTransition(.numericText())
+                Text(isReading ? "READING" : (waiting > 0 ? "NEED YOU" : "NEW"))
                     .typeStyle(Style.kicker)
-                    .foregroundStyle(Ink.primary)
-                if waiting > 0 {
+                    .foregroundStyle(isReading ? Ink.tertiary : Ink.primary)
+                if waiting > 0, !isReading {
                     Text("· \(total) NEW")
                         .typeStyle(Style.kicker)
                         .foregroundStyle(Ink.tertiary)

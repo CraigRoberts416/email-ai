@@ -144,6 +144,16 @@ final class FeedStore {
             recap = cached.recap
         }
 
+        // A mailbox with nothing to show is *reading*, and it is reading from
+        // the moment it is brought up — not from the moment `settle` is
+        // finally reached. Registering and opening the stream take seconds on
+        // a cold server, and for that entire window the feed was rendering
+        // "Nothing waiting" over a mailbox it had not yet looked at. That is
+        // the exact claim `settle` exists to prevent, made earlier in the same
+        // function.
+        if messages.isEmpty { syncing.insert(accountID) }
+        defer { syncing.remove(accountID) }
+
         // Registering hands the server a refresh token so it can keep syncing
         // while the app is closed. It also kicks off the first backlog pull,
         // so it has to happen before the feed is worth reading.
@@ -169,11 +179,11 @@ final class FeedStore {
     /// Saying "nothing waiting" then would be a lie, and the kind that makes
     /// someone delete the app.
     private func settle(_ accountID: String) async {
-        guard messages.isEmpty else { return }
         // A hydrated feed already gave the user something true to read, so the
         // "reading your mailbox" state is only for a genuinely cold start.
-        syncing.insert(accountID)
-        defer { syncing.remove(accountID) }
+        // `bring(up:)` owns the flag — it is raised before the first network
+        // call rather than after three of them.
+        guard messages.isEmpty else { return }
 
         for delay in [2, 3, 5, 8, 12, 20, 30] {
             try? await Task.sleep(for: .seconds(delay))

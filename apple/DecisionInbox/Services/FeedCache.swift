@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The feed on disk.
@@ -32,13 +33,42 @@ enum FeedCache {
         return url
     }
 
-    /// One file per mailbox, named by a hash rather than the address — the
+    /// One file per mailbox, named by a digest rather than the address — the
     /// address is the user's identity and does not belong in a filename.
+    ///
+    /// SHA-256 and not `hashValue`. Swift seeds String hashing randomly at
+    /// every process launch, so `hashValue` names a *different* file each run:
+    /// the cache wrote a new file on every launch and never once read one
+    /// back, which is exactly what "the emails don't stay" looks like from the
+    /// outside. A cache keyed by something that changes per launch is not a
+    /// cache, and the failure is silent — it looks like a cold start.
     private static func file(for accountID: String) -> URL? {
-        directory?.appending(path: "\(abs(accountID.hashValue)).json")
+        let digest = SHA256.hash(data: Data(accountID.lowercased().utf8))
+        let name = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        return directory?.appending(path: "\(name).json")
+    }
+
+    /// Drops anything past its age, including files this app can no longer
+    /// name. The `hashValue` era left one orphan per launch, and an orphan is
+    /// never looked up — so it is never aged out by a lookup either. Someone's
+    /// mail should not sit on disk indefinitely because of a naming bug.
+    private static func sweep() {
+        guard let directory,
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.contentModificationDateKey]
+              )
+        else { return }
+
+        for file in files {
+            let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate
+            guard let modified, Date.now.timeIntervalSince(modified) > maximumAge else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
     }
 
     static func save(_ cards: [APIClient.Card], recap: APIClient.Recap?, for accountID: String) {
+        sweep()
         guard let file = file(for: accountID) else { return }
         let envelope = Envelope(cards: Array(cards.prefix(200)), savedAt: .now, recap: recap)
         guard let data = try? JSONEncoder().encode(envelope) else { return }
