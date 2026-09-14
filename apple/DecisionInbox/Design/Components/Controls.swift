@@ -18,6 +18,10 @@ struct InkToggle: View {
     var body: some View {
         Capsule()
             .fill(isOn ? Ink.primary : Ink.border)
+            // #EEEEEE on white is 1.16:1, and the white knob on it is another
+            // 1.16:1 — an off switch with no edge is invisible, which matters
+            // most on the privacy rows where off is the consequential state.
+            .overlay(Capsule().strokeBorder(isOn ? .clear : Ink.tertiary, lineWidth: 1))
             .frame(width: 44, height: 26)
             .overlay(alignment: isOn ? .trailing : .leading) {
                 Circle()

@@ -18,9 +18,11 @@ enum Ink {
     /// Body copy, quotes, kickers, active icons. 21:1 on white.
     static let primary = Color(hex: 0x000000)
 
-    /// Secondary copy. Darkened from the original #8F8F8F, which measured
-    /// 3.23:1 on white and failed WCAG AA under 24px. This measures 4.54:1.
-    static let secondary = Color(hex: 0x767676)
+    /// Secondary copy. Darkened from the file's #8F8F8F, which measures
+    /// 3.23:1 on white and fails AA. #767676 cleared AA on white and then
+    /// missed it at 4.28:1 on surfaceTertiary and 3.91:1 on border — grounds
+    /// this colour actually sits on. #727272 clears both: 4.81 and 4.53.
+    static let secondary = Color(hex: 0x727272)
 
     /// Repeated, non-essential meta only — still below AA, so never load-bearing.
     static let tertiary = Color(hex: 0x8F8F8F)
@@ -47,8 +49,12 @@ enum Ink {
     /// are then unmistakably theirs, not ours.
     static let sheet = Color(hex: 0x081034)
     static let onSheet = Color(hex: 0xFFFFFF)
-    /// 5.9:1 on the sheet — meta only, never a sentence that carries meaning.
-    static let onSheetSecondary = Color(hex: 0x8F8F8F)
+    /// Relative to the sheet rather than a fixed grey. A flat #8F8F8F measured
+    /// 5.9:1 against the fallback navy and then collapsed to 1.39:1 on any
+    /// darker derived ground — which is most of them, since the sheet colour
+    /// is darkened until white text clears AA. Tied to the foreground it sits
+    /// on, it cannot drift again.
+    static let onSheetSecondary = Color.white.opacity(0.72)
 
     /// Secondary copy on an inverted surface. A flat value rather than white
     /// at 62%: the composite lands a shade off, and on the agent tray this
@@ -71,9 +77,11 @@ enum Ink {
 
 // MARK: - Spacing
 //
-// Nothing inside a post is ever >= 24. Between posts is always 24 / rule / 24.
-// A post reads as one unit only when its largest internal gap is smaller than
-// its external one.
+// Internal gaps run 16, with one exception: the action row sits 24 off the
+// block above it, which is what makes it read as a footer rather than another
+// line of content. Between posts is 24 / rule / 24 — 48 in total — so the
+// largest internal gap is still half the external one, and a post reads as
+// one unit.
 
 enum Space {
     static let xxs: CGFloat = 2   // a label and its own sublabel

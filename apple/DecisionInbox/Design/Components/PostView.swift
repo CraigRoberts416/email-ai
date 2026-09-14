@@ -324,12 +324,10 @@ struct PostView: View {
                 // already the quietest thing in the feed and should not carry
                 // two black icons.
                 compactAction(message.isSaved ? "bookmark.fill" : "bookmark", "Save", onSave)
-                compactAction("trash", "Archive", onArchive)
+                compactAction("archivebox", "Archive", onArchive)
             }
             .padding(.horizontal, Metric.gutter)
             .padding(.vertical, Space.md)
-
-            Rule()
         }
     }
 
@@ -376,9 +374,12 @@ struct KickerLabel: View {
     init(_ kicker: Kicker) { self.kicker = kicker }
 
     var body: some View {
+        // Every kicker is black, NOT READ included. The state is carried by
+        // the word, which is why there are eleven of them — greying the
+        // awkward ones would hide exactly the posts worth noticing.
         Text(kicker.rawValue)
             .typeStyle(Style.kicker)
-            .foregroundStyle(kicker == .reading || kicker == .notRead ? Ink.secondary : Ink.primary)
+            .foregroundStyle(Ink.primary)
     }
 }
 

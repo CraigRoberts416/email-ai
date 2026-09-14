@@ -247,8 +247,9 @@ struct Dateline: View {
     init(_ label: String) { self.label = label }
 
     var body: some View {
+        // No leading rule: the post above already drew one, and two hairlines
+        // 1pt apart read as a rendering fault rather than a boundary.
         VStack(spacing: 0) {
-            Rule()
             Text(label)
                 .typeStyle(Style.dateline)
                 .foregroundStyle(Ink.secondary)

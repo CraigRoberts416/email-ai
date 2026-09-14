@@ -158,9 +158,14 @@ struct Message: Identifiable, Hashable {
             kicker = .fyi
         }
 
+        // Density follows what the message asks of you, not whether it
+        // happens to carry a URL. Driving `.lead` off actionLabel meant a
+        // NEEDS YOU post with nothing to click rendered byte-identical to an
+        // FYI — the one distinction the feed exists to draw, lost to a field
+        // that is about links.
         if isPromotion && quote == nil {
             density = .compact
-        } else if actionLabel?.isEmpty == false {
+        } else if requiresAttention || actionLabel?.isEmpty == false {
             density = .lead
         } else {
             density = .standard
