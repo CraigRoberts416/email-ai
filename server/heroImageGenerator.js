@@ -181,8 +181,16 @@ function ensureHeroAsset(openai, domain, senderName) {
 function buildHeroImageUrl(req, domain) {
   const root = rootDomain(domain);
   if (!isGeneratable(root)) return null;
-  const base = `${req.protocol}://${req.get('host')}`;
-  return `${base}/hero-image/${encodeURIComponent(root)}`;
+
+  // `trust proxy` makes req.protocol honour X-Forwarded-Proto, but a URL that
+  // silently degrades to http:// costs the whole feature — iOS blocks the
+  // request under App Transport Security and AsyncImage has nowhere to report
+  // it, so the image just never appears. Anything that isn't localhost is
+  // https, and that is not a guess: this server is only reachable over TLS.
+  const host = req.get('host') || '';
+  const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(:|$)/.test(host);
+  const scheme = isLocal ? req.protocol : 'https';
+  return `${scheme}://${host}/hero-image/${encodeURIComponent(root)}`;
 }
 
 module.exports = {

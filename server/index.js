@@ -48,6 +48,14 @@ async function sendSilentPush(pushToken) {
 }
 
 const app = express();
+
+// Render terminates TLS at its edge and forwards plain HTTP, so `req.protocol`
+// reads "http" and every absolute URL this server builds came out as an http://
+// link. iOS App Transport Security refuses those outright — which is why not a
+// single hero image ever loaded: each one failed with -1022 before a byte was
+// fetched, silently, inside an AsyncImage that has nowhere to report it. The
+// picture was generated, stored, resized and then blocked by the scheme.
+app.set('trust proxy', true);
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
