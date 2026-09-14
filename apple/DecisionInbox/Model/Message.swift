@@ -184,11 +184,14 @@ struct Message: Identifiable, Hashable {
             // Never compact. A suspected scam is not allowed to be the
             // quietest thing on the screen.
             density = .standard
+        } else if isPromotion || kicker == .receipt || kicker == .newsletter {
+            // Broadcast is compact even when it carries a link. Marketing mail
+            // always has somewhere it wants you to click, and honouring that
+            // as an "ask" gave a discount code the same room as a declined
+            // payment — which is how a feed of 200 became unreadable.
+            density = .compact
         } else if requiresAttention || actionLabel?.isEmpty == false {
             density = .lead
-        } else if isPromotion || kicker == .receipt || kicker == .newsletter {
-            // Broadcast. Nobody needs a pulled quote from a discount code.
-            density = .compact
         } else {
             density = .standard
         }

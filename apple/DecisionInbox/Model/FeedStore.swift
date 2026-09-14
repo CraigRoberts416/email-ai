@@ -107,6 +107,14 @@ final class FeedStore {
 
     func mailbox(_ id: String) -> Mailbox? { mailboxes.first { $0.id == id } }
 
+    /// Everything one sender has said, newest first. Drawn from what is
+    /// already loaded — a profile is a lens on the feed, not a second fetch.
+    func messages(from address: String) -> [Message] {
+        (messages + pending)
+            .filter { $0.sender.address.caseInsensitiveCompare(address) == .orderedSame }
+            .sorted { $0.receivedAt > $1.receivedAt }
+    }
+
     /// The tag is shown on a post only when there is more than one mailbox to
     /// tell apart. With one, it is noise on every single row.
     var showsMailboxTags: Bool { mailboxes.count > 1 }

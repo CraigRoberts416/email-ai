@@ -16,6 +16,7 @@ struct FeedView: View {
     @State private var scroller: ScrollViewProxy?
     private static let topAnchor = "feed.top"
     @State private var open: Message?
+    @State private var profile: Sender?
     @State private var compose: ComposeView.Intent?
     @State private var showRunLog = false
 
@@ -85,6 +86,7 @@ struct FeedView: View {
                                     onSave: { store.toggleSaved(message) },
                                     onArchive: { store.archive(message) },
                                     onUnsubscribe: { store.unsubscribe(from: message) },
+                                    onProfile: { profile = message.sender },
                                     onSwiping: { swiping = $0 }
                                 )
                                 .opacity(admitted.contains(message.id) ? 0 : 1)
@@ -482,33 +484,44 @@ struct Masthead: View {
     let total: Int
 
     var body: some View {
+        // Inverted from what shipped. The greeting was 28pt sans — the face
+        // this product reserves for what a human wrote — and the counts, which
+        // are the only actionable thing here, were a 12pt afterthought. The
+        // counts are instrumentation, so they are mono, and they lead.
         VStack(alignment: .leading, spacing: Space.sm) {
-            Text(recap?.greeting ?? fallbackGreeting)
-                .typeStyle(Style.display)
-                .foregroundStyle(Ink.primary)
+            Text(recap?.greeting?.uppercased() ?? fallbackGreeting.uppercased())
+                .typeStyle(Style.sectionHeader)
+                .foregroundStyle(Ink.tertiary)
                 .contentTransition(.opacity)
+
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                Text("\(waiting > 0 ? waiting : total)")
+                    .typeStyle(Style.tickCount)
+                    .foregroundStyle(Ink.primary)
+                    .monospacedDigit()
+                Text(waiting > 0 ? "NEED YOU" : "NEW")
+                    .typeStyle(Style.kicker)
+                    .foregroundStyle(Ink.primary)
+                if waiting > 0 {
+                    Text("· \(total) NEW")
+                        .typeStyle(Style.kicker)
+                        .foregroundStyle(Ink.tertiary)
+                        .monospacedDigit()
+                }
+            }
 
             if let summary = recap?.summary {
                 Text(summary)
-                    .typeStyle(Style.body)
+                    .typeStyle(Style.gloss)
                     .foregroundStyle(Ink.secondary)
+                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .contentTransition(.opacity)
             }
-
-            HStack(spacing: Space.xs + 2) {
-                Text("\(total) NEW").typeStyle(Style.kicker).foregroundStyle(Ink.secondary)
-                if waiting > 0 {
-                    Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
-                    Text("\(waiting) NEED YOU").typeStyle(Style.kicker).foregroundStyle(Ink.primary)
-                }
-            }
-            .monospacedDigit()
-            .padding(.top, Space.xs)
         }
         .padding(.horizontal, Metric.gutter)
-        .padding(.top, Space.xxl)
-        .padding(.bottom, Space.xl)
+        .padding(.top, Space.xl)
+        .padding(.bottom, Space.lg)
         .animation(Move.crossfade, value: recap)
     }
 

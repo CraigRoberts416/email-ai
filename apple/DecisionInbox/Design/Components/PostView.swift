@@ -22,6 +22,8 @@ struct PostView: View {
     var onSave: () -> Void = {}
     var onArchive: () -> Void = {}
     var onUnsubscribe: () -> Void = {}
+    /// Tapping the avatar or the name opens the sender, not the message.
+    var onProfile: () -> Void = {}
     /// Reported at the start and end of a horizontal swipe so the feed can
     /// suppress the new-posts pill: a new object entering the frame under an
     /// active gesture competes with the dominant event.
@@ -56,7 +58,13 @@ struct PostView: View {
     var body: some View {
         VStack(spacing: 0) {
             content
-            Rule()
+            // A lead is set apart by space, not a line. Isolation is the
+            // strongest emphasis device there is, and here it is free.
+            if message.density == .lead {
+                Color.clear.frame(height: Space.sm)
+            } else {
+                Rule()
+            }
         }
         .background(pressed ? Ink.surfaceTertiary : Ink.surface)
         .offset(x: dx)
@@ -105,6 +113,7 @@ struct PostView: View {
                 Button("Forward", action: onForward)
             }
             Button("Discuss", action: onDiscuss)
+            Button("Open \(message.sender.displayName)", action: onProfile)
             Button(message.isSaved ? "Remove from saved" : "Save", action: filed(onSave))
             Button("Archive", action: filed(onArchive))
         }
@@ -351,16 +360,20 @@ struct PostView: View {
             .buttonStyle(PostPressStyle(pressed: $pressed))
             .accessibilityHidden(true)
 
-            ActionRow(
-                message: message,
-                onReply: onReply, onDiscuss: onDiscuss, onForward: onForward,
-                onSave: onSave, onArchive: onArchive, onUnsubscribe: onUnsubscribe
-            )
-            .padding(.horizontal, Metric.gutter)
-            // Every internal gap is 16; the action row alone sits 24 off the
-            // block above it, which is what keeps it reading as a footer
-            // rather than as another line of content.
-            .padding(.top, Space.sm)
+            // No action row in the feed. It renders again on the thread — the
+            // screen you actually act from — and here every one of its six
+            // actions already has three routes: swipe, context menu and the
+            // accessibility rotor. At ~52pt on every post it was the largest
+            // unearned block in the design, and removing it leaves the lead's
+            // CTA as the only button in the feed, which is the cheapest
+            // dominance signal available.
+            if message.density == .lead, let label = message.actionLabel {
+                CTAButton(label: label) {
+                    if let url = message.actionURL { UIApplication.shared.open(url) }
+                }
+                .padding(.horizontal, Metric.gutter)
+                .padding(.top, Space.sm)
+            }
         }
         .padding(.vertical, Metric.postPaddingY)
     }
@@ -369,11 +382,15 @@ struct PostView: View {
 
     private var header: some View {
         HStack(alignment: stackedHeader ? .top : .center, spacing: Space.md) {
-            AvatarView(
-                sender: message.sender,
-                size: message.density == .compact ? Metric.avatarCompact : Metric.avatar,
-                dimmed: message.density == .compact
-            )
+            Button(action: onProfile) {
+                AvatarView(
+                    sender: message.sender,
+                    size: message.density == .compact ? Metric.avatarCompact : Metric.avatar,
+                    dimmed: message.density == .compact
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(message.sender.displayName), open sender")
 
             // At accessibility sizes the identity line stacks: laid out
             // horizontally, a `lineLimit(1)` name beside a non-compressing
@@ -467,16 +484,15 @@ struct PostView: View {
                 quoteText(quote, ink: message.isRead ? metaInk : Ink.primary)
             }
 
-            if let summary = message.summary {
-                SummaryBlock(text: summary, density: message.density, emphasised: message.kicker == .possibleScam)
+            if let summary = message.summary,
+               message.density == .lead || message.kicker == .possibleScam {
+                SummaryBlock(
+                    text: summary,
+                    density: message.density,
+                    emphasised: message.kicker == .possibleScam
+                )
             }
 
-            if let label = message.actionLabel {
-                CTAButton(label: label) {
-                    if let url = message.actionURL { UIApplication.shared.open(url) }
-                }
-                .padding(.top, Space.xs)
-            }
         }
         .padding(.horizontal, Metric.gutter)
     }
@@ -528,7 +544,7 @@ struct PostView: View {
                     heroGround
                 }
             }
-            .aspectRatio(Metric.mediaAspect, contentMode: .fill)
+            .aspectRatio(Metric.mediaAspectWide, contentMode: .fill)
             .frame(maxWidth: .infinity)
             .clipped()
 
@@ -602,66 +618,39 @@ struct PostView: View {
     /// A broadcast that asks nothing: one row, a mono sender, one clause, and
     /// the two things you might do with it. No timestamp, no thread count, no
     /// overflow — a receipt does not earn an identity line.
+    /// A broadcast that asks nothing: one 55pt row, a mono sender, one clause.
+    /// No timestamp, no thread count, no overflow — and no inline glyphs.
+    ///
+    /// The two glyphs set a 44pt tap-target floor and then 24pt of padding
+    /// stacked on top of it, for actions that already have three routes each:
+    /// the swipe, the context menu and the accessibility rotor. Removing them
+    /// takes the row from 69 to 56pt and gives the clause 88pt more measure —
+    /// 45 characters instead of 34.
     private var compactRow: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Space.md) {
-                // Same split as a standard post: the reading surface is the
-                // button, the filing glyphs stay their own controls, and the
-                // pressed fill is reported up to the whole row.
-                Button(action: onOpen) {
-                    HStack(spacing: Space.md) {
-                        AvatarView(
-                            sender: message.sender,
-                            size: Metric.avatarCompact,
-                            dimmed: true
-                        )
-
-                        VStack(alignment: .leading, spacing: Space.xxs) {
-                            Text(message.sender.displayName.uppercased())
-                                .typeStyle(Style.compactSender)
-                                .foregroundStyle(metaInk)
-                                .lineLimit(1)
-                            Text(message.summary ?? message.subject)
-                                .typeStyle(Style.body)
-                                .foregroundStyle(Ink.primary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: Space.sm)
-                    }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(PostPressStyle(pressed: $pressed))
-                .accessibilityHidden(true)
-
-                // The one place the filing glyphs step down: a compact row is
-                // already the quietest thing in the feed and should not carry
-                // two black icons.
-                compactAction(message.isSaved ? "bookmark.fill" : "bookmark", "Save", filed(onSave))
-                compactAction("archivebox", "Archive", filed(onArchive))
+        HStack(spacing: Space.md) {
+            Button(action: onProfile) {
+                AvatarView(sender: message.sender, size: Metric.avatarCompact, dimmed: true)
             }
-            .padding(.horizontal, Metric.gutter)
-            .padding(.vertical, Space.md)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(message.sender.displayName), open sender")
+
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                Text(message.sender.displayName.uppercased())
+                    .typeStyle(Style.compactSender)
+                    .foregroundStyle(Ink.tertiary)
+                    .lineLimit(1)
+                Text(message.summary ?? message.subject)
+                    .typeStyle(Style.bodyMedium)
+                    .foregroundStyle(message.isRead ? Ink.secondary : Ink.primary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, Metric.gutter)
+        .frame(height: 55)
     }
 
-    private func compactAction(
-        _ symbol: String, _ label: String, _ action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: Metric.iconFile))
-                .foregroundStyle(metaInk)
-                .frame(width: Metric.tapTarget, height: Metric.tapTarget)
-                .contentShape(.rect)
-        }
-        .buttonStyle(TapStyle())
-        .accessibilityLabel(label)
-        // The bookmark filling is the entire visible consequence of a save, so
-        // the glyph swap is the event. Reduce Motion gets a plain swap.
-        .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace.offUp))
-        .animation(Move.resolved(Move.crisp, reduceMotion), value: message.isSaved)
-    }
 
     /// Spoken in the order it is read, and — crucially — with the quote
     /// announced as a quotation. The verbatim line is the one thing on a post
@@ -726,28 +715,26 @@ struct SummaryBlock: View {
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
-        if density == .lead {
-            Text(text)
-                .typeStyle(Style.ai)
-                .foregroundStyle(Ink.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(Space.md)
-                .background(Ink.surfaceTertiary, in: RoundedRectangle(cornerRadius: Corner.md, style: .continuous))
-        } else {
-            Text(text)
-                .typeStyle(Style.ai)
-                .foregroundStyle(Ink.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, Space.md)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        // Structural, so it moves with every other structural
-                        // line under Increase Contrast rather than leaving the
-                        // feed's dividers to strengthen alone.
-                        .fill(emphasised ? Ink.primary : Ink.rule(contrast == .increased))
-                        .frame(width: emphasised ? 2 : 1)
-                }
-        }
+        // One treatment, always a margin rule. The filled panel was a card —
+        // a fill and a radius — sitting inside a feed whose defining decision
+        // is that posts have neither, placed on the one post where that
+        // contradiction was most visible.
+        //
+        // 13pt, not 16. DM Mono's fixed 0.6em advance means 16pt mono occupies
+        // the width of 20pt sans, so the machine was set larger than the human
+        // on every post. Smaller here is both quieter and more informative.
+        Text(text)
+            .typeStyle(Style.gloss)
+            .foregroundStyle(emphasised ? Ink.primary : Ink.secondary)
+            .lineLimit(emphasised ? nil : 2)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, Space.md)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(emphasised ? Ink.primary : Ink.rule(contrast == .increased))
+                    .frame(width: emphasised ? 2 : 1)
+            }
     }
 }
 

@@ -124,10 +124,42 @@ struct TypeStyle {
 }
 
 enum Style {
-    /// Pulled quote, greeting, screen titles. Never a UI label, never >3 lines.
+    /// Screen titles and the thread headline. Never a UI label.
     static let display = TypeStyle(
         font: .custom(Face.sans, size: 28, relativeTo: .title),
         tracking: -0.84, lineSpacing: 0
+    )
+
+    // The quote is a two-stop ramp, and the step between them is what makes a
+    // lead dominate. At 28pt everywhere it did the opposite: 86 characters of
+    // someone's actual words cost 109pt, so every post shouted and none stood
+    // out. Two lines at 17pt carry 93 characters in 44pt — more of the sender,
+    // in 40% of the room.
+
+    /// The pulled quote on a post that asks something of you.
+    static let quoteLead = TypeStyle(
+        font: .custom(Face.sans, size: 24, relativeTo: .title2),
+        tracking: -0.72, lineSpacing: 0
+    )
+
+    /// The pulled quote everywhere else.
+    static let quoteStandard = TypeStyle(
+        font: .custom(Face.sans, size: 17, relativeTo: .headline),
+        tracking: -0.34, lineSpacing: 1
+    )
+
+    /// The machine's gloss. DM Mono's fixed 0.6em advance means 16pt mono
+    /// occupies the width of 20pt sans — the machine was set larger than the
+    /// human on every post. At 13 it is quieter and carries more.
+    static let gloss = TypeStyle(
+        font: .custom(Face.mono, size: 13, relativeTo: .footnote),
+        tracking: 0.26, lineSpacing: 2
+    )
+
+    /// The count that opens the feed. Mono, because it is instrumentation.
+    static let tickCount = TypeStyle(
+        font: .custom(Face.monoMedium, size: 24, relativeTo: .title2),
+        tracking: 0, lineSpacing: 0
     )
 
     /// Recap, composer body, list rows, CTA labels. Never an AI summary.
