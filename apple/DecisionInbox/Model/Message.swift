@@ -117,12 +117,48 @@ struct Message: Identifiable, Hashable {
     var isSaved: Bool = false
     var threadCount: Int
     var unsubscribeURL: URL?
+    /// The model's own verdict on whether this asks something of you. Drives
+    /// the kicker; everything else about the card follows from it.
+    var requiresAttention: Bool = false
 
     /// True while the model is still writing. The quote slot is reserved at
     /// build time so nothing jumps when it lands.
     var isInterpreting: Bool
 
     var isPromotion: Bool { unsubscribeURL != nil }
+
+    /// Recomputes the presentation from the interpretation.
+    ///
+    /// Fields arrive a token at a time over SSE, so this runs on every update
+    /// rather than once at build time. Keeping the rule in one place is what
+    /// stops a card from disagreeing with itself — a NEEDS YOU kicker above a
+    /// summary that no longer asks for anything.
+    mutating func reinterpret(failed: Bool = false) {
+        if failed {
+            kicker = .notRead
+            density = .standard
+            shape = .degraded
+            return
+        }
+
+        if isInterpreting {
+            kicker = .reading
+        } else if isPromotion {
+            kicker = .promotion
+        } else if requiresAttention {
+            kicker = .needsYou
+        } else {
+            kicker = .fyi
+        }
+
+        if isPromotion && quote == nil {
+            density = .compact
+        } else if actionLabel?.isEmpty == false {
+            density = .lead
+        } else {
+            density = .standard
+        }
+    }
 }
 
 // MARK: - Mailbox

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SavedView: View {
     @Environment(FeedStore.self) private var store
+    @State private var open: Message?
 
     var body: some View {
         NavigationStack {
@@ -14,13 +15,24 @@ struct SavedView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(store.saved) { PostView(message: $0) }
+                            ForEach(store.saved) { message in
+                                PostView(
+                                    message: message,
+                                    tag: store.showsMailboxTags ? store.mailbox(message.mailboxID)?.tag : nil,
+                                    onOpen: { open = message },
+                                    onSave: { store.toggleSaved(message) },
+                                    onArchive: { withAnimation(Move.layout) { store.archive(message) } },
+                                    onUnsubscribe: { store.unsubscribe(from: message) }
+                                )
+                            }
                         }
                     }
+                    .scrollIndicators(.hidden)
                 }
             }
             .background(Ink.surface)
             .navigationTitle("Saved")
+            .navigationDestination(item: $open) { ThreadView(message: $0) }
         }
     }
 }

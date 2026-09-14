@@ -12,6 +12,9 @@ import SwiftUI
 /// image inside a card.
 struct PostView: View {
     let message: Message
+    /// Which mailbox this arrived in. Nil with a single mailbox — a tag on
+    /// every row when there is only one thing it can mean is pure noise.
+    var tag: String?
     var onOpen: () -> Void = {}
     var onReply: () -> Void = {}
     var onDiscuss: () -> Void = {}
@@ -102,6 +105,18 @@ struct PostView: View {
                         .typeStyle(Style.meta).foregroundStyle(Ink.secondary)
                 }
                 Spacer(minLength: 0)
+            }
+
+            if let tag {
+                Text(tag)
+                    .typeStyle(Style.chip)
+                    .foregroundStyle(Ink.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Corner.chip, style: .continuous)
+                            .strokeBorder(Ink.border, lineWidth: 1)
+                    )
             }
 
             Image(systemName: "ellipsis")

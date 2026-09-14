@@ -3,7 +3,11 @@ import SwiftUI
 struct SearchView: View {
     @Environment(FeedStore.self) private var store
     @State private var query = ""
+    @State private var open: Message?
 
+    /// Searches what is on the device: the sender, the subject, and every line
+    /// the model wrote. Searching the quote is the point — you remember what an
+    /// email asked you long after you have forgotten its subject line.
     private var results: [Message] {
         guard !query.isEmpty else { return [] }
         let q = query.lowercased()
@@ -11,6 +15,7 @@ struct SearchView: View {
             $0.sender.displayName.lowercased().contains(q)
                 || $0.subject.lowercased().contains(q)
                 || ($0.quote ?? "").lowercased().contains(q)
+                || ($0.summary ?? "").lowercased().contains(q)
         }
     }
 
@@ -26,19 +31,30 @@ struct SearchView: View {
                     // Not an error — the query ran and returned nothing.
                     EmptyStateView(
                         headline: "Nothing for \u{201C}\(query)\u{201D}.",
-                        detail: "SEARCHED EVERY INTERPRETED EMAIL FROM THE LAST 30 DAYS."
+                        detail: "SEARCHED EVERY INTERPRETED EMAIL IN YOUR FEED."
                     )
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(results) { PostView(message: $0) }
+                            ForEach(results) { message in
+                                PostView(
+                                    message: message,
+                                    tag: store.showsMailboxTags ? store.mailbox(message.mailboxID)?.tag : nil,
+                                    onOpen: { open = message },
+                                    onSave: { store.toggleSaved(message) },
+                                    onArchive: { withAnimation(Move.layout) { store.archive(message) } },
+                                    onUnsubscribe: { store.unsubscribe(from: message) }
+                                )
+                            }
                         }
                     }
+                    .scrollIndicators(.hidden)
                 }
             }
             .background(Ink.surface)
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Find an email")
+            .navigationDestination(item: $open) { ThreadView(message: $0) }
         }
     }
 }
