@@ -31,6 +31,22 @@ final class FeedStore {
     /// template. Nil until it lands — the feed does not wait on it.
     var recap: APIClient.Recap?
 
+    /// What this session actually did. Counted here rather than inferred at
+    /// render time, because the caught-up receipt is the one place the product
+    /// makes a claim about the user's own work — and a claim like that has to
+    /// be a count, not an estimate.
+    struct Tally {
+        var archived = 0
+        var replied = 0
+        var unsubscribed = 0
+        var saved = 0
+
+        var isEmpty: Bool { archived + replied + unsubscribed + saved == 0 }
+        var handled: Int { archived + replied + unsubscribed }
+    }
+
+    var tally = Tally()
+
     struct Receipt: Identifiable {
         enum Undo { case send }
         let id = UUID()
@@ -69,6 +85,10 @@ final class FeedStore {
     var needsReconnect: [Mailbox] { mailboxes.filter { !$0.isHealthy } }
 
     var waitingCount: Int { messages.count { $0.kicker == .needsYou } }
+
+    /// Things you answered that have not come back yet. The one honest
+    /// version of "still open": we know we sent, and we know nothing landed.
+    var stillOpen: [Message] { messages.filter { $0.kicker == .waitingOnThem } }
 
     /// Only mailboxes the user has left in the unified feed. Excluding one
     /// hides its mail here without disconnecting it — the distinction matters
@@ -347,6 +367,7 @@ final class FeedStore {
             unsubscribes[status.messageId] = status
             if status.status == "done" {
                 messages.removeAll { $0.id == status.messageId }
+                tally.unsubscribed += 1
                 receipt = Receipt(
                     message: status.message ?? "Unsubscribed.",
                     detail: status.senderName?.uppercased()
@@ -389,6 +410,7 @@ final class FeedStore {
 
     func archive(_ message: Message) {
         messages.removeAll { $0.id == message.id }
+        tally.archived += 1
         Task { try? await client(message.mailboxID).markRead(message.id) }
     }
 
@@ -401,6 +423,7 @@ final class FeedStore {
 
     func toggleSaved(_ message: Message) {
         mutate(message.id) { $0.isSaved.toggle() }
+        if messages.first(where: { $0.id == message.id })?.isSaved == true { tally.saved += 1 }
     }
 
     func unsubscribe(from message: Message) {
@@ -447,6 +470,7 @@ final class FeedStore {
             guard !Task.isCancelled else { return }
             do {
                 try await GmailClient(auth: auth, accountID: from).send(draft)
+                tally.replied += 1
                 receipt = Receipt(message: "Sent.", detail: draft.to.first?.uppercased())
             } catch {
                 // No retry offered: a duplicate send is worse than ambiguity.

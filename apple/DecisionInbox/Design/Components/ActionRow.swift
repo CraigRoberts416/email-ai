@@ -1,8 +1,12 @@
 import SwiftUI
 
-/// Left-cluster acts on the message, right-cluster files it. Counts sit beside
-/// their glyph in mono rather than inside a pill — a bare count reads as
-/// information, a pill reads as a badge demanding attention.
+/// Left-cluster acts on the message, right-cluster files it — and the two
+/// clusters are deliberately not equals. Acting is black at 17pt; filing is
+/// grey at 15pt. Answering someone and putting them away are not the same
+/// order of act, and flattening both to grey loses the only hierarchy this
+/// row has. Counts sit beside their glyph in mono rather than inside a pill:
+/// a bare count reads as information, a pill reads as a badge demanding
+/// attention.
 struct ActionRow: View {
     let message: Message
     var onReply: () -> Void = {}
@@ -30,41 +34,54 @@ struct ActionRow: View {
                 }
                 .buttonStyle(.plain)
 
-                iconButton("sparkles", count: nil, label: "Discuss", action: onDiscuss)
+                actOn("sparkles", label: "Discuss", action: onDiscuss)
             } else {
-                iconButton("face.smiling", count: nil, label: "React", action: {})
-                iconButton("arrowshape.turn.up.left", count: nil, label: "Reply", action: onReply)
-                iconButton("arrowshape.turn.up.right", count: nil, label: "Forward", action: onForward)
-                iconButton("sparkles", count: nil, label: "Discuss", action: onDiscuss)
+                actOn("face.smiling", label: "React", action: {})
+                actOn("arrowshape.turn.up.left", label: "Reply", action: onReply)
+                actOn("arrowshape.turn.up.right", label: "Forward", action: onForward)
+                actOn("sparkles", label: "Discuss", action: onDiscuss)
             }
 
             Spacer(minLength: 0)
 
-            iconButton(message.isSaved ? "bookmark.fill" : "bookmark",
-                       count: nil, label: "Save", action: onSave)
-            iconButton("archivebox", count: nil, label: "Archive", action: onArchive)
+            file(message.isSaved ? "bookmark.fill" : "bookmark", label: "Save", action: onSave)
+            file("archivebox", label: "Archive", action: onArchive)
         }
     }
 
-    private func iconButton(
+    /// Acting on the message.
+    private func actOn(
         _ systemName: String,
-        count: Int?,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        icon(systemName, size: Metric.iconAction, tint: Ink.primary, label: label, action: action)
+    }
+
+    /// Filing it away.
+    private func file(
+        _ systemName: String,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        icon(systemName, size: Metric.iconFile, tint: Ink.secondary, label: label, action: action)
+    }
+
+    private func icon(
+        _ systemName: String,
+        size: CGFloat,
+        tint: Color,
         label: String,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            HStack(spacing: Space.xs) {
-                Image(systemName: systemName)
-                    .font(.system(size: Metric.iconAction))
-                if let count {
-                    Text("\(count)")
-                        .typeStyle(Style.meta)
-                        .foregroundStyle(Ink.secondary)
-                }
-            }
-            .foregroundStyle(Ink.secondary)
-            .frame(minWidth: Metric.tapTarget * 0.6, minHeight: Metric.tapTarget, alignment: .leading)
-            .contentShape(.rect)
+            Image(systemName: systemName)
+                .font(.system(size: size))
+                .foregroundStyle(tint)
+                // The glyphs differ in size, so the row is kept even by the
+                // tap target rather than by the artwork.
+                .frame(minWidth: Metric.tapTarget * 0.6, minHeight: Metric.tapTarget, alignment: .leading)
+                .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)

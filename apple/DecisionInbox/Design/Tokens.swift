@@ -156,6 +156,33 @@ enum Style {
         tracking: 0, lineSpacing: 0
     )
 
+    /// The separator between meta items. Sans, not mono, and a size up — a
+    /// mono middot sits too low and too wide to read as punctuation.
+    static let separator = TypeStyle(
+        font: .custom(Face.sans, size: 13, relativeTo: .caption),
+        tracking: 0, lineSpacing: 0
+    )
+
+    /// Dateline bands. Tracked one step wider than a kicker so a band reads
+    /// as a boundary rather than as another intent label.
+    static let dateline = TypeStyle(
+        font: .custom(Face.monoMedium, size: 12, relativeTo: .caption),
+        tracking: 0.72, lineSpacing: 0
+    )
+
+    /// The sender label on a compact promo row.
+    static let compactSender = TypeStyle(
+        font: .custom(Face.monoMedium, size: 11, relativeTo: .caption2),
+        tracking: 0.55, lineSpacing: 0
+    )
+
+    /// Tallies on the caught-up receipt. Regular, not medium: these are
+    /// counted facts, not labels, and they should not compete with the total.
+    static let tally = TypeStyle(
+        font: .custom(Face.mono, size: 14, relativeTo: .footnote),
+        tracking: 0, lineSpacing: 0
+    )
+
     /// Run-log lines, evidence, small stamps.
     static let monoSmall = TypeStyle(
         font: .custom(Face.mono, size: 12, relativeTo: .caption),
@@ -222,7 +249,12 @@ enum Metric {
     static let avatarCompact: CGFloat = 24
     static let avatarPill: CGFloat = 22
     static let avatarRow: CGFloat = 28
+    /// Acting on a message: react, reply, forward, discuss. Black, and a
+    /// size up from filing it.
     static let iconAction: CGFloat = 17
+    /// Filing it: save, archive. Grey and smaller, because putting something
+    /// away is not the same order of act as answering it.
+    static let iconFile: CGFloat = 15
     static let tapTarget: CGFloat = 44
     static let unreadBar: CGFloat = 2
     static let hairline: CGFloat = 1

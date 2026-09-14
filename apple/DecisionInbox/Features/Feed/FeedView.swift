@@ -56,7 +56,7 @@ struct FeedView: View {
                                 detail: "NEW MAIL APPEARS HERE AS IT LANDS \u{2014} ALREADY READ."
                             )
                         } else {
-                            CaughtUp(handled: store.messages.count)
+                            CaughtUp(tally: store.tally, stillOpen: store.stillOpen)
                         }
                     }
                     // The tab bar floats over content on iOS 26, so the feed
@@ -174,7 +174,7 @@ struct Masthead: View {
             HStack(spacing: Space.xs + 2) {
                 Text("\(total) NEW").typeStyle(Style.kicker).foregroundStyle(Ink.secondary)
                 if waiting > 0 {
-                    Text("·").typeStyle(Style.meta).foregroundStyle(Ink.tertiary)
+                    Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
                     Text("\(waiting) NEED YOU").typeStyle(Style.kicker).foregroundStyle(Ink.primary)
                 }
             }
@@ -208,7 +208,7 @@ struct Dateline: View {
         VStack(spacing: 0) {
             Rule()
             Text(label)
-                .typeStyle(Style.kicker)
+                .typeStyle(Style.dateline)
                 .foregroundStyle(Ink.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, Metric.gutter)
@@ -221,22 +221,58 @@ struct Dateline: View {
 
 // MARK: - Caught up
 //
-// A receipt, not a trophy. The feed is finite on purpose.
+// A receipt, not a trophy. The feed is finite on purpose, and the end of it
+// is a statement of what you did rather than a congratulation for doing it —
+// no streak, no score, nothing that would make tomorrow's empty feed feel
+// like a loss. The tallies are counted, never estimated: this is the only
+// place the product makes a claim about the user's own work.
 
 struct CaughtUp: View {
-    let handled: Int
+    let tally: FeedStore.Tally
+    var stillOpen: [Message] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
+        VStack(alignment: .leading, spacing: Space.lg) {
             Text("That\u{2019}s the lot.")
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
-            Text("Nothing left is waiting on you.")
+
+            Text(stillOpen.isEmpty
+                 ? "Nothing left is waiting on you."
+                 : "Nothing left is waiting on you. \(stillOpen.count) \(stillOpen.count == 1 ? "thing is" : "things are") waiting on them.")
                 .typeStyle(Style.body)
                 .foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !tally.isEmpty {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    row(tally.archived, "ARCHIVED")
+                    row(tally.replied, "REPLIED")
+                    row(tally.unsubscribed, "UNSUBSCRIBED")
+                    row(tally.saved, "SAVED")
+                }
+                .padding(.top, Space.sm)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Metric.gutter)
         .padding(.vertical, Space.xxxl + Space.xl)
+    }
+
+    /// A zero is left out rather than shown. "0 UNSUBSCRIBED" is not a fact
+    /// anybody needs, and a column of zeroes reads as a scorecard.
+    @ViewBuilder private func row(_ count: Int, _ label: String) -> some View {
+        if count > 0 {
+            HStack(spacing: Space.md) {
+                Text("\(count)")
+                    .typeStyle(Style.tally)
+                    .foregroundStyle(Ink.primary)
+                    .monospacedDigit()
+                    .frame(width: 28, alignment: .trailing)
+                Text(label)
+                    .typeStyle(Style.tally)
+                    .foregroundStyle(Ink.secondary)
+            }
+        }
     }
 }

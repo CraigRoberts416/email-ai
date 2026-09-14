@@ -95,12 +95,12 @@ struct PostView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                Text("·").typeStyle(Style.meta).foregroundStyle(Ink.tertiary)
+                Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
                 Text(message.receivedAt.feedStamp)
                     .typeStyle(Style.meta).foregroundStyle(Ink.secondary)
 
                 if message.threadCount > 1 {
-                    Text("·").typeStyle(Style.meta).foregroundStyle(Ink.tertiary)
+                    Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
                     Text("\(message.threadCount)")
                         .typeStyle(Style.meta).foregroundStyle(Ink.secondary)
                 }
@@ -291,7 +291,7 @@ struct PostView: View {
         HStack(spacing: Space.md) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(message.sender.displayName.uppercased())
-                    .typeStyle(Style.chip)
+                    .typeStyle(Style.compactSender)
                     .foregroundStyle(Ink.secondary)
                 Text(message.summary ?? message.subject)
                     .typeStyle(Style.body)
@@ -304,7 +304,7 @@ struct PostView: View {
             }
             Button(action: onArchive) { Image(systemName: "archivebox") }
         }
-        .font(.system(size: 15))
+        .font(.system(size: Metric.iconFile))
         .foregroundStyle(Ink.secondary)
         .buttonStyle(.plain)
         .padding(.horizontal, Metric.gutter)
