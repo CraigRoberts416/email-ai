@@ -882,14 +882,46 @@ app.get('/messages/:messageId/body', async (req, res) => {
 });
 
 // Hero image — streams cached per-domain image bytes from DB
+// Hero images are generated at full size and stored that way, which is right
+// for the archive and wrong for the wire: they run 1.6-2.9 MB as PNG. A phone
+// asked for one and got a multi-megabyte download, so the thread showed the
+// extracted colour and never the picture — on cellular it would never arrive
+// at all. Resized and re-encoded on the way out, cached in memory because the
+// source never changes.
+const heroVariants = new Map();
+const HERO_WIDTH = 900;
+
 app.get('/hero-image/:domain', async (req, res) => {
   try {
     const { domain } = req.params;
+    if (heroVariants.has(domain)) {
+      const hit = heroVariants.get(domain);
+      res.setHeader('Content-Type', hit.mime);
+      res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
+      return res.send(hit.bytes);
+    }
+
     const asset = await heroImage.getCachedImageBytes(domain);
     if (!asset) return res.status(404).end();
-    res.setHeader('Content-Type', asset.mime || 'image/png');
+
+    let bytes = asset.bytes;
+    let mime = asset.mime || 'image/png';
+    try {
+      const sharp = require('sharp');
+      bytes = await sharp(asset.bytes)
+        .resize(HERO_WIDTH, null, { withoutEnlargement: true })
+        .webp({ quality: 82 })
+        .toBuffer();
+      mime = 'image/webp';
+    } catch (err) {
+      // A failed re-encode costs bandwidth, not the image. Serve the original.
+      console.warn(`[hero-image] resize failed for ${domain}: ${err.message}`);
+    }
+
+    heroVariants.set(domain, { bytes, mime });
+    res.setHeader('Content-Type', mime);
     res.setHeader('Cache-Control', 'public, max-age=604800, immutable');
-    res.send(asset.bytes);
+    res.send(bytes);
   } catch (err) {
     console.error('[hero-image] error:', err.message);
     res.status(500).end();
