@@ -69,7 +69,13 @@ async function getMessage(userId, messageId) {
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
-async function getUnread(userId) {
+// The feed is finite by design — it ends, and ending is the product. A real
+// mailbox can hold twenty thousand unread messages, which is an archive, not
+// a feed: unbounded, it is megabytes of JSON nobody can read to the end of.
+// All Mail is where the rest lives.
+const FEED_LIMIT = 200;
+
+async function getUnread(userId, { limit = FEED_LIMIT } = {}) {
   const { rows } = await query(`
     SELECT * FROM messages
     WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
@@ -80,7 +86,8 @@ async function getUnread(userId) {
         ELSE 3
       END,
       internal_date DESC
-  `, [userId]);
+    LIMIT $2
+  `, [userId, limit]);
   return rows.map(rowToRecord);
 }
 
