@@ -200,9 +200,6 @@ struct FeedView: View {
                     // the system's own fallback when the source row has been
                     // recycled out of the LazyVStack.
                     .navigationTransition(.zoom(sourceID: message.id, in: feedZoom))
-                    // A tab bar floating over a dark full-bleed sheet is a
-                    // conflict.
-                    .toolbar(.hidden, for: .tabBar)
             }
             // Agent progress and receipts stack at the bottom, above the tab
             // bar. Neither ever takes the screen.

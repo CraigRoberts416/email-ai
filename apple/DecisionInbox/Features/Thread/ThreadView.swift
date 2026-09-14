@@ -49,7 +49,15 @@ struct ThreadView: View {
         }
         .background(sheetColor.ignoresSafeArea())
         .overlay(alignment: .top) { floatingControls }
+        // Both bars, and owned here rather than by whoever pushed this view.
+        // The feed's destination hid the tab bar and search's did not, so the
+        // same thread was clean from one tab and, from the other, arrived with
+        // a tab bar across its ask field and a second back button above its
+        // own. A full-bleed sheet with its own chrome needs the system's gone;
+        // that is this screen's requirement to state, not every caller's to
+        // remember.
         .toolbar(.hidden, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
         .task {
             store.markRead(message)
             await load()

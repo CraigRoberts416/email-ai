@@ -221,6 +221,21 @@ final class FeedStore {
             let known = Set(messages.map(\.id)).union(pending.map(\.id))
             let fresh = incoming.filter { !known.contains($0.id) }
 
+            // A post already on screen still takes the server's newer version
+            // of itself. Interpretation arrives in stages — the quote lands
+            // before the summary, a hero image finishes generating minutes
+            // later — and a merge that only ever appended left every message
+            // frozen at whatever it looked like when it first arrived. Saving
+            // and reading are the reader's, so they survive the replacement;
+            // everything else is the server's to restate.
+            let byID = Dictionary(incoming.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            messages = messages.map { existing in
+                guard var updated = byID[existing.id] else { return existing }
+                updated.isSaved = existing.isSaved
+                updated.isRead = existing.isRead || updated.isRead
+                return updated
+            }
+
             if admitDirectly {
                 // A refresh is the user asking, so mail lands directly — the
                 // pill exists for mail that arrives unasked.

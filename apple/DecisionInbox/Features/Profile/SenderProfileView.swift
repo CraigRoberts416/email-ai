@@ -73,6 +73,9 @@ struct SenderProfileView: View {
         .ignoresSafeArea(edges: .top)
         .background(Ink.surface)
         .toolbar(.hidden, for: .navigationBar)
+        // Same reason as the thread: this is a full-bleed screen carrying its
+        // own back button over a banner, so the system's bars are its to hide.
+        .toolbar(.hidden, for: .tabBar)
         .overlay(alignment: .topLeading) {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")

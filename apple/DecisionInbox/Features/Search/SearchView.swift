@@ -4,6 +4,7 @@ struct SearchView: View {
     @Environment(FeedStore.self) private var store
     @State private var query = ""
     @State private var open: Message?
+    @State private var profile: Sender?
 
     /// Searches what is on the device: the sender, the subject, and every line
     /// the model wrote. Searching the quote is the point — you remember what an
@@ -43,7 +44,11 @@ struct SearchView: View {
                                     onOpen: { open = message },
                                     onSave: { store.toggleSaved(message) },
                                     onArchive: { withAnimation(Move.layout) { store.archive(message) } },
-                                    onUnsubscribe: { store.unsubscribe(from: message) }
+                                    onUnsubscribe: { store.unsubscribe(from: message) },
+                                    // A found post behaves like a feed post.
+                                    // The avatar was inert here only because
+                                    // this call site never passed the handler.
+                                    onProfile: { profile = message.sender }
                                 )
                             }
                         }
@@ -55,6 +60,7 @@ struct SearchView: View {
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Find an email")
             .navigationDestination(item: $open) { ThreadView(message: $0) }
+            .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
         }
     }
 }
