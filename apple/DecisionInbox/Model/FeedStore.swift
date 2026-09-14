@@ -48,7 +48,10 @@ final class FeedStore {
     var tally = Tally()
 
     struct Receipt: Identifiable {
-        enum Undo { case send }
+        enum Undo {
+            case send
+            case archive(Message, Int)
+        }
         let id = UUID()
         var message: String
         var detail: String?
@@ -60,6 +63,7 @@ final class FeedStore {
     private var loaded: Set<String> = []
     private var syncing: Set<String> = []
     private var outgoing: Task<Void, Never>?
+    private var archiving: Task<Void, Never>?
     private var reconcile: Task<Void, Never>?
 
     init(auth: AuthService) {
@@ -191,14 +195,20 @@ final class FeedStore {
                 pending.append(contentsOf: fresh)
             }
             mark(accountID, healthy: true)
+            lastSynced = .now
             loadFailure = nil
         } catch APIError.unauthorized, AuthError.signedOut {
             mark(accountID, healthy: false, reason: "needs reconnecting")
             loadFailure = "That mailbox needs reconnecting."
-        } catch {
-            print("[feed] load failed: \(error)")
+        } catch let error as URLError where Self.unresolved.contains(error.code) {
             loadFailure = error.localizedDescription
             condition = .statusStrip(state: "OFFLINE", freshness: freshness)
+        } catch {
+            // Anything else came back from our own server, so blaming the
+            // user's connection for it would be a lie told in their direction.
+            print("[feed] load failed: \(error)")
+            loadFailure = error.localizedDescription
+            condition = .statusStrip(state: "CAN\u{2019}T REACH THE READER", freshness: freshness)
         }
         resolveCondition()
     }
@@ -312,11 +322,23 @@ final class FeedStore {
         }
     }
 
+    /// When we last heard from the server — not when the newest email was
+    /// sent. Reading it off the mail meant a mailbox synced two seconds ago
+    /// reported "current as of 360 min ago", and one that had not synced since
+    /// yesterday reported "up to date".
+    private var lastSynced: Date?
+
     private var freshness: String {
-        guard let newest = messages.map(\.receivedAt).max() else { return "Not synced yet" }
-        let minutes = Int(Date().timeIntervalSince(newest) / 60)
-        return minutes < 1 ? "Up to date" : "Current as of \(minutes) min ago"
+        guard let lastSynced else { return "Not synced yet" }
+        let minutes = Int(Date().timeIntervalSince(lastSynced) / 60)
+        return minutes < 1 ? "Up to date" : "Last synced \(minutes) min ago"
     }
+
+    /// URLError codes that mean "we never got an answer", as opposed to an
+    /// answer we did not like.
+    private static let unresolved: Set<URLError.Code> = [
+        .timedOut, .networkConnectionLost, .cannotConnectToHost, .notConnectedToInternet,
+    ]
 
     // MARK: Live events
 
@@ -408,10 +430,36 @@ final class FeedStore {
 
     // MARK: Actions — optimistic, with undo. No confirmation dialogs.
 
+    /// Optimistic with a real undo — which the doc comment claimed and the
+    /// code did not do. The row leaves immediately, the mailbox is not touched
+    /// until the window closes, and undo puts the post back where it was
+    /// rather than at the top.
     func archive(_ message: Message) {
-        messages.removeAll { $0.id == message.id }
-        tally.archived += 1
-        Task { try? await client(message.mailboxID).markRead(message.id) }
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let removed = messages.remove(at: index)
+        archiving?.cancel()
+
+        receipt = Receipt(
+            message: "Archived.",
+            detail: removed.sender.displayName.uppercased(),
+            undo: .archive(removed, index)
+        )
+
+        archiving = Task {
+            try? await Task.sleep(for: .seconds(Move.undoWindow))
+            guard !Task.isCancelled else { return }
+            tally.archived += 1
+            try? await GmailClient(auth: auth, accountID: removed.mailboxID)
+                .archive(messageID: removed.id)
+            archiving = nil
+        }
+    }
+
+    func undoArchive(_ message: Message, at index: Int) {
+        archiving?.cancel()
+        archiving = nil
+        messages.insert(message, at: min(index, messages.count))
+        receipt = nil
     }
 
     func markRead(_ message: Message) {
@@ -472,10 +520,19 @@ final class FeedStore {
                 try await GmailClient(auth: auth, accountID: from).send(draft)
                 tally.replied += 1
                 receipt = Receipt(message: "Sent.", detail: draft.to.first?.uppercased())
-            } catch {
-                // No retry offered: a duplicate send is worse than ambiguity.
+            } catch let error as URLError where Self.unresolved.contains(error.code) {
+                // The request never came back. That is not the same as a
+                // refusal — the message may well be in their inbox already,
+                // and saying "didn't send" would send it twice.
                 receipt = Receipt(
-                    message: "That didn\u{2019}t send.",
+                    message: "We couldn\u{2019}t confirm that send.",
+                    detail: "CHECK YOUR SENT MAIL BEFORE WRITING IT AGAIN"
+                )
+            } catch {
+                // Gmail answered and refused. No retry offered: a duplicate
+                // send is worse than ambiguity.
+                receipt = Receipt(
+                    message: "Gmail wouldn\u{2019}t take that one.",
                     detail: error.localizedDescription.uppercased()
                 )
             }

@@ -27,16 +27,7 @@ struct PostView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 0) {
-                // Unread is a 2pt leading bar plus a heavier sender. Never a
-                // faded ground — opacity dies under Increase Contrast.
-                Rectangle()
-                    .fill(message.isRead ? .clear : Ink.primary)
-                    .frame(width: Metric.unreadBar)
-
-                content
-            }
-
+            content
             Rule()
         }
         .background(pressed ? Ink.surfaceTertiary : Ink.surface)
@@ -45,17 +36,38 @@ struct PostView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(.isButton)
+        // Combining children makes the post one readable element and drops
+        // every button inside it, so the actions have to be re-offered by
+        // hand. This is also the non-gesture route to anything a swipe does.
+        .accessibilityActions {
+            Button("Open", action: onOpen)
+            if message.isPromotion {
+                Button("Unsubscribe", action: onUnsubscribe)
+            } else {
+                Button("Reply", action: onReply)
+                Button("Forward", action: onForward)
+            }
+            Button("Discuss", action: onDiscuss)
+            Button(message.isSaved ? "Remove from saved" : "Save", action: onSave)
+            Button("Archive", action: onArchive)
+        }
     }
 
     // MARK: Content
 
-    private var content: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
+    @ViewBuilder private var content: some View {
+        if case .compact = message.density {
+            compactRow
+        } else {
+            standard
+        }
+    }
+
+    private var standard: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
             header
 
-            if case .compact = message.density {
-                compactBody
-            } else {
+            Group {
                 switch message.shape {
                 case .html(let url):       htmlBody(url)
                 case .media(let urls):     mediaBody(urls)
@@ -66,16 +78,18 @@ struct PostView: View {
                 }
             }
 
-            if message.density != .compact {
-                ActionRow(
-                    message: message,
-                    onReply: onReply, onDiscuss: onDiscuss, onForward: onForward,
-                    onSave: onSave, onArchive: onArchive, onUnsubscribe: onUnsubscribe
-                )
-                .padding(.horizontal, Metric.gutter)
-            }
+            ActionRow(
+                message: message,
+                onReply: onReply, onDiscuss: onDiscuss, onForward: onForward,
+                onSave: onSave, onArchive: onArchive, onUnsubscribe: onUnsubscribe
+            )
+            .padding(.horizontal, Metric.gutter)
+            // Every internal gap is 16; the action row alone sits 24 off the
+            // block above it, which is what keeps it reading as a footer
+            // rather than as another line of content.
+            .padding(.top, Space.sm)
         }
-        .padding(.vertical, message.density == .compact ? Space.md : Metric.postPaddingY)
+        .padding(.vertical, Metric.postPaddingY)
     }
 
     // MARK: Header — one identity line, Twitter-style
@@ -89,22 +103,25 @@ struct PostView: View {
             )
 
             HStack(spacing: Space.xs + 2) {
+                // Read changes the weight and nothing else. The name stays
+                // black — it is the quote that greys out, because what you
+                // have already read is the words, not who sent them.
                 Text(message.sender.displayName)
                     .typeStyle(message.isRead ? Style.senderRead : Style.sender)
-                    .foregroundStyle(message.isRead ? Ink.secondary : Ink.primary)
+                    .foregroundStyle(Ink.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
                 Text(message.receivedAt.feedStamp)
-                    .typeStyle(Style.meta).foregroundStyle(Ink.secondary)
+                    .typeStyle(Style.meta).foregroundStyle(Ink.tertiary)
 
                 if message.threadCount > 1 {
                     Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
                     Text("\(message.threadCount)")
-                        .typeStyle(Style.meta).foregroundStyle(Ink.secondary)
+                        .typeStyle(Style.meta).foregroundStyle(Ink.tertiary)
                 }
-                Spacer(minLength: 0)
             }
 
             if let tag {
@@ -137,10 +154,8 @@ struct PostView: View {
             } else if let quote = message.quote {
                 Text("\u{201C}\(quote)\u{201D}")
                     .typeStyle(Style.display)
-                    .foregroundStyle(message.isRead ? Ink.secondary : Ink.primary)
+                    .foregroundStyle(message.isRead ? Ink.tertiary : Ink.primary)
                     .lineLimit(3)
-                    // Hangs the opening mark so the card keeps one left axis.
-                    .padding(.leading, -8)
             }
 
             if let summary = message.summary {
@@ -188,7 +203,6 @@ struct PostView: View {
                         .typeStyle(Style.display)
                         .foregroundStyle(Ink.primary)
                         .lineLimit(3)
-                        .padding(.leading, -8)
                 }
             }
             .padding(.horizontal, Metric.gutter)
@@ -238,7 +252,6 @@ struct PostView: View {
                         .typeStyle(Style.display)
                         .foregroundStyle(Ink.primary)
                         .lineLimit(3)
-                        .padding(.leading, -8)
                 }
                 if let summary = message.summary {
                     SummaryBlock(text: summary, density: message.density, emphasised: false)
@@ -259,7 +272,6 @@ struct PostView: View {
                         .typeStyle(Style.display)
                         .foregroundStyle(Ink.primary)
                         .lineLimit(3)
-                        .padding(.leading, -8)
                 }
                 if let summary = message.summary {
                     SummaryBlock(text: summary, density: message.density, emphasised: false)
@@ -287,36 +299,70 @@ struct PostView: View {
         .padding(.horizontal, Metric.gutter)
     }
 
-    private var compactBody: some View {
-        HStack(spacing: Space.md) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(message.sender.displayName.uppercased())
-                    .typeStyle(Style.compactSender)
-                    .foregroundStyle(Ink.secondary)
-                Text(message.summary ?? message.subject)
-                    .typeStyle(Style.body)
-                    .foregroundStyle(Ink.primary)
-                    .lineLimit(1)
+    /// A broadcast that asks nothing: one row, a mono sender, one clause, and
+    /// the two things you might do with it. No timestamp, no thread count, no
+    /// overflow — a receipt does not earn an identity line.
+    private var compactRow: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Space.md) {
+                AvatarView(sender: message.sender, size: Metric.avatarCompact, dimmed: true)
+
+                VStack(alignment: .leading, spacing: Space.xxs) {
+                    Text(message.sender.displayName.uppercased())
+                        .typeStyle(Style.compactSender)
+                        .foregroundStyle(Ink.tertiary)
+                        .lineLimit(1)
+                    Text(message.summary ?? message.subject)
+                        .typeStyle(Style.body)
+                        .foregroundStyle(Ink.primary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: Space.sm)
+
+                // The one place the filing glyphs step down: a compact row is
+                // already the quietest thing in the feed and should not carry
+                // two black icons.
+                compactAction(message.isSaved ? "bookmark.fill" : "bookmark", "Save", onSave)
+                compactAction("trash", "Archive", onArchive)
             }
-            Spacer(minLength: 0)
-            Button(action: onSave) {
-                Image(systemName: message.isSaved ? "bookmark.fill" : "bookmark")
-            }
-            Button(action: onArchive) { Image(systemName: "archivebox") }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.vertical, Space.md)
+
+            Rule()
         }
-        .font(.system(size: Metric.iconFile))
-        .foregroundStyle(Ink.secondary)
-        .buttonStyle(.plain)
-        .padding(.horizontal, Metric.gutter)
-        .padding(.leading, Metric.avatarCompact + Space.md)
     }
 
+    private func compactAction(
+        _ symbol: String, _ label: String, _ action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: Metric.iconFile))
+                .foregroundStyle(Ink.tertiary)
+                .frame(width: Metric.tapTarget * 0.7, height: Metric.tapTarget)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    /// Spoken in the order it is read, and — crucially — with the quote
+    /// announced as a quotation. The verbatim line is the one thing on a post
+    /// the AI did not write, and a VoiceOver user has to be able to tell.
     private var accessibilityLabel: String {
-        var parts = [message.sender.displayName, message.kicker.rawValue]
-        if let quote = message.quote { parts.append(quote) }
-        if let summary = message.summary { parts.append(summary) }
-        parts.append("\(message.threadCount) in thread, \(message.receivedAt.feedStamp)")
-        return parts.joined(separator: ", ")
+        var parts = ["\(message.sender.displayName), \(message.kicker.rawValue.lowercased())"]
+        if let quote = message.quote {
+            parts.append("They wrote, quote, \(quote), end quote")
+        }
+        if let summary = message.summary {
+            parts.append("Our summary: \(summary)")
+        }
+        if message.threadCount > 1 {
+            parts.append("\(message.threadCount) in thread")
+        }
+        parts.append(message.receivedAt.spokenStamp)
+        return parts.joined(separator: ". ")
     }
 }
 
@@ -424,6 +470,22 @@ struct StreamingCaret: View {
 // MARK: - Date
 
 extension Date {
+    /// What VoiceOver says. "2h" is announced as "two h".
+    var spokenStamp: String {
+        let seconds = Date.now.timeIntervalSince(self)
+        if seconds < 60 { return "just now" }
+        if seconds < 3600 {
+            let m = Int(seconds / 60)
+            return m == 1 ? "1 minute ago" : "\(m) minutes ago"
+        }
+        if seconds < 86_400 {
+            let h = Int(seconds / 3600)
+            return h == 1 ? "1 hour ago" : "\(h) hours ago"
+        }
+        let d = Int(seconds / 86_400)
+        return d == 1 ? "yesterday" : "\(d) days ago"
+    }
+
     /// Relative and short. Absolute timestamps are for the thread, not the feed.
     var feedStamp: String {
         let seconds = Date.now.timeIntervalSince(self)

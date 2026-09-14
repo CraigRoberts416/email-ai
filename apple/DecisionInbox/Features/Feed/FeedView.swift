@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct FeedView: View {
+    private static let topAnchor = "feed.top"
+
     @Environment(FeedStore.self) private var store
     @State private var scrollY: CGFloat = 0
     @State private var open: Message?
@@ -9,6 +11,7 @@ struct FeedView: View {
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
+                ScrollViewReader { scroller in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         Masthead(
@@ -16,6 +19,7 @@ struct FeedView: View {
                             waiting: store.waitingCount,
                             total: store.messages.count
                         )
+                        .id(Self.topAnchor)
 
                         ForEach(store.messages(), id: \.0) { section, items in
                             Dateline(section)
@@ -25,8 +29,13 @@ struct FeedView: View {
                                     tag: store.showsMailboxTags
                                         ? store.mailbox(message.mailboxID)?.tag : nil,
                                     onOpen: { open = message },
-                                    onReply: { open = message; compose = .reply },
-                                    onForward: { open = message; compose = .forward },
+                                    // Reply and Forward open the thread, where
+                                    // the composer belongs — one tap, one
+                                    // destination, rather than a push and a
+                                    // sheet racing each other.
+                                    onReply: { open = message },
+                                    onDiscuss: { open = message },
+                                    onForward: { open = message },
                                     onSave: { store.toggleSaved(message) },
                                     onArchive: { withAnimation(Move.layout) { store.archive(message) } },
                                     onUnsubscribe: { store.unsubscribe(from: message) }
@@ -56,7 +65,11 @@ struct FeedView: View {
                                 detail: "NEW MAIL APPEARS HERE AS IT LANDS \u{2014} ALREADY READ."
                             )
                         } else {
-                            CaughtUp(tally: store.tally, stillOpen: store.stillOpen)
+                            CaughtUp(
+                                tally: store.tally,
+                                waiting: store.waitingCount,
+                                stillOpen: store.stillOpen
+                            )
                         }
                     }
                     // The tab bar floats over content on iOS 26, so the feed
@@ -73,10 +86,18 @@ struct FeedView: View {
 
                 if !store.pending.isEmpty, scrollY > Move.Pill.showBelowScrollY {
                     NewPostsPill(senders: store.pending.map(\.sender), count: store.pending.count) {
-                        withAnimation(Move.enter) { store.admitPending() }
+                        // Admitting and scrolling must happen in one
+                        // transaction. Inserting at index 0 while the reader
+                        // is 260pt down shoves the viewport — which is the
+                        // exact failure the pill exists to prevent.
+                        withAnimation(Move.layout) {
+                            store.admitPending()
+                            scroller.scrollTo(Self.topAnchor, anchor: .top)
+                        }
                     }
                     .padding(.top, Space.sm)
                     .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 }
             }
             .background(Ink.surface)
@@ -90,6 +111,15 @@ struct FeedView: View {
             .sheet(item: $compose) { intent in
                 ComposeView(intent: intent, message: open)
             }
+        }
+    }
+
+    private func undo(_ receipt: FeedStore.Receipt) -> (() -> Void)? {
+        switch receipt.undo {
+        case .none: return nil
+        case .send: return { store.undoSend() }
+        case .archive(let message, let index):
+            return { withAnimation(Move.layout) { store.undoArchive(message, at: index) } }
         }
     }
 
@@ -110,13 +140,18 @@ struct FeedView: View {
                     message: receipt.message,
                     detail: receipt.detail,
                     actionLabel: receipt.undo != nil ? "Undo" : nil,
-                    action: receipt.undo != nil ? { store.undoSend() } : nil
+                    action: undo(receipt)
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .task(id: receipt.id) {
                     // Failures hold longer than successes — six seconds is the
                     // floor for anything the user may need to act on.
-                    let hold: Duration = receipt.undo == nil ? .seconds(6) : .seconds(Move.sendUndoWindow)
+                    let hold: Duration
+                    switch receipt.undo {
+                    case .none: hold = .seconds(6)
+                    case .send: hold = .seconds(Move.sendUndoWindow)
+                    case .archive: hold = .seconds(Move.undoWindow)
+                    }
                     try? await Task.sleep(for: hold)
                     withAnimation(Move.crisp) { store.dismissReceipt() }
                 }
@@ -229,17 +264,18 @@ struct Dateline: View {
 
 struct CaughtUp: View {
     let tally: FeedStore.Tally
+    var waiting: Int = 0
     var stillOpen: [Message] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            Text("That\u{2019}s the lot.")
+            Text(waiting > 0 ? "That\u{2019}s everything." : "That\u{2019}s the lot.")
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
 
-            Text(stillOpen.isEmpty
-                 ? "Nothing left is waiting on you."
-                 : "Nothing left is waiting on you. \(stillOpen.count) \(stillOpen.count == 1 ? "thing is" : "things are") waiting on them.")
+            // Never claim the feed is clear while posts above it still ask
+            // for something. The end of the list is not the end of the work.
+            Text(caption)
                 .typeStyle(Style.body)
                 .foregroundStyle(Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -257,6 +293,18 @@ struct CaughtUp: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Metric.gutter)
         .padding(.vertical, Space.xxxl + Space.xl)
+    }
+
+    private var caption: String {
+        if waiting > 0 {
+            return waiting == 1
+                ? "One thing above still needs you."
+                : "\(waiting) things above still need you."
+        }
+        if stillOpen.isEmpty { return "Nothing left is waiting on you." }
+        return stillOpen.count == 1
+            ? "Nothing needs you. One thing is waiting on them."
+            : "Nothing needs you. \(stillOpen.count) things are waiting on them."
     }
 
     /// A zero is left out rather than shown. "0 UNSUBSCRIBED" is not a fact

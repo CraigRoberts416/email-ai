@@ -1,10 +1,9 @@
 import SwiftUI
 
-/// Left-cluster acts on the message, right-cluster files it — and the two
-/// clusters are deliberately not equals. Acting is black at 17pt; filing is
-/// grey at 15pt. Answering someone and putting them away are not the same
-/// order of act, and flattening both to grey loses the only hierarchy this
-/// row has. Counts sit beside their glyph in mono rather than inside a pill:
+/// Left-cluster acts on the message, right-cluster files it. Both are 17pt
+/// black: on a full post these are peers, and the quieter 15pt grey treatment
+/// belongs only to a compact row, which is already the quietest thing in the
+/// feed. Counts sit beside their glyph in mono rather than inside a pill:
 /// a bare count reads as information, a pill reads as a badge demanding
 /// attention.
 struct ActionRow: View {
@@ -45,7 +44,7 @@ struct ActionRow: View {
             Spacer(minLength: 0)
 
             file(message.isSaved ? "bookmark.fill" : "bookmark", label: "Save", action: onSave)
-            file("archivebox", label: "Archive", action: onArchive)
+            file("trash", label: "Archive", action: onArchive)
         }
     }
 
@@ -64,7 +63,7 @@ struct ActionRow: View {
         label: String,
         action: @escaping () -> Void
     ) -> some View {
-        icon(systemName, size: Metric.iconFile, tint: Ink.secondary, label: label, action: action)
+        icon(systemName, size: Metric.iconAction, tint: Ink.primary, label: label, action: action)
     }
 
     private func icon(

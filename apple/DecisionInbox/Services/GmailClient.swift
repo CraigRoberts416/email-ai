@@ -53,6 +53,26 @@ struct GmailClient {
         }
     }
 
+    /// Removes INBOX, which is what archiving is. Marking read is a different
+    /// act and was all the app was doing — so a message the user archived
+    /// stayed in their inbox on every other client they own.
+    func archive(messageID: String) async throws {
+        var request = URLRequest(
+            url: URL(string: "https://gmail.googleapis.com/gmail/v1/users/me/messages/\(messageID)/modify")!
+        )
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(try await auth.validAccessToken(for: accountID))", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: ["removeLabelIds": ["INBOX", "UNREAD"]]
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw GmailError.send(String(decoding: data, as: UTF8.self))
+        }
+    }
+
     /// RFC 2047 for anything outside ASCII, so an em dash in a subject line
     /// does not arrive as mojibake.
     private static func encodeHeader(_ value: String) -> String {
