@@ -207,6 +207,8 @@ extension APIClient.Card {
             kicker: .reading,
             density: .standard,
             shape: .text,
+            heroImageURL: heroImageUrl.flatMap(URL.init(string:)),
+            heroBackground: heroImageBgColor,
             isRead: !(labelIds ?? []).contains("UNREAD"),
             isSaved: false,
             threadCount: 1,
@@ -215,6 +217,14 @@ extension APIClient.Card {
             isInterpreting: interpreting
         )
         message.reinterpret(failed: failed)
+
+        // A bulk sender with a generated hero gets the image shape: their mail
+        // is already designed, and a picture of the brand reads faster than a
+        // second line of grey text. People never get one — a generated image
+        // of a person would be a lie.
+        if !failed, promo, let hero = message.heroImageURL {
+            message.shape = .media([hero])
+        }
         return message
     }
 }

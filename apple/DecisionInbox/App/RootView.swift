@@ -6,6 +6,7 @@ import SwiftUI
 struct RootView: View {
     @State private var auth = AuthService()
     @State private var store: FeedStore?
+    @State private var push: PushService
 
     var body: some View {
         Group {
@@ -26,13 +27,33 @@ struct RootView: View {
                 }
                 .tint(Ink.primary)
                 .environment(store)
-                .task(id: auth.accounts.count) { await store.start() }
+                .task(id: auth.accounts.count) {
+                    await store.start()
+                    // Asked here and not a moment earlier: the prompt is a
+                    // one-shot, so it is spent once the feed has loaded and
+                    // the user can see what they would be saying yes to.
+                    await push.requestIfUndecided()
+                }
             } else {
                 OnboardingFlow(auth: auth)
             }
         }
         // One store for the life of the session. Rebuilding it on sign-in
         // would throw away the feed every time a mailbox is added.
-        .task { store = FeedStore(auth: auth) }
+        .task {
+            store = FeedStore(auth: auth)
+            AppDelegate.onToken = { token in
+                Task { await push.submit(deviceToken: token) }
+            }
+        }
+    }
+
+    init() {
+        let auth = AuthService()
+        _auth = State(initialValue: auth)
+        _push = State(initialValue: PushService(
+            auth: auth,
+            baseURL: URL(string: "https://email-ai-server.onrender.com")!
+        ))
     }
 }

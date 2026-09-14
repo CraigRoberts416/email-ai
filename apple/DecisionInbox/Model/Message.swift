@@ -113,6 +113,13 @@ struct Message: Identifiable, Hashable {
     var density: Density
     var shape: PostShape
 
+    /// Generated per sender domain, not per email — one image stands for
+    /// "Delta", so the feed stays recognisable without inventing a picture of
+    /// something that did not happen. Its extracted ground colour sits under
+    /// the image while it loads, so nothing flashes white.
+    var heroImageURL: URL?
+    var heroBackground: String?
+
     var isRead: Bool
     var isSaved: Bool = false
     var threadCount: Int

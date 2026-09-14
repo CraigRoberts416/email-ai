@@ -194,10 +194,19 @@ struct PostView: View {
             .padding(.horizontal, Metric.gutter)
 
             // The one place the gutter breaks.
-            AsyncImage(url: urls[0]) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Rectangle().fill(Ink.surfaceTertiary)
+            AsyncImage(url: urls[0], transaction: Transaction(animation: Move.crossfade)) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                case .failure:
+                    // A missing image is not a broken card. The post drops back
+                    // to text rather than showing a placeholder that means
+                    // nothing to the reader.
+                    Color.clear.frame(height: 0)
+                default:
+                    // Its own extracted ground, so nothing flashes white.
+                    heroGround
+                }
             }
             .aspectRatio(Metric.mediaAspect, contentMode: .fill)
             .frame(maxWidth: .infinity)
@@ -208,6 +217,16 @@ struct PostView: View {
                     .padding(.horizontal, Metric.gutter)
             }
         }
+    }
+
+    /// The colour the generator extracted from the image itself, so the space
+    /// it will occupy already belongs to that sender before the bytes arrive.
+    private var heroGround: some View {
+        Rectangle().fill(
+            message.heroBackground
+                .flatMap { UInt32($0.dropFirst(($0.hasPrefix("#") ? 1 : 0)), radix: 16) }
+                .map { Color(hex: $0) } ?? Ink.surfaceTertiary
+        )
     }
 
     private func carouselBody(_ items: [Attachment]) -> some View {
