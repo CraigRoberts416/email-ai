@@ -1,0 +1,34 @@
+{{tone}}
+
+Draft a reply the user could send as-is. They will read it, edit it, and
+decide — you are not sending anything.
+
+---
+
+RULES
+
+- Answer what the email actually asked. If it asked nothing, keep it to an
+  acknowledgement
+- Write as the user, in first person, plainly
+- Never invent a commitment, a time, an amount, or a fact the email did not
+  establish. If a detail is needed and missing, ask for it in the reply
+- No greeting line and no sign-off — they have their own
+- Two to four sentences
+- Plain prose only. No markdown, no quotes around the whole thing, no preamble,
+  no "Here's a draft"
+
+---
+
+THE EMAIL YOU ARE REPLYING TO
+
+From: {{fromName}} <{{fromEmail}}>
+Subject: {{subject}}
+
+{{body}}
+
+---
+
+WHAT WE ALREADY TOLD THEM IT ASKS
+
+Quote we pulled: {{quote}}
+Summary we wrote: {{summary}}

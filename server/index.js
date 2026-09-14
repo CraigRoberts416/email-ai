@@ -123,6 +123,7 @@ const PROMPTS = {
   sessionRecap:         loadPrompt('session-recap'),
   generateUiCopy:       loadPrompt('generate-ui-copy'),
   discussThread:        loadPrompt('discuss-thread'),
+  suggestReply:         loadPrompt('suggest-reply'),
 };
 
 // ─── XML helpers ──────────────────────────────────────────────────────────
@@ -1118,6 +1119,40 @@ app.post('/discuss', async (req, res) => {
   } catch (err) {
     console.error('[discuss] error:', err.message);
     res.status(500).json({ error: 'discuss failed' });
+  }
+});
+
+// Suggested reply — offered to the composer, never sent
+app.post('/suggest-reply', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { messageId } = req.body;
+  if (!messageId) return res.status(400).json({ error: 'messageId required' });
+
+  try {
+    const record = await messageStore.getMessage(userId, messageId);
+    if (!record) return res.status(404).json({ error: 'message not found' });
+
+    let body = record.snippet ?? '';
+    try {
+      const raw = await gmailSync.fetchFullMessage(userId, messageId);
+      body = cleanEmailForAI(raw).body?.plainText?.slice(0, 6000) || body;
+    } catch (err) {
+      console.warn('[suggest-reply] body fetch failed, using snippet:', err.message);
+    }
+
+    const prompt = renderPrompt(PROMPTS.suggestReply, {
+      fromName: record.fromName ?? '', fromEmail: record.fromEmail ?? '',
+      subject: record.subject ?? '', body,
+      quote: record.quote ?? '(none)', summary: record.summary ?? '(none)',
+    });
+
+    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+    res.json({ draft: response.output_text.trim() });
+  } catch (err) {
+    console.error('[suggest-reply] error:', err.message);
+    res.status(500).json({ error: 'suggest failed' });
   }
 });
 

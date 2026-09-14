@@ -167,6 +167,40 @@ enum Style {
         font: .custom(Face.monoMedium, size: 10, relativeTo: .caption2),
         tracking: 0.4, lineSpacing: 0
     )
+
+    /// Composer field labels — TO, SUBJECT. Tracked wider than a kicker
+    /// because they are furniture to be skipped, not information to be read.
+    static let fieldLabel = TypeStyle(
+        font: .custom(Face.monoMedium, size: 11, relativeTo: .caption),
+        tracking: 0.44, lineSpacing: 0
+    )
+
+    /// A sentence the model drafted for you to edit. Mono for the same reason
+    /// a summary is mono — the machine wrote it — and looser leading because
+    /// this is the one machine-written thing you are meant to read closely
+    /// before putting your name on it.
+    static let draft = TypeStyle(
+        font: .custom(Face.mono, size: 15, relativeTo: .body),
+        tracking: 0, lineSpacing: 4
+    )
+
+    /// Quoted mail and attachment names. One step below body.
+    static let quoted = TypeStyle(
+        font: .custom(Face.sans, size: 15, relativeTo: .subheadline),
+        tracking: -0.3, lineSpacing: 3
+    )
+
+    /// File sizes and the smallest mono meta.
+    static let fileMeta = TypeStyle(
+        font: .custom(Face.mono, size: 10, relativeTo: .caption2),
+        tracking: 0.2, lineSpacing: 3
+    )
+
+    /// The label on a filled button. The product has very few.
+    static let button = TypeStyle(
+        font: .custom(Face.sansMedium, size: 15, relativeTo: .body),
+        tracking: -0.3, lineSpacing: 0
+    )
 }
 
 extension View {

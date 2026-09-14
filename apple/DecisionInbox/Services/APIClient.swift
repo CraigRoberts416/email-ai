@@ -153,6 +153,16 @@ struct APIClient {
         return try JSONDecoder().decode(Answer.self, from: data).answer
     }
 
+    /// A reply the model drafted. Offered to the composer, never inserted —
+    /// a draft that types itself into the body is one careless tap from going
+    /// out as though the user wrote it.
+    func suggestReply(messageID: String) async throws -> String {
+        let body = try JSONSerialization.data(withJSONObject: ["messageId": messageID])
+        let data = try await send(path: "/suggest-reply", method: "POST", body: body)
+        struct Draft: Decodable { let draft: String }
+        return try JSONDecoder().decode(Draft.self, from: data).draft
+    }
+
     /// Kicks off the headless-browser agent. Progress arrives over SSE, not here.
     func unsubscribe(messageID: String, url: String, senderName: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: [
