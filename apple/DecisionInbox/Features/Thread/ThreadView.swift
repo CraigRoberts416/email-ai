@@ -21,7 +21,11 @@ struct ThreadView: View {
     @State private var compose: ComposeView.Intent?
     @State private var discuss = DiscussModel()
 
-    private let heroHeight: CGFloat = 258
+    private let heroHeight: CGFloat = 320
+    /// How much of the hero is shown untouched before the fade begins. Sits
+    /// below the status bar and the back-button row, so what it buys is a band
+    /// of picture the reader actually sees rather than one hidden by chrome.
+    private let heroClear: CGFloat = 176
 
     /// The sheet takes its colour from the sender's generated image, so a
     /// thread arrives looking like the sender rather than like the app. The
@@ -57,9 +61,10 @@ struct ThreadView: View {
 
     private var masthead: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Clears the hero so the sender row lands over its lower third,
-            // exactly where the gradient has taken hold.
-            Color.clear.frame(height: 180)
+            // Clears the hero so the sender row lands where the gradient has
+            // taken hold — past the clear band, with the picture still faintly
+            // under it rather than behind a solid block of colour.
+            Color.clear.frame(height: 236)
 
             HStack(spacing: Space.sm) {
                 AvatarView(sender: message.sender, size: Metric.avatarCompact)
@@ -117,15 +122,27 @@ struct ThreadView: View {
         .background(alignment: .top) { hero }
     }
 
-    /// The generated sender image, fading into the sheet so the subject sitting
-    /// across the seam stays readable without a scrim over the whole picture.
+    /// The generated sender image, given a band it actually owns before it
+    /// fades into the sheet.
+    ///
+    /// It used to start fading at 52pt — under the status bar — so by the time
+    /// the eye reached the sender row the picture was seven-tenths covered and
+    /// the whole thing read as a flat colour wash. The image was being fetched,
+    /// decoded and then hidden. It is clear through `heroClear` now and fades
+    /// only across the remainder, which is what keeps the subject legible where
+    /// it crosses the seam; the fade was always the right idea and was simply
+    /// starting in the wrong place.
     private var hero: some View {
         ZStack(alignment: .top) {
             if let url = message.heroImageURL {
-                AsyncImage(url: url) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
-                    sheetColor
+                AsyncImage(url: url, transaction: Transaction(animation: Move.crossfade)) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        // Never a spinner. A picture that has not arrived is
+                        // the sender's own colour, which is already theirs.
+                        sheetColor
+                    }
                 }
                 .frame(height: heroHeight)
                 .clipped()
@@ -134,12 +151,12 @@ struct ThreadView: View {
             }
 
             VStack(spacing: 0) {
-                Color.clear.frame(height: 52)
+                Color.clear.frame(height: heroClear)
                 LinearGradient(
-                    colors: [sheetColor.opacity(0), sheetColor],
+                    colors: [sheetColor.opacity(0), sheetColor.opacity(0.85), sheetColor],
                     startPoint: .top, endPoint: .bottom
                 )
-                .frame(height: heroHeight - 52)
+                .frame(height: heroHeight - heroClear)
             }
         }
         .frame(height: heroHeight)
