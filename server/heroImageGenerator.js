@@ -25,6 +25,18 @@ function isGeneratable(domain) {
 // Render-time gate: don't launch duplicate jobs for the same domain.
 const inFlight = new Set();
 
+// A feed names hundreds of senders at once, and the per-domain dedupe below
+// was never a concurrency limit — distinct domains all started at the same
+// time. That is how one request turned into 250 simultaneous image
+// generations, exhausted the image quota, and took the instance with it.
+const MAX_IN_FLIGHT = 3;
+
+// Domains that failed recently. Some fail permanently — a brand name the
+// safety system refuses to draw will refuse every time — and without this
+// every feed request pays for the same rejection again.
+const failedAt = new Map();
+const FAILURE_BACKOFF_MS = 60 * 60 * 1000;
+
 // ─── Color helpers ────────────────────────────────────────────────────────
 
 function rgbToHex(r, g, b) {
@@ -137,6 +149,13 @@ function ensureHeroAsset(openai, domain, senderName) {
   if (!isGeneratable(root)) return;
   if (inFlight.has(root)) return;
 
+  const failed = failedAt.get(root);
+  if (failed && Date.now() - failed < FAILURE_BACKOFF_MS) return;
+
+  // Opportunistic by definition: skipping one costs that sender its picture
+  // until the next request, and costs the feed nothing at all.
+  if (inFlight.size >= MAX_IN_FLIGHT) return;
+
   inFlight.add(root);
 
   (async () => {
@@ -150,6 +169,7 @@ function ensureHeroAsset(openai, domain, senderName) {
       await saveAsset(root, imageBuffer, 'image/png', bgColor);
       console.log(`[hero] generated asset for ${root} (bg ${bgColor})`);
     } catch (err) {
+      failedAt.set(root, Date.now());
       console.warn(`[hero] generation failed for ${root}:`, err?.message ?? err);
     } finally {
       inFlight.delete(root);
