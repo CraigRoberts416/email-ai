@@ -33,8 +33,12 @@ enum Ink {
     /// Read ground, dateline bands, pressed fill, hero summary panel.
     static let surfaceTertiary = Color(hex: 0xF8F8F8)
 
-    /// Post dividers, margin rules, skeletons. Decorative only — 1.16:1.
-    static let border = Color(hex: 0xEEEEEE)
+    /// Post dividers, margin rules, skeletons. Lifted from #EEEEEE once the
+    /// rule thinned to 0.5pt: at 1.16:1 and 1.5 device pixels a divider stops
+    /// being structure and becomes a rumour, and a decontained feed has no
+    /// other grammar to fall back on. Things 3 runs ~10% cool grey for the
+    /// same job, which is where this lands.
+    static let border = Color(hex: 0xE3E5E8)
 
     /// Increase Contrast swaps every border to this, or the feed loses its grammar.
     static let borderHighContrast = Color(hex: 0xC7C7C7)
