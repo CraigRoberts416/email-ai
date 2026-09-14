@@ -52,7 +52,7 @@ struct FeedView: View {
             ZStack(alignment: .top) {
                 ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         // The space the pull strip holds open while it works.
                         Color.clear.frame(height: stripHold)
 
@@ -69,7 +69,7 @@ struct FeedView: View {
                         .id(Self.topAnchor)
 
                         ForEach(store.messages(), id: \.0) { section, items in
-                            Dateline(section)
+                            Section {
                             ForEach(items) { message in
                                 PostView(
                                     message: message,
@@ -91,6 +91,12 @@ struct FeedView: View {
                                 )
                                 .opacity(admitted.contains(message.id) ? 0 : 1)
                                 .matchedTransitionSource(id: message.id, in: feedZoom)
+                            }
+                            } header: {
+                                // Sticky, because a date band that scrolls away
+                                // is decoration; one that stays is the landmark
+                                // you navigate a long feed by.
+                                Dateline(section)
                             }
                         }
 

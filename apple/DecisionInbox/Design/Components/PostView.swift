@@ -634,21 +634,39 @@ struct PostView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("\(message.sender.displayName), open sender")
 
-            VStack(alignment: .leading, spacing: Space.xxs) {
+            // One baseline, not two lines. The sender is fixed-width so the
+            // clause always begins at the same x — the eye lands in the same
+            // place on every row, which is what makes a long list scannable
+            // without shrinking the type.
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                 Text(message.sender.displayName.uppercased())
                     .typeStyle(Style.compactSender)
                     .foregroundStyle(Ink.tertiary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+                    // Wide enough for a real brand name, and it yields only
+                    // after the clause does. The sender is the identity
+                    // anchor: truncating it to protect a preview is the wrong
+                    // trade, which is why both Raycast and Superhuman cap the
+                    // subtitle instead.
+                    .frame(maxWidth: 124, alignment: .leading)
+                    .layoutPriority(1)
+
                 Text(message.summary ?? message.subject)
                     .typeStyle(Style.bodyMedium)
                     .foregroundStyle(message.isRead ? Ink.secondary : Ink.primary)
                     .lineLimit(1)
-            }
+                    .truncationMode(.tail)
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
+
+                Text(message.receivedAt.feedStamp)
+                    .typeStyle(Style.monoMicro)
+                    .foregroundStyle(Ink.tertiary)
+            }
         }
         .padding(.horizontal, Metric.gutter)
-        .frame(height: 55)
+        .frame(height: 44)
     }
 
 

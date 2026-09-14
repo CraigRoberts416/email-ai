@@ -401,7 +401,11 @@ enum Metric {
     static let iconFile: CGFloat = 15
     static let tapTarget: CGFloat = 44
     static let unreadBar: CGFloat = 2
-    static let hairline: CGFloat = 1
+    /// A true hairline — one device pixel, not one point. At 1pt a divider is
+    /// three physical pixels on a 3x screen, which is why a feed of them read
+    /// as ruled paper rather than as structure. Linear drops to 0.5px above
+    /// 2dppx for the same reason.
+    static let hairline: CGFloat = 1 / UIScreen.main.scale
 
     /// Instagram's proven card shape. Media crops to this unless it is landscape.
     static let mediaAspect: CGFloat = 4.0 / 5.0
