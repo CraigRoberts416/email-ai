@@ -70,6 +70,7 @@ enum Ink {
 // its external one.
 
 enum Space {
+    static let xxs: CGFloat = 2   // a label and its own sublabel
     static let xs: CGFloat = 4    // glued — icon to its count
     static let sm: CGFloat = 8    // same unit — kicker to quote
     static let md: CGFloat = 12   // related — compact row padding
@@ -81,6 +82,7 @@ enum Space {
 
 enum Corner {
     static let chip: CGFloat = 4
+    static let checkbox: CGFloat = 6
     static let sm: CGFloat = 8
     static let md: CGFloat = 12
     static let lg: CGFloat = 16
@@ -183,6 +185,86 @@ enum Style {
         tracking: 0, lineSpacing: 0
     )
 
+    /// Subject lines inside a card preview.
+    static let title = TypeStyle(
+        font: .custom(Face.sans, size: 20, relativeTo: .title3),
+        tracking: -0.6, lineSpacing: 0
+    )
+
+    /// Nav-bar titles.
+    static let navTitle = TypeStyle(
+        font: .custom(Face.sansMedium, size: 17, relativeTo: .headline),
+        tracking: -0.34, lineSpacing: 0
+    )
+
+    /// Nav-bar trailing actions — Edit, Save, Done.
+    static let navAction = TypeStyle(
+        font: .custom(Face.sansMedium, size: 15, relativeTo: .body),
+        tracking: -0.3, lineSpacing: 0
+    )
+
+    /// The workhorse of every dense list. One step under body, and the most
+    /// used size in the product once a screen is a list rather than a feed.
+    static let bodyMedium = TypeStyle(
+        font: .custom(Face.sans, size: 15, relativeTo: .subheadline),
+        tracking: -0.3, lineSpacing: 0
+    )
+
+    /// An affirmative verb on a status bar — Reconnect, Fix.
+    static let actionSmall = TypeStyle(
+        font: .custom(Face.sansMedium, size: 14, relativeTo: .subheadline),
+        tracking: -0.28, lineSpacing: 0
+    )
+
+    // The mono tracking ladder below is deliberate and role-based: at 11pt,
+    // 6% is a grey section header, 5% a black kicker, 4% a black tappable
+    // label. In a product with no accent colour, tracking carries the
+    // emphasis a hue would carry elsewhere — collapsing these to one value
+    // removes a signal rather than tidying one up.
+
+    /// Section and group headers. Grey, widest of the three.
+    static let sectionHeader = TypeStyle(
+        font: .custom(Face.monoMedium, size: 11, relativeTo: .caption2),
+        tracking: 0.66, lineSpacing: 0
+    )
+
+    /// A small black kicker — EXAMPLE, READ YOUR MAIL, an address in caps.
+    static let kickerSmall = TypeStyle(
+        font: .custom(Face.monoMedium, size: 11, relativeTo: .caption2),
+        tracking: 0.55, lineSpacing: 0
+    )
+
+    /// A mono label you can tap — ALL, ALL OFF, SYNCED 14:02. Tightest of the
+    /// three, because it is a control rather than a heading.
+    static let monoAction = TypeStyle(
+        font: .custom(Face.monoMedium, size: 11, relativeTo: .caption2),
+        tracking: 0.44, lineSpacing: 0
+    )
+
+    /// Row subtitles on the roomier list screens.
+    static let monoCaption = TypeStyle(
+        font: .custom(Face.mono, size: 11, relativeTo: .caption2),
+        tracking: 0, lineSpacing: 0
+    )
+
+    /// Row subtitles on the dense list screens.
+    static let monoMicro = TypeStyle(
+        font: .custom(Face.mono, size: 10, relativeTo: .caption2),
+        tracking: 0.2, lineSpacing: 0
+    )
+
+    /// Suggested tag chips.
+    static let tagChip = TypeStyle(
+        font: .custom(Face.monoMedium, size: 13, relativeTo: .footnote),
+        tracking: 0.52, lineSpacing: 0
+    )
+
+    /// The tag field itself — the one place a mailbox tag is set.
+    static let tagInput = TypeStyle(
+        font: .custom(Face.monoMedium, size: 20, relativeTo: .title3),
+        tracking: 0.8, lineSpacing: 0
+    )
+
     /// Run-log lines, evidence, small stamps.
     static let monoSmall = TypeStyle(
         font: .custom(Face.mono, size: 12, relativeTo: .caption),
@@ -244,11 +326,20 @@ extension View {
 
 enum Metric {
     static let gutter: CGFloat = Space.lg
+    /// Hero screens breathe wider than lists do. Onboarding, the permission
+    /// primer and the sheets all sit at 24.
+    static let gutterWide: CGFloat = Space.xl
+    static let heroTopPad: CGFloat = 80
     static let postPaddingY: CGFloat = Space.xl
     static let avatar: CGFloat = 40
     static let avatarCompact: CGFloat = 24
     static let avatarPill: CGFloat = 22
+    static let avatarList: CGFloat = 32
     static let avatarRow: CGFloat = 28
+    static let avatarRowDense: CGFloat = 26
+    /// Stacked avatars overlap by a third. Each needs a ring in the colour of
+    /// the ground behind it or the overlap reads as mud.
+    static let avatarStackOverlap: CGFloat = -8
     /// Acting on a message: react, reply, forward, discuss. Black, and a
     /// size up from filing it.
     static let iconAction: CGFloat = 17

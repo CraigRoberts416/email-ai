@@ -20,7 +20,9 @@ struct MailboxesView: View {
                 header
 
                 if store.mailboxes.count >= 5 {
-                    SearchField(text: $query)
+                    SearchField(text: $query, placeholder: "Filter")
+                        .padding(.horizontal, Metric.gutter)
+                        .padding(.bottom, Space.md)
                     Rule()
                 }
 
@@ -180,34 +182,5 @@ struct MailboxTag: View {
                 RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
                     .strokeBorder(Ink.border, lineWidth: 1)
             )
-    }
-}
-
-// MARK: - Search
-
-struct SearchField: View {
-    @Binding var text: String
-
-    var body: some View {
-        HStack(spacing: Space.sm) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 14))
-                .foregroundStyle(Ink.secondary)
-            TextField("Filter", text: $text)
-                .typeStyle(Style.body)
-                .foregroundStyle(Ink.primary)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            if !text.isEmpty {
-                Button { text = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Ink.tertiary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.vertical, Space.md)
     }
 }
