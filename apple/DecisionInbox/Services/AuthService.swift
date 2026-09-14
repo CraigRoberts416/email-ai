@@ -128,6 +128,13 @@ final class AuthService: NSObject {
             let address = try await Self.email(for: token.accessToken)
             store(token, for: address, keepingRefresh: refresh)
 
+            // Confirm the credential survived the write. Without this a failed
+            // keychain resurfaces much later as "that mailbox needs
+            // reconnecting", which points at the mailbox and not at us.
+            guard Keychain.get(Key.refreshToken(address)) == refresh else {
+                throw AuthError.keychainUnavailable
+            }
+
             if let existing = accounts.firstIndex(where: { $0.id == address }) {
                 // Reconnecting an expired mailbox, not adding a new one.
                 return accounts[existing]
@@ -298,6 +305,7 @@ enum AuthError: LocalizedError {
     case noCode
     case noRefreshToken
     case noEmail
+    case keychainUnavailable
     case signedOut
     case tokenEndpoint(String)
 
@@ -309,6 +317,8 @@ enum AuthError: LocalizedError {
             return "Google didn\u{2019}t return a refresh token, so the session would expire in an hour. Try connecting again."
         case .noEmail:
             return "Google didn\u{2019}t say which address that was. Try connecting again."
+        case .keychainUnavailable:
+            return "This device wouldn\u{2019}t store the credential, so the connection could not be kept. Nothing was saved."
         case .signedOut:
             return "That mailbox needs reconnecting."
         case .tokenEndpoint(let detail):

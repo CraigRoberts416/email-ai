@@ -15,6 +15,32 @@ struct APIClient {
     struct FeedResponse: Decodable {
         let cards: [Card]
         let recap: Recap?
+
+        /// Decodes cards individually. A single unexpected field in one card
+        /// used to throw for the whole response, which emptied the feed and
+        /// reported nothing — the same fault as a hero image taking down
+        /// /feed. One bad card should cost one post.
+        private struct Lossy: Decodable {
+            let card: Card?
+            init(from decoder: Decoder) throws {
+                do { card = try Card(from: decoder) } catch {
+                    print("[feed] card dropped: \(error)")
+                    card = nil
+                }
+            }
+        }
+
+        enum CodingKeys: String, CodingKey { case cards, recap }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let lossy = try container.decode([Lossy].self, forKey: .cards)
+            cards = lossy.compactMap(\.card)
+            recap = try? container.decodeIfPresent(Recap.self, forKey: .recap)
+            if lossy.count != cards.count {
+                print("[feed] kept \(cards.count) of \(lossy.count) cards")
+            }
+        }
     }
 
     struct AllMailResponse: Decodable {

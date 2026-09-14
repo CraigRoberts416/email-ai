@@ -139,6 +139,11 @@ final class FeedStore {
     /// yet. The distinction the feed has to draw is "not yet" versus "none".
     var isFirstSync: Bool { !syncing.isEmpty && messages.isEmpty }
 
+    /// Why the last fetch failed, if it did. "Nothing waiting" is a claim
+    /// about someone's mailbox, and the app must never make it on the strength
+    /// of a request that did not come back.
+    var loadFailure: String?
+
     func refresh() async {
         syncMailboxes()
         await withTaskGroup(of: Void.self) { group in
@@ -166,9 +171,13 @@ final class FeedStore {
                 pending.append(contentsOf: fresh)
             }
             mark(accountID, healthy: true)
+            loadFailure = nil
         } catch APIError.unauthorized, AuthError.signedOut {
             mark(accountID, healthy: false, reason: "needs reconnecting")
+            loadFailure = "That mailbox needs reconnecting."
         } catch {
+            print("[feed] load failed: \(error)")
+            loadFailure = error.localizedDescription
             condition = .statusStrip(state: "OFFLINE", freshness: freshness)
         }
         resolveCondition()

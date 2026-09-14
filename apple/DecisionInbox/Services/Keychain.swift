@@ -7,7 +7,16 @@ import Security
 enum Keychain {
     private static let service = "com.craigroberts.decisioninbox"
 
-    static func set(_ value: String, for key: String) {
+    /// Returns whether the write actually landed.
+    ///
+    /// Worth checking rather than assuming: a build without code signing has
+    /// no `application-identifier` entitlement, and iOS then refuses every
+    /// keychain write with errSecMissingEntitlement (-34018). Ignoring the
+    /// status made that look like a successful sign-in followed by an
+    /// inexplicable "that mailbox needs reconnecting" — the failure surfaced
+    /// three layers away from its cause.
+    @discardableResult
+    static func set(_ value: String, for key: String) -> Bool {
         let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -19,7 +28,12 @@ enum Keychain {
         var insert = query
         insert[kSecValueData as String] = data
         insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(insert as CFDictionary, nil)
+
+        let status = SecItemAdd(insert as CFDictionary, nil)
+        if status != errSecSuccess {
+            print("[keychain] write failed for \(key): OSStatus \(status)")
+        }
+        return status == errSecSuccess
     }
 
     static func get(_ key: String) -> String? {

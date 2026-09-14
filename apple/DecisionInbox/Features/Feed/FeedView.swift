@@ -41,6 +41,15 @@ struct FeedView: View {
                                 headline: "Reading your mailbox\u{2026}",
                                 detail: "THE FIRST PASS TAKES A MINUTE. POSTS APPEAR AS THEY ARE UNDERSTOOD."
                             )
+                        } else if store.messages.isEmpty, let failure = store.loadFailure {
+                            // An empty feed we could not fetch is not an empty
+                            // mailbox, and must never be reported as one.
+                            EmptyStateView(
+                                headline: "Couldn\u{2019}t load your mail.",
+                                detail: failure.uppercased(),
+                                actionLabel: "Try again",
+                                action: { Task { await store.refresh() } }
+                            )
                         } else if store.messages.isEmpty {
                             EmptyStateView(
                                 headline: "Nothing waiting.",
