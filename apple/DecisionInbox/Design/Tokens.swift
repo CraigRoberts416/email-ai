@@ -50,8 +50,14 @@ enum Ink {
     /// 5.9:1 on the sheet — meta only, never a sentence that carries meaning.
     static let onSheetSecondary = Color(hex: 0x8F8F8F)
 
-    /// Secondary copy on an inverted surface. 4.8–5.7:1 against near-black.
-    static let onInverseSecondary = Color.white.opacity(0.62)
+    /// Secondary copy on an inverted surface. A flat value rather than white
+    /// at 62%: the composite lands a shade off, and on the agent tray this
+    /// colour is load-bearing — it is the status line.
+    static let onInverseSecondary = Color(hex: 0xA8A8A8)
+
+    /// Work not started yet, on an inverted surface. Reads as absent without
+    /// disappearing, which is what a queued progress segment has to do.
+    static let pending = Color(hex: 0x404040)
 
     static let scrim = Color.black.opacity(0.40)
     static let scrimHeavy = Color.black.opacity(0.55)
@@ -263,6 +269,13 @@ enum Style {
     static let tagInput = TypeStyle(
         font: .custom(Face.monoMedium, size: 20, relativeTo: .title3),
         tracking: 0.8, lineSpacing: 0
+    )
+
+    /// The agent's status line. Mono, small, tracked open, and upper-cased in
+    /// code — it is a machine reporting its own position, not a sentence.
+    static let status = TypeStyle(
+        font: .custom(Face.mono, size: 11, relativeTo: .caption2),
+        tracking: 0.22, lineSpacing: 4
     )
 
     /// Run-log lines, evidence, small stamps.

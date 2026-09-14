@@ -387,13 +387,9 @@ final class FeedStore {
 
         case .unsubscribeStatus(let status):
             unsubscribes[status.messageId] = status
-            if status.status == "done" {
+            if status.step == .done {
                 messages.removeAll { $0.id == status.messageId }
                 tally.unsubscribed += 1
-                receipt = Receipt(
-                    message: status.message ?? "Unsubscribed.",
-                    detail: status.senderName?.uppercased()
-                )
             }
         }
     }
@@ -482,7 +478,10 @@ final class FeedStore {
             messageId: message.id,
             senderName: message.sender.displayName,
             status: "queued",
-            message: nil
+            message: nil,
+            index: unsubscribes.count + 1,
+            total: unsubscribes.count + 1,
+            fieldIndex: nil, fieldTotal: nil
         )
         Task {
             do {
@@ -495,8 +494,11 @@ final class FeedStore {
                 unsubscribes[message.id] = .init(
                     messageId: message.id,
                     senderName: message.sender.displayName,
-                    status: "error",
-                    message: error.localizedDescription
+                    status: "failed",
+                    message: error.localizedDescription,
+                    index: unsubscribes[message.id]?.index,
+                    total: unsubscribes[message.id]?.total,
+                    fieldIndex: nil, fieldTotal: nil
                 )
             }
         }

@@ -7,6 +7,7 @@ struct FeedView: View {
     @State private var scrollY: CGFloat = 0
     @State private var open: Message?
     @State private var compose: ComposeView.Intent?
+    @State private var showRunLog = false
 
     var body: some View {
         NavigationStack {
@@ -111,6 +112,12 @@ struct FeedView: View {
             .sheet(item: $compose) { intent in
                 ComposeView(intent: intent, message: open)
             }
+            .sheet(isPresented: $showRunLog) {
+                UnsubscribeRunLog(
+                    runs: store.unsubscribes.values.sorted { ($0.index ?? 0) < ($1.index ?? 0) },
+                    onClear: { withAnimation(Move.crisp) { store.unsubscribes.removeAll() } }
+                )
+            }
         }
     }
 
@@ -129,8 +136,8 @@ struct FeedView: View {
         VStack(spacing: Space.sm) {
             if !store.unsubscribes.isEmpty {
                 UnsubscribeTray(
-                    runs: store.unsubscribes.values.sorted { $0.messageId < $1.messageId },
-                    onDismiss: { withAnimation(Move.crisp) { store.unsubscribes.removeAll() } }
+                    runs: store.unsubscribes.values.sorted { ($0.index ?? 0) < ($1.index ?? 0) },
+                    onOpenLog: { showRunLog = true }
                 )
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }

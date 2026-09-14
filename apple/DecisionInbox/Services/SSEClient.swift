@@ -19,14 +19,24 @@ actor SSEClient {
         case unsubscribeStatus(UnsubscribeStatus)
     }
 
+    /// The enum is fixed, the sentence is free.
+    ///
+    /// `step` drives the tray's shape, its counter and its progress segments,
+    /// so it has to be deterministic — the model is never allowed to invent
+    /// one. `message` is written fresh from what was actually found on the
+    /// page, so the words stay alive across runs.
     struct UnsubscribeStatus: Decodable, Sendable {
         let messageId: String
         let senderName: String?
-        /// `queued|navigating|analyzing|filling|clicking|verifying|done|error`.
-        /// The enum is fixed so the UI can reason about it; `message` is written
-        /// fresh each time so the user reads a sentence, not a state name.
         let status: String
         let message: String?
+        /// Which sender of the batch, and how many there are.
+        let index: Int?
+        let total: Int?
+        /// Which form field, while filling. The counter switches from sites to
+        /// fields there because that is what is visibly happening.
+        let fieldIndex: Int?
+        let fieldTotal: Int?
     }
 
     private let baseURL: URL
