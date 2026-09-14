@@ -141,6 +141,18 @@ struct APIClient {
         let needAttention: String?
     }
 
+    /// Asks the model about one specific email. The body is fetched server-side
+    /// rather than sent from here — the device has a snippet, and a question
+    /// about an email deserves the whole email.
+    func discuss(messageID: String, question: String) async throws -> String {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "messageId": messageID, "question": question,
+        ])
+        let data = try await send(path: "/discuss", method: "POST", body: body)
+        struct Answer: Decodable { let answer: String }
+        return try JSONDecoder().decode(Answer.self, from: data).answer
+    }
+
     /// Kicks off the headless-browser agent. Progress arrives over SSE, not here.
     func unsubscribe(messageID: String, url: String, senderName: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: [

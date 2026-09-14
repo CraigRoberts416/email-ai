@@ -122,6 +122,7 @@ const PROMPTS = {
   decideActionSurface:  loadPrompt('decide-action-surface'),
   sessionRecap:         loadPrompt('session-recap'),
   generateUiCopy:       loadPrompt('generate-ui-copy'),
+  discussThread:        loadPrompt('discuss-thread'),
 };
 
 // ─── XML helpers ──────────────────────────────────────────────────────────
@@ -1081,6 +1082,44 @@ app.get('/unsubscribe/:messageId/status', async (req, res) => {
 // ─── UI copy ──────────────────────────────────────────────────────────────
 
 const uiCopyCache = new Map(); // userId → copy object
+
+// Discuss — answer a question about one specific email the user is looking at
+app.post('/discuss', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+
+  const { messageId, question } = req.body;
+  if (!messageId || !question) return res.status(400).json({ error: 'messageId and question required' });
+
+  try {
+    const record = await messageStore.getMessage(userId, messageId);
+    if (!record) return res.status(404).json({ error: 'message not found' });
+
+    // The body is fetched fresh rather than stored: a question about an email
+    // deserves the whole email, and we keep only enough to build the feed.
+    let body = record.snippet ?? '';
+    try {
+      const raw = await gmailSync.fetchFullMessage(userId, messageId);
+      body = cleanEmailForAI(raw).body?.plainText?.slice(0, 6000) || body;
+    } catch (err) {
+      console.warn('[discuss] body fetch failed, using snippet:', err.message);
+    }
+
+    const prompt = renderPrompt(PROMPTS.discussThread, {
+      fromName: record.fromName ?? '', fromEmail: record.fromEmail ?? '',
+      subject: record.subject ?? '', receivedAt: new Date(Number(record.internalDate)).toISOString(),
+      body,
+      quote: record.quote ?? '(none)', summary: record.summary ?? '(none)',
+      question: String(question).slice(0, 500),
+    });
+
+    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
+    res.json({ answer: response.output_text.trim() });
+  } catch (err) {
+    console.error('[discuss] error:', err.message);
+    res.status(500).json({ error: 'discuss failed' });
+  }
+});
 
 app.get('/ui-copy', async (req, res) => {
   const userId = await resolveUserId(req);

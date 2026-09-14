@@ -1,12 +1,17 @@
 import SwiftUI
 
-/// The real message.
+/// The thread, built to `Flows · Thread & Compose / 01 · Open Email`.
 ///
-/// The feed is the interpretation; this is the artifact. So the order is
-/// interpretation first — it is why you tapped — then the sender's own words,
-/// unedited. The AI never gets the last word on this screen.
+/// This is the one screen that inverts. The feed is our reading of someone's
+/// mail; a thread is their actual words, so it arrives as a dark sheet with
+/// their own hero image at the top and each message on a white card of its
+/// own. The inversion is what makes the cards read as theirs rather than ours.
+///
+/// Below the messages sits Discuss — asking the model about the thread you are
+/// looking at, rather than about mail in the abstract.
 struct ThreadView: View {
     let message: Message
+
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
@@ -14,129 +19,185 @@ struct ThreadView: View {
     @State private var failed = false
     @State private var showRemoteContent = false
     @State private var compose: ComposeView.Intent?
+    @State private var discuss = DiscussModel()
+
+    private let heroHeight: CGFloat = 258
+
+    /// The sheet takes its colour from the sender's generated image, so a
+    /// thread arrives looking like the sender rather than like the app. The
+    /// navy in the Figma is simply what Delta's image extracted to.
+    private var sheetColor: Color { .sheet(fromHex: message.heroBackground) }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                interpretation
-                Rule()
-                original
-            }
-        }
-        .scrollIndicators(.hidden)
-        .background(Ink.surface)
-        .safeAreaInset(edge: .bottom) { replyBar }
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(message.sender.displayName)
-                    .typeStyle(Style.sender)
-                    .foregroundStyle(Ink.primary)
-                    .lineLimit(1)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("Save", systemImage: message.isSaved ? "bookmark.fill" : "bookmark") {
-                        store.toggleSaved(message)
-                    }
-                    Button("Archive", systemImage: "archivebox") {
-                        store.archive(message)
-                        dismiss()
-                    }
-                    if message.isPromotion {
-                        Button("Unsubscribe", systemImage: "xmark") {
-                            store.unsubscribe(from: message)
-                            dismiss()
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis").foregroundStyle(Ink.primary)
+        ZStack(alignment: .bottom) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    masthead
+                    messageCard
+                    DiscussSection(model: discuss)
                 }
+                .padding(.bottom, Space.xxxl + Space.xxl)
             }
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea(edges: .top)
+
+            askBar
         }
-        .navigationBarTitleDisplayMode(.inline)
+        .background(sheetColor.ignoresSafeArea())
+        .overlay(alignment: .top) { floatingControls }
+        .toolbar(.hidden, for: .navigationBar)
         .task {
             store.markRead(message)
             await load()
         }
-        .sheet(item: $compose) { intent in
-            ComposeView(intent: intent, message: message)
-        }
+        .sheet(item: $compose) { ComposeView(intent: $0, message: message) }
     }
 
-    // MARK: Interpretation
+    // MARK: Masthead — the sender's image, their name, and the subject
 
-    @ViewBuilder private var interpretation: some View {
-        if message.quote != nil || message.summary != nil {
-            VStack(alignment: .leading, spacing: Space.md) {
-                KickerLabel(message.kicker)
+    private var masthead: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Clears the hero so the sender row lands over its lower third,
+            // exactly where the gradient has taken hold.
+            Color.clear.frame(height: 180)
 
-                if let quote = message.quote {
-                    Text("\u{201C}\(quote)\u{201D}")
-                        .typeStyle(Style.display)
-                        .foregroundStyle(Ink.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.leading, -8)
-                }
-
-                if let summary = message.summary {
-                    SummaryBlock(text: summary, density: .standard,
-                                 emphasised: message.kicker == .possibleScam)
-                }
-
-                if let label = message.actionLabel, let url = message.actionURL {
-                    CTAButton(label: label) { UIApplication.shared.open(url) }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Metric.gutter)
-            .padding(.vertical, Space.xl)
-        }
-    }
-
-    // MARK: The message itself
-
-    private var original: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            VStack(alignment: .leading, spacing: Space.md) {
-                HStack(spacing: Space.md) {
-                    AvatarView(sender: message.sender, size: Metric.avatar)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(message.sender.displayName)
-                            .typeStyle(Style.sender)
-                            .foregroundStyle(Ink.primary)
-                        Text(message.sender.address)
-                            .typeStyle(Style.monoSmall)
-                            .foregroundStyle(Ink.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
-                }
-
-                Text(message.subject)
+            HStack(spacing: Space.sm) {
+                AvatarView(sender: message.sender, size: Metric.avatarCompact)
+                Text(message.sender.displayName)
                     .typeStyle(Style.body)
-                    .foregroundStyle(Ink.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(message.receivedAt.formatted(.dateTime.weekday(.wide).month().day().hour().minute()))
-                    .typeStyle(Style.monoSmall)
-                    .foregroundStyle(Ink.secondary)
+                    .foregroundStyle(Ink.onSheet)
+                Spacer(minLength: Space.md)
+                if let url = message.actionURL ?? message.unsubscribeURL {
+                    Button { UIApplication.shared.open(url) } label: {
+                        Text(message.actionLabel ?? "Go to page")
+                            .typeStyle(Style.chip)
+                            .foregroundStyle(Ink.onSheet)
+                            .lineLimit(1)
+                            .padding(.horizontal, Space.lg)
+                            .padding(.vertical, 5)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
+                                    .strokeBorder(Ink.onSheet.opacity(0.35), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .padding(.horizontal, Metric.gutter)
+            .padding(.horizontal, Space.xxl)
+
+            // The subject is the headline here, not a label. It is the only
+            // thing on this screen written by a human that we have not touched.
+            Text(message.subject)
+                .typeStyle(Style.display)
+                .foregroundStyle(Ink.onSheet)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Space.xxl)
+                .padding(.top, Space.xxl)
+
+            HStack(spacing: Space.sm) {
+                Image(systemName: "tray.full")
+                    .font(.system(size: 13))
+                Text(threadLabel)
+                    .typeStyle(Style.meta)
+            }
+            .foregroundStyle(Ink.onSheetSecondary)
+            .padding(.horizontal, Space.xxl)
+            .padding(.top, Space.xxl + Space.md)
+
+            if let summary = message.summary {
+                Text(summary)
+                    .typeStyle(Style.body)
+                    .foregroundStyle(Ink.onSheet)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.xxl)
+                    .padding(.top, Space.md)
+            }
+        }
+        .padding(.bottom, Space.xl)
+        .background(alignment: .top) { hero }
+    }
+
+    /// The generated sender image, fading into the sheet so the subject sitting
+    /// across the seam stays readable without a scrim over the whole picture.
+    private var hero: some View {
+        ZStack(alignment: .top) {
+            if let url = message.heroImageURL {
+                AsyncImage(url: url) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    sheetColor
+                }
+                .frame(height: heroHeight)
+                .clipped()
+            } else {
+                sheetColor.frame(height: heroHeight)
+            }
+
+            VStack(spacing: 0) {
+                Color.clear.frame(height: 52)
+                LinearGradient(
+                    colors: [sheetColor.opacity(0), sheetColor],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: heroHeight - 52)
+            }
+        }
+        .frame(height: heroHeight)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var threadLabel: String {
+        message.threadCount == 1 ? "1 email in thread" : "\(message.threadCount) emails in thread"
+    }
+
+    // MARK: The message itself, on its own white card
+
+    private var messageCard: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                HStack(spacing: Space.sm) {
+                    AvatarView(sender: message.sender, size: Metric.avatarCompact)
+                    Text(message.sender.displayName)
+                        .typeStyle(Style.body)
+                        .foregroundStyle(Ink.primary)
+                }
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 12))
+                    Text(message.receivedAt.threadStamp)
+                        .typeStyle(Style.meta)
+                }
+                .foregroundStyle(Ink.secondary)
+            }
 
             content
+
+            Rule()
+
+            ActionRow(
+                message: message,
+                onReply: { compose = .reply },
+                onForward: { compose = .forward },
+                onSave: { store.toggleSaved(message) },
+                onArchive: { store.archive(message); dismiss() },
+                onUnsubscribe: { store.unsubscribe(from: message); dismiss() }
+            )
         }
-        .padding(.top, Space.xl)
-        .padding(.bottom, Space.xxl)
+        .padding(Space.xxl)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Ink.surface, in: RoundedRectangle(cornerRadius: Corner.lg, style: .continuous))
+        .padding(.horizontal, Space.lg)
     }
 
     @ViewBuilder private var content: some View {
         if let body_ {
             if !body_.htmlRaw.isEmpty {
+                // The sender's own layout, on their own card — which is why the
+                // card is white. Their HTML was never designed for our ground.
                 VStack(alignment: .leading, spacing: Space.md) {
                     EmailBodyWeb(html: body_.htmlRaw, loadRemoteContent: showRemoteContent)
-                    if !showRemoteContent {
-                        remoteContentNotice
-                    }
+                        .padding(.horizontal, -Space.md)
+                    if !showRemoteContent { remoteContentNotice }
                 }
             } else {
                 Text(body_.plainText.isEmpty ? message.snippet : body_.plainText)
@@ -144,8 +205,6 @@ struct ThreadView: View {
                     .foregroundStyle(Ink.primary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, Metric.gutter)
             }
         } else if failed {
             // Degraded, never blocking: the snippet is already on the device.
@@ -158,14 +217,11 @@ struct ThreadView: View {
                     .typeStyle(Style.bodySmall)
                     .foregroundStyle(Ink.primary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Metric.gutter)
         } else {
             Text(message.snippet)
                 .typeStyle(Style.body)
                 .foregroundStyle(Ink.tertiary)
                 .redacted(reason: .placeholder)
-                .padding(.horizontal, Metric.gutter)
         }
     }
 
@@ -182,40 +238,84 @@ struct ThreadView: View {
                 .typeStyle(Style.bodySmall)
                 .foregroundStyle(Ink.primary)
         }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.vertical, Space.md)
-        .background(Ink.surfaceTertiary)
+        .padding(Space.md)
+        .background(Ink.surfaceTertiary, in: RoundedRectangle(cornerRadius: Corner.sm, style: .continuous))
     }
 
-    // MARK: Reply bar
+    // MARK: Chrome
 
-    private var replyBar: some View {
-        HStack(spacing: Space.xl) {
-            Button { compose = .reply } label: {
-                HStack(spacing: Space.sm) {
-                    Image(systemName: "arrowshape.turn.up.left")
-                    Text("Reply").typeStyle(Style.body)
+    private var floatingControls: some View {
+        VStack(spacing: Space.md) {
+            Capsule()
+                .fill(Ink.border)
+                .frame(width: 56, height: 4)
+
+            HStack {
+                circleButton("chevron.left") { dismiss() }
+                Spacer()
+                Menu {
+                    Button("Save", systemImage: message.isSaved ? "bookmark.fill" : "bookmark") {
+                        store.toggleSaved(message)
+                    }
+                    Button("Archive", systemImage: "archivebox") {
+                        store.archive(message)
+                        dismiss()
+                    }
+                    if message.isPromotion {
+                        Button("Unsubscribe", systemImage: "xmark") {
+                            store.unsubscribe(from: message)
+                            dismiss()
+                        }
+                    }
+                } label: {
+                    circleLabel("ellipsis")
                 }
-                .foregroundStyle(Ink.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Button { compose = .replyAll } label: {
-                Image(systemName: "arrowshape.turn.up.left.2").foregroundStyle(Ink.secondary)
-            }
-            Button { compose = .forward } label: {
-                Image(systemName: "arrowshape.turn.up.right").foregroundStyle(Ink.secondary)
-            }
+            .padding(.horizontal, Space.md)
         }
-        .buttonStyle(.plain)
-        .font(.system(size: Metric.iconAction))
-        .padding(.horizontal, Metric.gutter)
-        .padding(.vertical, Space.md)
-        .background(Ink.surface)
-        .overlay(alignment: .top) { Rule() }
+        .padding(.top, Space.lg)
+    }
+
+    private func circleButton(_ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { circleLabel(symbol) }.buttonStyle(.plain)
+    }
+
+    private func circleLabel(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(Ink.onSheet)
+            .frame(width: 40, height: 40)
+            .background(Ink.scrim, in: Circle())
+    }
+
+    private var askBar: some View {
+        DiscussInput(message: message, model: discuss)
+            .padding(.horizontal, Space.lg)
+            .padding(.bottom, Space.sm)
     }
 
     private func load() async {
         failed = false
         do { body_ = try await store.body(of: message) } catch { failed = true }
+    }
+}
+
+// MARK: - Date
+
+extension Date {
+    /// Absolute enough to be useful, relative enough to read. The feed says
+    /// "2h"; a thread is where you want to know it was this morning.
+    var threadStamp: String {
+        let seconds = Date.now.timeIntervalSince(self)
+        if seconds < 3600 { return "\(max(1, Int(seconds / 60))) minutes ago" }
+        if seconds < 86_400 {
+            let hours = Int(seconds / 3600)
+            return hours == 1 ? "1 hour ago" : "\(hours) hours ago"
+        }
+        if seconds < 7 * 86_400 {
+            let days = Int(seconds / 86_400)
+            return days == 1 ? "1 day ago" : "\(days) days ago"
+        }
+        return formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 }

@@ -197,6 +197,10 @@ final class FeedStore {
         try await client(message.mailboxID).body(of: message.id)
     }
 
+    func discuss(question: String, about message: Message) async throws -> String {
+        try await client(message.mailboxID).discuss(messageID: message.id, question: question)
+    }
+
     // MARK: Mailboxes
 
     /// Mirrors the auth account list into feed-facing mailboxes, preserving

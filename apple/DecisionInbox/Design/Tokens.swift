@@ -41,6 +41,15 @@ enum Ink {
     static let inverse = Color(hex: 0x000000)
     static let onInverse = Color(hex: 0xFFFFFF)
 
+    /// The thread sheet, and the only place the product inverts wholesale.
+    /// A thread is the sender's own words rather than our reading of them, so
+    /// it arrives on its own ground — and the white message cards inside it
+    /// are then unmistakably theirs, not ours.
+    static let sheet = Color(hex: 0x081034)
+    static let onSheet = Color(hex: 0xFFFFFF)
+    /// 5.9:1 on the sheet — meta only, never a sentence that carries meaning.
+    static let onSheetSecondary = Color(hex: 0x8F8F8F)
+
     /// Secondary copy on an inverted surface. 4.8–5.7:1 against near-black.
     static let onInverseSecondary = Color.white.opacity(0.62)
 
@@ -242,6 +251,43 @@ extension Color {
             blue: Double(hex & 0xFF) / 255,
             opacity: 1
         )
+    }
+
+    /// A ground taken from a sender's generated image.
+    ///
+    /// The hue is theirs — that is the whole point of the thread carrying the
+    /// sender's colour. The legibility is not: the server averages the image
+    /// and darkens it 40%, which lands a bright image on mid-grey where white
+    /// text measures under 3:1. So the colour is darkened only as far as white
+    /// body text needs, and no further.
+    static func sheet(fromHex hex: String?, fallback: Color = Ink.sheet) -> Color {
+        guard let hex,
+              let value = UInt32(hex.hasPrefix("#") ? String(hex.dropFirst()) : hex, radix: 16),
+              hex.count >= 6
+        else { return fallback }
+
+        var rgb = [
+            Double((value >> 16) & 0xFF) / 255,
+            Double((value >> 8) & 0xFF) / 255,
+            Double(value & 0xFF) / 255,
+        ]
+
+        // WCAG AA for body text against white: luminance must sit at or below
+        // 1.05 / 4.5 − 0.05.
+        let ceiling = 1.05 / 4.5 - 0.05
+        var guard_ = 0
+        while luminance(rgb) > ceiling, guard_ < 40 {
+            rgb = rgb.map { $0 * 0.92 }
+            guard_ += 1
+        }
+        return Color(.sRGB, red: rgb[0], green: rgb[1], blue: rgb[2], opacity: 1)
+    }
+
+    private static func luminance(_ rgb: [Double]) -> Double {
+        let linear = rgb.map { channel -> Double in
+            channel <= 0.03928 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
     }
 }
 
