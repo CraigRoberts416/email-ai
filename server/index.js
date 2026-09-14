@@ -578,12 +578,19 @@ app.get('/feed', async (req, res) => {
 
     const heroByDomain = new Map();
     await Promise.all(Array.from(domainToSender.keys()).map(async domain => {
-      const senderName = domainToSender.get(domain);
-      const cached = await heroImage.getCachedAsset(domain);
-      if (cached) {
-        heroByDomain.set(domain, cached);
-      } else {
-        heroImage.ensureHeroAsset(openai, domain, senderName);
+      // Decoration must never be load-bearing. A missing image, a cold cache,
+      // or an absent table costs this sender its picture and nothing else —
+      // the mail underneath already exists and is not the AI's to withhold.
+      try {
+        const senderName = domainToSender.get(domain);
+        const cached = await heroImage.getCachedAsset(domain);
+        if (cached) {
+          heroByDomain.set(domain, cached);
+        } else {
+          heroImage.ensureHeroAsset(openai, domain, senderName);
+        }
+      } catch (err) {
+        console.warn(`[hero] skipped ${domain}: ${err.message}`);
       }
     }));
 
@@ -708,12 +715,19 @@ app.get('/all-mail', async (req, res) => {
 
     const heroByDomain = new Map();
     await Promise.all(Array.from(domainToSender.keys()).map(async domain => {
-      const senderName = domainToSender.get(domain);
-      const cached = await heroImage.getCachedAsset(domain);
-      if (cached) {
-        heroByDomain.set(domain, cached);
-      } else {
-        heroImage.ensureHeroAsset(openai, domain, senderName);
+      // Decoration must never be load-bearing. A missing image, a cold cache,
+      // or an absent table costs this sender its picture and nothing else —
+      // the mail underneath already exists and is not the AI's to withhold.
+      try {
+        const senderName = domainToSender.get(domain);
+        const cached = await heroImage.getCachedAsset(domain);
+        if (cached) {
+          heroByDomain.set(domain, cached);
+        } else {
+          heroImage.ensureHeroAsset(openai, domain, senderName);
+        }
+      } catch (err) {
+        console.warn(`[hero] skipped ${domain}: ${err.message}`);
       }
     }));
 

@@ -34,7 +34,14 @@ struct FeedView: View {
                             }
                         }
 
-                        if store.messages.isEmpty {
+                        if store.isFirstSync {
+                            // "Nothing waiting" would be a lie here: the mail
+                            // exists, we just have not been handed it yet.
+                            EmptyStateView(
+                                headline: "Reading your mailbox\u{2026}",
+                                detail: "THE FIRST PASS TAKES A MINUTE. POSTS APPEAR AS THEY ARE UNDERSTOOD."
+                            )
+                        } else if store.messages.isEmpty {
                             EmptyStateView(
                                 headline: "Nothing waiting.",
                                 detail: "NEW MAIL APPEARS HERE AS IT LANDS \u{2014} ALREADY READ."

@@ -27,6 +27,14 @@ async function query(sql, params) {
 
 // Run lightweight migrations on startup — idempotent, safe to re-run.
 async function runMigrations() {
+  // schema.sql is entirely CREATE ... IF NOT EXISTS, so applying it on every
+  // boot costs nothing and means a table added to the schema can never again
+  // be missing from a deployed database. sender_domain_assets was added to
+  // the schema and to no migration, so it was never created in production —
+  // and every /feed request 500'd on a table nobody had noticed was absent.
+  await pool.query(
+    require('fs').readFileSync(require('path').join(__dirname, 'schema.sql'), 'utf8')
+  );
   await pool.query(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS unsubscribe_url TEXT
   `);

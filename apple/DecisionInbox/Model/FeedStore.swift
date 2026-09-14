@@ -42,7 +42,9 @@ final class FeedStore {
     let auth: AuthService
     private var streams: [String: SSEClient] = [:]
     private var loaded: Set<String> = []
+    private var syncing: Set<String> = []
     private var outgoing: Task<Void, Never>?
+    private var reconcile: Task<Void, Never>?
 
     init(auth: AuthService) {
         self.auth = auth
@@ -100,14 +102,42 @@ final class FeedStore {
         // while the app is closed. It also kicks off the first backlog pull,
         // so it has to happen before the feed is worth reading.
         try? await client(accountID).register()
-        await load(accountID, admitDirectly: true)
 
+        // The stream goes up first: the backlog pull is already running, and
+        // anything it produces should have somewhere to land.
         let stream = SSEClient(baseURL: client(accountID).baseURL, auth: auth, accountID: accountID)
         streams[accountID] = stream
         await stream.connect { [weak self] event in
             await self?.apply(event, from: accountID)
         }
+
+        await load(accountID, admitDirectly: true)
+        await settle(accountID)
     }
+
+    /// Waits out the first sync of a new mailbox.
+    ///
+    /// `/auth/register` only *starts* the backlog pull, and that pull emits no
+    /// events of its own — so a mailbox connected ten seconds ago answers
+    /// `/feed` with an empty list that is not the same thing as an empty inbox.
+    /// Saying "nothing waiting" then would be a lie, and the kind that makes
+    /// someone delete the app.
+    private func settle(_ accountID: String) async {
+        guard messages.isEmpty else { return }
+        syncing.insert(accountID)
+        defer { syncing.remove(accountID) }
+
+        for delay in [2, 3, 5, 8, 12, 20, 30] {
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await load(accountID, admitDirectly: true)
+            if !messages.isEmpty { return }
+        }
+    }
+
+    /// True while a mailbox is doing its first sync and has produced nothing
+    /// yet. The distinction the feed has to draw is "not yet" versus "none".
+    var isFirstSync: Bool { !syncing.isEmpty && messages.isEmpty }
 
     func refresh() async {
         syncMailboxes()
@@ -262,25 +292,25 @@ final class FeedStore {
             pending.append(message)
 
         case .messageRead(let id):
-            mutate(id) { $0.isRead = true }
+            found(mutate(id) { $0.isRead = true }, else: accountID)
 
         case .processing(let id):
-            mutate(id) { $0.isInterpreting = true; $0.reinterpret() }
+            found(mutate(id) { $0.isInterpreting = true; $0.reinterpret() }, else: accountID)
 
         case .chunk(let id, let field, let text):
             // Appending as tokens land is what makes the caret honest — it sits
             // at the end of real text rather than animating over a placeholder.
-            mutate(id) { message in
+            found(mutate(id) { message in
                 switch field {
                 case "quote": message.quote = (message.quote ?? "") + text
                 case "summary": message.summary = (message.summary ?? "") + text
                 case "action": message.actionLabel = (message.actionLabel ?? "") + text
                 default: break
                 }
-            }
+            }, else: accountID)
 
         case .fieldComplete(let id, let field, let value):
-            mutate(id) { message in
+            found(mutate(id) { message in
                 switch field {
                 case "quote": message.quote = value
                 case "summary": message.summary = value
@@ -291,10 +321,10 @@ final class FeedStore {
                 default: break
                 }
                 message.reinterpret()
-            }
+            }, else: accountID)
 
         case .messageReady(let id):
-            mutate(id) { $0.isInterpreting = false; $0.reinterpret() }
+            found(mutate(id) { $0.isInterpreting = false; $0.reinterpret() }, else: accountID)
 
         case .unsubscribeStatus(let status):
             unsubscribes[status.messageId] = status
@@ -308,13 +338,33 @@ final class FeedStore {
         }
     }
 
-    /// Applies an edit wherever the message currently lives. A message being
-    /// interpreted while it sits behind the pill still has to update.
-    private func mutate(_ id: String, _ change: (inout Message) -> Void) {
+    /// Applies an edit wherever the message currently lives, and reports
+    /// whether it landed anywhere. A message being interpreted while it sits
+    /// behind the pill still has to update.
+    @discardableResult
+    private func mutate(_ id: String, _ change: (inout Message) -> Void) -> Bool {
         if let i = messages.firstIndex(where: { $0.id == id }) {
             change(&messages[i])
-        } else if let i = pending.firstIndex(where: { $0.id == id }) {
+            return true
+        }
+        if let i = pending.firstIndex(where: { $0.id == id }) {
             change(&pending[i])
+            return true
+        }
+        return false
+    }
+
+    /// An event about a message we have never heard of means the server knows
+    /// about mail we do not — the first sync of a mailbox announces itself no
+    /// other way. Debounced, because a backlog arrives as a burst and one
+    /// fetch answers all of it.
+    private func found(_ landed: Bool, else accountID: String) {
+        guard !landed else { return }
+        reconcile?.cancel()
+        reconcile = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            await load(accountID, admitDirectly: messages.isEmpty)
         }
     }
 
