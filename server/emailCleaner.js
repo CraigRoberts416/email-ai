@@ -38,22 +38,59 @@ function extractBody(payload, mimeType) {
   return '';
 }
 
+/// The named entities that actually turn up in mail. The previous list held
+/// six, so a card quoted a sender as saying "&reg; and World of Hyatt
+/// accounts are linked" — the entity survived cleaning, went into the model,
+/// and came back out inside a quote the product promises is verbatim. A
+/// verbatim quote containing markup is worse than a paraphrase, because it
+/// claims to be exactly what someone wrote.
+const ENTITIES = {
+  nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'",
+  reg: '\u00AE', copy: '\u00A9', trade: '\u2122', deg: '\u00B0',
+  hellip: '\u2026', mdash: '\u2014', ndash: '\u2013', minus: '\u2212',
+  lsquo: '\u2018', rsquo: '\u2019', ldquo: '\u201C', rdquo: '\u201D',
+  sbquo: '\u201A', bdquo: '\u201E', dagger: '\u2020', bull: '\u2022',
+  middot: '\u00B7', laquo: '\u00AB', raquo: '\u00BB', euro: '\u20AC',
+  pound: '\u00A3', yen: '\u00A5', cent: '\u00A2', sect: '\u00A7',
+  para: '\u00B6', times: '\u00D7', divide: '\u00F7', plusmn: '\u00B1',
+  frac12: '\u00BD', frac14: '\u00BC', frac34: '\u00BE', eacute: '\u00E9',
+  egrave: '\u00E8', agrave: '\u00E0', ccedil: '\u00E7', uuml: '\u00FC',
+  ouml: '\u00F6', auml: '\u00E4', szlig: '\u00DF', ntilde: '\u00F1',
+  shy: '', zwnj: '', zwj: '', ensp: ' ', emsp: ' ', thinsp: ' ',
+};
+
+/// Named and numeric, decimal and hex. Runs last so an entity that decodes to
+/// a character is never re-read as markup.
+function decodeEntities(text) {
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) && code > 0 && code <= 0x10FFFF
+        ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = Number(dec);
+      return Number.isFinite(code) && code > 0 && code <= 0x10FFFF
+        ? String.fromCodePoint(code) : '';
+    })
+    .replace(/&([a-z][a-z0-9]{1,9});/gi, (match, name) => {
+      const key = name.toLowerCase();
+      return key in ENTITIES ? ENTITIES[key] : match;
+    });
+}
+
 function cleanHtml(html) {
-  return html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
+  return decodeEntities(
+    html
+      .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+  )
     .replace(/\s+/g, ' ')
     .trim();
 }
 
 function stripTags(s) {
-  return s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return decodeEntities(s.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
 }
 
 function extractStructuredLinks(html) {
@@ -162,4 +199,4 @@ function cleanEmailForAI(msg) {
   };
 }
 
-module.exports = { cleanEmailForAI };
+module.exports = { cleanEmailForAI, decodeEntities };

@@ -28,7 +28,7 @@ const emailImage       = require('./emailImage');
 const crypto           = require('crypto');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const unsubscribeCopy  = require('./unsubscribeCopy');
-const { cleanEmailForAI } = require('./emailCleaner');
+const { cleanEmailForAI, decodeEntities } = require('./emailCleaner');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -834,6 +834,13 @@ app.get('/feed', async (req, res) => {
       const cached = heroByDomain.get(domain) ?? null;
       return {
         ...m,
+        // Decoded on the way out as well as on the way in. The quotes already
+        // stored were written before the entity table was worth the name, and
+        // re-interpreting two hundred messages to fix punctuation would be a
+        // paid model call per card for a string replacement.
+        quote:              m.quote ? decodeEntities(m.quote) : m.quote,
+        summary:            m.summary ? decodeEntities(m.summary) : m.summary,
+        subject:            m.subject ? decodeEntities(m.subject) : m.subject,
         avatarUri:          resolveAvatarUri({ sender: { domain } }),
         avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
         unsubscribeUrl:     m.unsubscribeUrl ?? null,
@@ -1183,6 +1190,13 @@ app.get('/all-mail', async (req, res) => {
       const cached = heroByDomain.get(domain) ?? null;
       return {
         ...m,
+        // Decoded on the way out as well as on the way in. The quotes already
+        // stored were written before the entity table was worth the name, and
+        // re-interpreting two hundred messages to fix punctuation would be a
+        // paid model call per card for a string replacement.
+        quote:              m.quote ? decodeEntities(m.quote) : m.quote,
+        summary:            m.summary ? decodeEntities(m.summary) : m.summary,
+        subject:            m.subject ? decodeEntities(m.subject) : m.subject,
         avatarUri:          resolveAvatarUri({ sender: { domain } }),
         avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
         interpreted:        m.aiStatus === 'done',

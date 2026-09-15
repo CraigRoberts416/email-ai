@@ -29,7 +29,11 @@ struct ActionRow: View {
     /// gaps. With `Space.xl` between them that is 316pt against 361pt of usable
     /// width — tight, and gone the moment the type grows. The gaps give ground
     /// before the targets do.
-    private var spacing: CGFloat { typeSize >= .xxxLarge ? Space.md : Space.xl }
+    /// Six 44pt targets are 264pt, and the card's measure is 358. That leaves
+    /// 94 for five gaps, so 20 does not fit and the archive glyph was clipped
+    /// off the right edge of every post. 16 fits with room; the gaps give
+    /// ground before the targets do.
+    private var spacing: CGFloat { typeSize >= .xxxLarge ? Space.sm : Space.lg }
     /// At accessibility sizes no arrangement of five 44pt glyphs fits, so the
     /// row collapses to one labelled menu rather than clipping, or wrapping
     /// into something that no longer reads as a footer.
