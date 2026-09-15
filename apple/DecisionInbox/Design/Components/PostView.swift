@@ -471,11 +471,17 @@ struct PostView: View {
 
     private var header: some View {
         HStack(alignment: stackedHeader ? .top : .center, spacing: Space.md) {
-            Button(action: onProfile) {
-                AvatarView(sender: message.sender, size: Metric.avatar)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(message.sender.displayName), open sender")
+            // A high-priority tap, not a Button.
+            //
+            // The whole card carries `.onTapGesture` so it can open the thread
+            // without blocking the scroll, and an ancestor tap gesture beats a
+            // descendant Button — so tapping a sender's avatar opened the
+            // thread instead of the sender, silently, on every post. Claiming
+            // the tap explicitly is what puts the profile back within reach.
+            AvatarView(sender: message.sender, size: Metric.avatar)
+                .contentShape(.circle)
+                .highPriorityGesture(TapGesture().onEnded { onProfile() })
+                .accessibilityLabel("\(message.sender.displayName), open sender")
 
             // At accessibility sizes the identity line stacks: laid out
             // horizontally, a `lineLimit(1)` name beside a non-compressing

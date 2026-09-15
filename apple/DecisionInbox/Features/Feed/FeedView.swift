@@ -198,6 +198,11 @@ struct FeedView: View {
             }
             .background(Ink.surface)
             .navigationBarHidden(true)
+            // The sender. `profile` was being set by every avatar tap and
+            // observed by nothing — the screen existed, was built, was styled,
+            // and could not be reached from the feed at all. Search had this
+            // destination; the feed never did.
+            .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
             .navigationDestination(item: $open) { message in
                 ThreadView(message: message)
                     // Delivers the post lifting and expanding into the dark
