@@ -957,6 +957,25 @@ app.get('/messages/:messageId/image', async (req, res) => {
     let mime = type;
     try {
       const sharp = require('sharp');
+
+      // The only place in the pipeline that sees actual pixels, and therefore
+      // the only place that can catch what a URL cannot say. Medium's digest
+      // picture is `miro.medium.com/max/1200/4*pUIf…png` — nothing in that
+      // name suggests it is a wordmark, and it arrived on the card as a
+      // hard-cropped fragment reading "Dail".
+      //
+      // Writing the empty string is what makes this self-healing: the next
+      // /feed drops the picture from the card entirely and the post falls
+      // back to text, rather than showing a grey band forever.
+      const meta = await sharp(raw).metadata();
+      const w = meta.width ?? 0;
+      const h = meta.height ?? 0;
+      if (w && h && (Math.max(w / h, h / w) > 3 || Math.min(w, h) < 180)) {
+        await messageStore.setImageUrl(userId, messageId, '');
+        console.log(`[email-image] rejected ${w}x${h} for ${messageId} — not a photograph`);
+        return res.status(404).end();
+      }
+
       bytes = await sharp(raw)
         .resize(EMAIL_IMAGE_WIDTH, null, { withoutEnlargement: true })
         .webp({ quality: 80 })
