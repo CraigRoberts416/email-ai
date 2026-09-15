@@ -48,7 +48,8 @@ struct SearchView: View {
                                     // A found post behaves like a feed post.
                                     // The avatar was inert here only because
                                     // this call site never passed the handler.
-                                    onProfile: { profile = message.sender }
+                                    onProfile: { profile = message.sender },
+                                    onReact: { store.react(message, $0) }
                                 )
                             }
                         }

@@ -24,6 +24,8 @@ struct PostView: View {
     var onUnsubscribe: () -> Void = {}
     /// Tapping the avatar or the name opens the sender, not the message.
     var onProfile: () -> Void = {}
+    /// Nil clears the reaction.
+    var onReact: (String?) -> Void = { _ in }
     /// Reported at the start and end of a horizontal swipe so the feed can
     /// suppress the new-posts pill: a new object entering the frame under an
     /// active gesture competes with the dominant event.
@@ -456,7 +458,8 @@ struct PostView: View {
                 onForward: onForward,
                 onSave: onSave,
                 onArchive: onArchive,
-                onUnsubscribe: onUnsubscribe
+                onUnsubscribe: onUnsubscribe,
+                onReact: onReact
             )
             .padding(.horizontal, Metric.gutter)
             .padding(.top, Space.xl)

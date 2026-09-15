@@ -88,6 +88,7 @@ struct FeedView: View {
                                     onArchive: { store.archive(message) },
                                     onUnsubscribe: { store.unsubscribe(from: message) },
                                     onProfile: { profile = message.sender },
+                                    onReact: { store.react(message, $0) },
                                     onSwiping: { swiping = $0 }
                                 )
                                 .opacity(admitted.contains(message.id) ? 0 : 1)

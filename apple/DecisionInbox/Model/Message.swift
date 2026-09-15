@@ -125,6 +125,9 @@ struct Message: Identifiable, Hashable {
 
     var isRead: Bool
     var isSaved: Bool = false
+    /// The emoji the reader put on this message. Local to them — nothing is
+    /// sent to the sender. See `ActionRow.react`.
+    var reaction: String?
     var threadCount: Int
     var unsubscribeURL: URL?
     /// The model's own verdict on whether this asks something of you. Drives

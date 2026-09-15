@@ -19,6 +19,8 @@ struct ActionRow: View {
     var onSave: () -> Void = {}
     var onArchive: () -> Void = {}
     var onUnsubscribe: () -> Void = {}
+    /// Nil clears it.
+    var onReact: (String?) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -60,13 +62,16 @@ struct ActionRow: View {
                 }
                 .buttonStyle(TapStyle())
 
+                react
                 actOn("sparkles", label: "Discuss", action: onDiscuss)
             } else {
-                // "React" used to sit here calling an empty closure on every
-                // non-promotional post. A visible control that does nothing is
-                // worse than an absent one, and reactions need a product
-                // decision before they need a motion one — so it is removed
-                // rather than faked. Restoring it is a one-line change.
+                // React leads, per `EmailCardActions` — its Left Actions group
+                // has four slots and the icon component's own glyph layer is
+                // named React. I had dropped it on the grounds that reactions
+                // needed a product decision first; the spec had already made
+                // one, and the card was diverging from the file rather than
+                // waiting on anything.
+                react
                 actOn("arrowshape.turn.up.left", label: "Reply", action: onReply)
                 actOn("arrowshape.turn.up.right", label: "Forward", action: onForward)
                 actOn("sparkles", label: "Discuss", action: onDiscuss)
@@ -102,6 +107,45 @@ struct ActionRow: View {
             .contentShape(.rect)
         }
     }
+
+    /// React.
+    ///
+    /// It marks the message here and sends nothing. A reaction that quietly
+    /// emailed a thumbs-up to the sender would be the app speaking in the
+    /// user's name from a single tap on a scrolling feed, and nothing else in
+    /// this product does that — Send has a composer and an undo window in
+    /// front of it. If reactions should reach the other person, that wants the
+    /// same treatment rather than this control.
+    ///
+    /// Once set, the chosen emoji replaces the glyph: the state is the mark
+    /// itself, which is the cheapest possible indicator and cannot disagree
+    /// with the thing it reports.
+    @ViewBuilder private var react: some View {
+        Menu {
+            ForEach(Self.reactions, id: \.self) { emoji in
+                Button(emoji) { onReact(emoji) }
+            }
+            if message.reaction != nil {
+                Divider()
+                Button("Remove reaction", role: .destructive) { onReact(nil) }
+            }
+        } label: {
+            Group {
+                if let reaction = message.reaction {
+                    Text(reaction).font(.system(size: 17))
+                } else {
+                    Image(systemName: "face.smiling")
+                        .font(.system(size: Metric.iconAction))
+                        .foregroundStyle(Ink.secondary)
+                }
+            }
+            .frame(width: Metric.tapTarget, height: Metric.tapTarget)
+            .contentShape(.rect)
+        }
+        .accessibilityLabel(message.reaction.map { "Reacted \($0). Change reaction" } ?? "React")
+    }
+
+    private static let reactions = ["\u{1F44D}", "\u{2705}", "\u{1F440}", "\u{1F389}", "\u{1F614}", "\u{2757}"]
 
     /// Acting on the message.
     private func actOn(

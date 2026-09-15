@@ -232,6 +232,7 @@ final class FeedStore {
             messages = messages.map { existing in
                 guard var updated = byID[existing.id] else { return existing }
                 updated.isSaved = existing.isSaved
+                updated.reaction = existing.reaction
                 updated.isRead = existing.isRead || updated.isRead
                 return updated
             }
@@ -516,6 +517,16 @@ final class FeedStore {
               !messages[i].isRead else { return }
         messages[i].isRead = true
         Task { try? await client(message.mailboxID).markRead(message.id) }
+    }
+
+    /// Marks a message with an emoji, or clears it. Nothing leaves the device.
+    func react(_ message: Message, _ emoji: String?) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        messages[index].reaction = emoji
+        // A reaction is an accepted value change, so it earns a cue — but only
+        // on setting one. Clearing is a correction, and a correction that
+        // announces itself as loudly as the decision reads as an error.
+        if emoji != nil { Haptics.detent() }
     }
 
     func toggleSaved(_ message: Message) {
