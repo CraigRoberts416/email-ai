@@ -123,4 +123,35 @@ function pickHeroImage(html) {
   return candidates[0].url;
 }
 
-module.exports = { extractHtml, pickHeroImage };
+// ─── Signed URLs ──────────────────────────────────────────────────────────
+//
+// AsyncImage sends no Authorization header — it is a URL loader, not an API
+// client — so a Bearer-gated image endpoint 401s on every card and the feed
+// renders empty grey bands where the pictures should be. The URL has to carry
+// its own proof.
+//
+// It is an HMAC over (user, message) and NOT the user id itself: an id in a
+// query string ends up in logs, referrers and screenshots, and this one is
+// stable for the life of the account. The server finds candidate rows by
+// message id and accepts the one whose signature matches, so the URL proves
+// possession without naming anybody.
+//
+// Keyed on OPENAI_API_KEY rather than a new secret so there is nothing to
+// forget to set: it is already required for the app to work at all, it never
+// leaves the server, and it is used here only as HMAC key material.
+const crypto = require('crypto');
+
+function signImage(userId, messageId) {
+  const secret = process.env.IMAGE_URL_SECRET || process.env.OPENAI_API_KEY || '';
+  return crypto.createHmac('sha256', secret)
+    .update(`${userId}:${messageId}`)
+    .digest('base64url')
+    .slice(0, 22);
+}
+
+function buildImageUrl(host, userId, messageId) {
+  const token = signImage(userId, messageId);
+  return `https://${host}/messages/${encodeURIComponent(messageId)}/image?t=${token}`;
+}
+
+module.exports = { extractHtml, pickHeroImage, signImage, buildImageUrl };

@@ -25,6 +25,7 @@ const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
 const heroImage        = require('./heroImageGenerator');
 const emailImage       = require('./emailImage');
+const crypto           = require('crypto');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const unsubscribeCopy  = require('./unsubscribeCopy');
 const { cleanEmailForAI } = require('./emailCleaner');
@@ -846,9 +847,7 @@ app.get('/feed', async (req, res) => {
         // The message's own picture, proxied. Present only when the email
         // actually carried one worth showing — the card falls back to the
         // sender's hero rather than inventing something.
-        imageUrl:           m.imageUrl
-          ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}/image`
-          : null,
+        imageUrl:           m.imageUrl ? emailImage.buildImageUrl(req.get('host'), userId, m.messageId) : null,
       };
     });
 
@@ -912,11 +911,24 @@ const EMAIL_IMAGE_WIDTH = 900;
 const EMAIL_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
 
 app.get('/messages/:messageId/image', async (req, res) => {
-  const userId = await resolveUserId(req);
-  if (!userId) return res.status(401).end();
+  const { messageId } = req.params;
+  const token = typeof req.query.t === 'string' ? req.query.t : '';
 
-  const key = `${userId}:${req.params.messageId}`;
   try {
+    // Either proof works: a signed URL (what the feed hands out) or a Bearer
+    // token (what an API client would send).
+    let userId = await resolveUserId(req);
+    if (!userId && token) {
+      const owners = await messageStore.getMessageOwners(messageId);
+      userId = owners.find(id => {
+        const expected = emailImage.signImage(id, messageId);
+        return expected.length === token.length &&
+          crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(token));
+      }) ?? null;
+    }
+    if (!userId) return res.status(401).end();
+
+    const key = `${userId}:${messageId}`;
     if (emailImageCache.has(key)) {
       const hit = emailImageCache.get(key);
       res.setHeader('Content-Type', hit.mime);
@@ -924,7 +936,7 @@ app.get('/messages/:messageId/image', async (req, res) => {
       return res.send(hit.bytes);
     }
 
-    const record = await messageStore.getMessage(userId, req.params.messageId);
+    const record = await messageStore.getMessage(userId, messageId);
     if (!record?.imageUrl) return res.status(404).end();
 
     const upstream = await fetch(record.imageUrl, {
@@ -952,7 +964,7 @@ app.get('/messages/:messageId/image', async (req, res) => {
       mime = 'image/webp';
     } catch (err) {
       // An animated GIF or an SVG we cannot re-encode still deserves to show.
-      console.warn(`[email-image] resize failed for ${req.params.messageId}: ${err.message}`);
+      console.warn(`[email-image] resize failed for ${messageId}: ${err.message}`);
     }
 
     emailImageCache.set(key, { bytes, mime });
@@ -1095,9 +1107,7 @@ app.get('/all-mail', async (req, res) => {
         // The message's own picture, proxied. Present only when the email
         // actually carried one worth showing — the card falls back to the
         // sender's hero rather than inventing something.
-        imageUrl:           m.imageUrl
-          ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}/image`
-          : null,
+        imageUrl:           m.imageUrl ? emailImage.buildImageUrl(req.get('host'), userId, m.messageId) : null,
       };
     });
 

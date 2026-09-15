@@ -52,9 +52,10 @@ async function processNext(userId) {
         // phone would fetch the sender's CDN directly and announce itself.
         const base = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
         if (base) {
+          const host = base.replace(/^https?:\/\//, '').replace(/\/$/, '');
           _emitSSE(userId, {
             type: 'field-complete', messageId, field: 'imageUrl',
-            value: `${base.replace(/\/$/, '')}/messages/${encodeURIComponent(messageId)}/image`,
+            value: emailImage.buildImageUrl(host, userId, messageId),
           });
         }
       }

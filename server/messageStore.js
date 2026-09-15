@@ -208,6 +208,17 @@ async function setRiskVerdict(userId, messageId, { level, evidence }) {
 /// what the feed actually draws on and capped, because each one costs a Gmail
 /// round trip for the full body — the whole backlog would be tens of thousands
 /// of fetches to decorate mail nobody will scroll to.
+/// Every account holding a message with this id. Used to verify a signed
+/// image URL without the id of the person it belongs to appearing in it.
+/// Practically always one row.
+async function getMessageOwners(messageId) {
+  const { rows } = await query(
+    'SELECT user_id FROM messages WHERE message_id = $1',
+    [messageId]
+  );
+  return rows.map(r => r.user_id);
+}
+
 async function getMessageIdsNeedingImageBackfill(userId, limit = 400) {
   const { rows } = await query(`
     SELECT message_id FROM messages
@@ -231,6 +242,6 @@ module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, setImageUrl, getMessageIdsNeedingUnsubscribeBackfill,
-  getMessageIdsNeedingImageBackfill,
+  getMessageIdsNeedingImageBackfill, getMessageOwners,
   setRiskVerdict,
 };
