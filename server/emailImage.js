@@ -20,10 +20,16 @@ const FURNITURE = [
   'youtube', 'tiktok', 'pinterest', 'app-store', 'appstore', 'google-play',
   'googleplay', 'playstore', 'divider', 'border', 'bullet', 'arrow', 'star',
   'sprite', 'emoji', 'avatar', 'signature',
+  // Masthead strips. A "header" image is the brand's name set in type, which
+  // is the one thing the generated hero already does better — and West Elm's
+  // was picked as this email's picture until it was listed here.
+  'banner', 'header', 'masthead', 'preheader', 'nav-', 'wordmark',
 ];
 
 /// Declared dimensions below this are decoration at best and a beacon at worst.
 const MIN_EDGE = 180;
+/// Wider than this is a rule, a strip, or a masthead — not a photograph.
+const MAX_ASPECT = 3;
 
 function decodeBody(data) {
   if (!data) return '';
@@ -39,6 +45,15 @@ function extractHtml(payload) {
     if (found) return found;
   }
   return '';
+}
+
+/// Dimensions baked into a filename, as in `EM_Header_WE-Main_700x114.jpg`.
+/// Bulk senders name their assets this way constantly, and it is often the
+/// only size information in the document — the <img> itself carries none.
+function edgesFromUrl(url) {
+  const match = url.match(/(\d{2,4})\s*[x×]\s*(\d{2,4})(?=\D|$)/i);
+  if (!match) return null;
+  return { width: Number(match[1]), height: Number(match[2]) };
 }
 
 function attr(tag, name) {
@@ -77,10 +92,21 @@ function pickHeroImage(html) {
     const lower = url.toLowerCase();
     if (FURNITURE.some(word => lower.includes(word))) continue;
 
-    const width = declaredEdge(tag, 'width');
-    const height = declaredEdge(tag, 'height');
+    // GIFs are the native format of the tracking pixel, and a real hero
+    // photograph is never one. The Democratic Party's beacon —
+    // `o.gif?akid=9158…` — cleared every other test here and was chosen as
+    // that email's picture, which would have made the feed fire a read
+    // receipt while rendering it.
+    if (/\.gif(\?|$)/i.test(lower)) continue;
+
+    const fromName = edgesFromUrl(lower);
+    const width = declaredEdge(tag, 'width') ?? fromName?.width ?? null;
+    const height = declaredEdge(tag, 'height') ?? fromName?.height ?? null;
+
     // A stated size that is small is a real answer, and the answer is no.
     if ((width !== null && width < MIN_EDGE) || (height !== null && height < MIN_EDGE)) continue;
+    // A known shape that is a long thin strip is a masthead, not a picture.
+    if (width && height && Math.max(width / height, height / width) > MAX_ASPECT) continue;
 
     candidates.push({ url, area: (width ?? 0) * (height ?? 0), stated: width !== null });
   }

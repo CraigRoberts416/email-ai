@@ -90,6 +90,20 @@ async function runMigrations() {
     console.log(`[db] dropped ${dropped.rowCount} hero asset(s) from the still-life prompt`);
   }
 
+  // The first extraction pass ran before the filter knew about tracking GIFs
+  // and masthead strips, and it chose both: a DNC beacon and a 700x114 West
+  // Elm header were sitting in the feed as "this email's picture". Clearing
+  // them lets the backfill re-decide with the stricter rules. Costs Gmail
+  // fetches, not model calls, and is bounded by the same 400.
+  const recheck = await pool.query(`
+    UPDATE messages SET image_url = NULL
+    WHERE image_url IS NOT NULL
+      AND (image_url ~* '\\.gif(\\?|$)' OR image_url ~* '(banner|header|masthead|preheader|wordmark)')
+  `);
+  if (recheck.rowCount) {
+    console.log(`[db] cleared ${recheck.rowCount} misidentified email picture(s) for re-extraction`);
+  }
+
   // Re-queue only what the feed actually draws on. The rest of that batch is
   // pre-cutoff backlog going back to 2023 that the product deliberately does
   // not interpret, and re-queueing it would buy nothing and cost ~19,000
