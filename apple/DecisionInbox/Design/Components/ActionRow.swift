@@ -45,37 +45,21 @@ struct ActionRow: View {
 
     private var row: some View {
         HStack(spacing: spacing) {
-            if message.isPromotion {
-                // Nobody replies to a newsletter, so unsubscribe takes the slot.
-                Button(action: filed(onUnsubscribe)) {
-                    HStack(spacing: Space.xs) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13))
-                        Text("Unsubscribe")
-                            .typeStyle(Style.bodySmall)
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(Ink.primary)
-                    .padding(.horizontal, Space.md)
-                    .padding(.vertical, 6)
-                    .overlay(Capsule().strokeBorder(Ink.primary, lineWidth: 1))
-                }
-                .buttonStyle(TapStyle())
-
-                react
-                actOn("sparkles", label: "Discuss", action: onDiscuss)
-            } else {
-                // React leads, per `EmailCardActions` — its Left Actions group
-                // has four slots and the icon component's own glyph layer is
-                // named React. I had dropped it on the grounds that reactions
-                // needed a product decision first; the spec had already made
-                // one, and the card was diverging from the file rather than
-                // waiting on anything.
-                react
-                actOn("arrowshape.turn.up.left", label: "Reply", action: onReply)
-                actOn("arrowshape.turn.up.right", label: "Forward", action: onForward)
-                actOn("sparkles", label: "Discuss", action: onDiscuss)
-            }
+            // The same four actions on every post, promotion or not.
+            //
+            // Unsubscribe used to take this row's first slots on promotional
+            // mail, which made a marketing post structurally different from
+            // every other one — the opposite of one card — and put a
+            // list-management control in the row that acts on the
+            // conversation. It lives in the header now, next to the sender it
+            // actually concerns.
+            react
+            // `arrow.turn.up.left/right`, read from the glyphs in the file
+            // rather than picked by eye — arrowshape is the filled-body arrow
+            // and this row is drawn in the thin one.
+            actOn("arrow.turn.up.left", label: "Reply", action: onReply)
+            actOn("arrow.turn.up.right", label: "Forward", action: onForward)
+            discuss
 
             Spacer(minLength: 0)
 
@@ -84,15 +68,22 @@ struct ActionRow: View {
         }
     }
 
+    /// At accessibility sizes no arrangement of six 44pt targets fits, so the
+    /// row collapses to one labelled menu rather than clipping or wrapping
+    /// into something that no longer reads as a footer.
     private var collapsedMenu: some View {
         Menu {
-            if message.isPromotion {
-                Button("Unsubscribe", systemImage: "xmark", action: filed(onUnsubscribe))
-            } else {
-                Button("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
-                Button("Forward", systemImage: "arrowshape.turn.up.right", action: onForward)
-            }
+            Button("Reply", systemImage: "arrowshape.turn.up.left", action: onReply)
+            Button("Forward", systemImage: "arrowshape.turn.up.right", action: onForward)
             Button("Discuss", systemImage: "sparkles", action: onDiscuss)
+            Menu("React") {
+                ForEach(Self.reactions, id: \.self) { emoji in
+                    Button(emoji) { onReact(emoji) }
+                }
+                if message.reaction != nil {
+                    Button("Remove reaction", role: .destructive) { onReact(nil) }
+                }
+            }
             Button(message.isSaved ? "Unsave" : "Save",
                    systemImage: message.isSaved ? "bookmark.fill" : "bookmark", action: filed(onSave))
             Button("Archive", systemImage: "archivebox", action: filed(onArchive))
@@ -106,6 +97,36 @@ struct ActionRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.rect)
         }
+    }
+
+    /// Discuss, carrying the thread's message count.
+    ///
+    /// The spec's AI Button is a glyph plus a text layer named "Message
+    /// Count", so the number is the size of the thread you would be asking
+    /// about. It is shown only when there is more than one message: a "1"
+    /// beside every single-message post is noise, and a 0 would be a count of
+    /// something that does not exist.
+    @ViewBuilder private var discuss: some View {
+        Button(action: onDiscuss) {
+            HStack(spacing: Space.xxs) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: Metric.iconAction))
+                if message.threadCount > 1 {
+                    Text("\(message.threadCount)")
+                        .typeStyle(Style.monoMicro)
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(Ink.secondary)
+            .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityLabel(
+            message.threadCount > 1
+                ? "Discuss, \(message.threadCount) messages in thread"
+                : "Discuss"
+        )
     }
 
     /// React.

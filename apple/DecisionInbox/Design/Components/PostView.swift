@@ -497,6 +497,27 @@ struct PostView: View {
                 if let tag { tagChip(tag) }
             }
 
+            // Unsubscribe belongs to the sender, so it sits on the sender's
+            // line. In the action row it took the first slots on promotional
+            // mail, which made a marketing post structurally different from
+            // every other one and put a list-management control among actions
+            // that are about the conversation.
+            if message.isPromotion {
+                Button(action: filed(onUnsubscribe)) {
+                    Text("Unsubscribe")
+                        .typeStyle(Style.chip)
+                        .foregroundStyle(Ink.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, Space.md)
+                        .padding(.vertical, 5)
+                        .overlay(Capsule().strokeBorder(Ink.border, lineWidth: 1))
+                        .contentShape(.rect)
+                }
+                .buttonStyle(TapStyle())
+                .layoutPriority(1)
+                .accessibilityLabel("Unsubscribe from \(message.sender.displayName)")
+            }
+
             // The slot the overflow menu is overlaid into. The control itself
             // sits outside the button so it can take its own taps.
             Color.clear.frame(width: 15, height: 15)
