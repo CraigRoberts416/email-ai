@@ -848,6 +848,17 @@ app.get('/feed', async (req, res) => {
         // actually carried one worth showing — the card falls back to the
         // sender's hero rather than inventing something.
         imageUrl:           m.imageUrl ? emailImage.buildImageUrl(req.get('host'), userId, m.messageId) : null,
+        // Metadata only. An image attachment gets a signed thumbnail URL; a
+        // document gets none, because there is nothing to show and the tile
+        // states its type instead of drawing a fake page.
+        attachments:        (m.attachments ?? []).map(a => ({
+          ...a,
+          previewUrl: a.isImage
+            ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
+              + `/attachments/${encodeURIComponent(a.id)}`
+              + `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`
+            : null,
+        })),
       };
     });
 
@@ -998,6 +1009,63 @@ app.get('/messages/:messageId/image', async (req, res) => {
   }
 });
 
+/// An image attachment's thumbnail, fetched from Gmail on demand.
+///
+/// Same capability model as the email-picture proxy: the URL carries an HMAC
+/// over (user, message, attachment) rather than any identifier, and the bytes
+/// never touch the device until someone looks. Nothing is cached in the
+/// database — these are the user's own files, and a copy is a liability the
+/// product has no reason to hold.
+app.get('/messages/:messageId/attachments/:attachmentId', async (req, res) => {
+  const { messageId, attachmentId } = req.params;
+  const token = typeof req.query.t === 'string' ? req.query.t : '';
+
+  try {
+    let userId = await resolveUserId(req);
+    if (!userId && token) {
+      const owners = await messageStore.getMessageOwners(messageId);
+      userId = owners.find(id => {
+        const expected = emailImage.signImage(id, `${messageId}:${attachmentId}`);
+        return expected.length === token.length &&
+          crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(token));
+      }) ?? null;
+    }
+    if (!userId) return res.status(401).end();
+
+    const accessToken = await userStore.getValidAccessToken(userId);
+    const upstream = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}`
+        + `/attachments/${encodeURIComponent(attachmentId)}`,
+      { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(12000) }
+    );
+    if (!upstream.ok) return res.status(404).end();
+
+    const { data } = await upstream.json();
+    if (!data) return res.status(404).end();
+    const raw = Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+
+    let bytes = raw;
+    let mime = 'image/jpeg';
+    try {
+      const sharp = require('sharp');
+      bytes = await sharp(raw)
+        .resize(400, 400, { fit: 'cover', position: 'attention' })
+        .webp({ quality: 78 })
+        .toBuffer();
+      mime = 'image/webp';
+    } catch (err) {
+      console.warn(`[attachment] resize failed for ${attachmentId}: ${err.message}`);
+    }
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.send(bytes);
+  } catch (err) {
+    console.warn('[attachment] error:', err.message);
+    res.status(404).end();
+  }
+});
+
 // Hero image — streams cached per-domain image bytes from DB
 // Hero images are generated at full size and stored that way, which is right
 // for the archive and wrong for the wire: they run 1.6-2.9 MB as PNG. A phone
@@ -1127,6 +1195,17 @@ app.get('/all-mail', async (req, res) => {
         // actually carried one worth showing — the card falls back to the
         // sender's hero rather than inventing something.
         imageUrl:           m.imageUrl ? emailImage.buildImageUrl(req.get('host'), userId, m.messageId) : null,
+        // Metadata only. An image attachment gets a signed thumbnail URL; a
+        // document gets none, because there is nothing to show and the tile
+        // states its type instead of drawing a fake page.
+        attachments:        (m.attachments ?? []).map(a => ({
+          ...a,
+          previewUrl: a.isImage
+            ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
+              + `/attachments/${encodeURIComponent(a.id)}`
+              + `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`
+            : null,
+        })),
       };
     });
 

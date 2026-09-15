@@ -425,6 +425,13 @@ struct PostView: View {
                     .accessibilityHidden(true)
             }
 
+            // Breaks the gutter like the picture does, because it is the same
+            // kind of thing: content the sender supplied, not a label we wrote.
+            if !message.attachments.isEmpty {
+                AttachmentCarousel(attachments: message.attachments, onOpenThread: onOpen)
+                    .padding(.top, Space.lg)
+            }
+
             // Shown whenever there is something to click, rather than only on
             // a density that no longer exists.
             if let label = message.actionLabel, !label.isEmpty {

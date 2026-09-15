@@ -23,6 +23,7 @@ function rowToRecord(row) {
     riskLevel:         row.risk_level ?? 'none',
     riskEvidence:      row.risk_evidence ?? [],
     imageUrl:          row.image_url ?? null,
+    attachments:       row.attachments ?? [],
   };
 }
 
@@ -218,6 +219,15 @@ async function setImageUrl(userId, messageId, url) {
   );
 }
 
+/// The files this message carried, as Gmail described them. Written once
+/// during interpretation; the bytes are never stored.
+async function setAttachments(userId, messageId, attachments) {
+  await query(
+    'UPDATE messages SET attachments = $3 WHERE user_id = $1 AND message_id = $2',
+    [userId, messageId, JSON.stringify(attachments ?? [])]
+  );
+}
+
 async function setUnsubscribeUrl(userId, messageId, url) {
   await query(
     'UPDATE messages SET unsubscribe_url = $3 WHERE user_id = $1 AND message_id = $2',
@@ -272,7 +282,7 @@ async function getMessageIdsNeedingUnsubscribeBackfill(userId) {
 module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
-  setUnsubscribeUrl, setImageUrl, getMessageIdsNeedingUnsubscribeBackfill,
+  setUnsubscribeUrl, setImageUrl, setAttachments, getMessageIdsNeedingUnsubscribeBackfill,
   getMessageIdsNeedingImageBackfill, getMessageOwners,
   setRiskVerdict,
 };

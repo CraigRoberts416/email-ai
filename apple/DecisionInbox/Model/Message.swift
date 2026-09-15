@@ -117,6 +117,12 @@ struct Message: Identifiable, Hashable {
     /// both exist this one wins.
     var imageURL: URL?
 
+    /// Files the email actually carried. Rendered as a scrolling row under the
+    /// summary — attachments are objects in their own right, not a property of
+    /// the body text, which is why they are a field here rather than a
+    /// `PostShape` case competing with the picture.
+    var attachments: [Attachment] = []
+
     var isRead: Bool
     var isSaved: Bool = false
     var threadCount: Int

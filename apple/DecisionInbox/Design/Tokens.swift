@@ -309,6 +309,12 @@ enum Style {
     )
 
     /// Row subtitles on the roomier list screens.
+    /// A document's type, stated at the size a thumbnail would have been.
+    static let documentType = TypeStyle(
+        font: .custom(Face.monoMedium, size: 20, relativeTo: .title3),
+        tracking: 1, lineSpacing: 0, size: 20
+    )
+
     static let monoCaption = TypeStyle(
         font: .custom(Face.mono, size: 11, relativeTo: .caption2),
         tracking: 0, lineSpacing: 0

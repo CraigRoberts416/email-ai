@@ -81,9 +81,23 @@ struct APIClient {
         /// server. Distinct from the hero, which stands for the sender in
         /// general — this one is about *this* message.
         let imageUrl: String?
+        /// Files the email carried. Metadata only — an image gets a signed
+        /// thumbnail URL, a document gets none because there is nothing to
+        /// show.
+        let attachments: [AttachmentWire]?
         /// `none` or `possible_scam`. Only ever set when the server could also
         /// say why — a flag it cannot explain is downgraded server-side.
         let riskLevel: String?
+    }
+
+    struct AttachmentWire: Codable {
+        let id: String
+        let filename: String
+        let mimeType: String?
+        let byteCount: Int?
+        let isImage: Bool?
+        let pages: Int?
+        let previewUrl: String?
     }
 
     // MARK: Requests
@@ -313,6 +327,20 @@ extension APIClient.Card {
             heroImageURL: heroImageUrl.flatMap(URL.init(string:)),
             heroBackground: heroImageBgColor,
             imageURL: imageUrl.flatMap(URL.init(string:)),
+            attachments: (attachments ?? []).map { wire in
+                Attachment(
+                    id: wire.id,
+                    filename: wire.filename,
+                    byteCount: wire.byteCount ?? 0,
+                    // A document shows its type rather than a drawn page: the
+                    // page count is not in the metadata Gmail returns, and a
+                    // number we did not count is not one to print.
+                    preview: (wire.isImage == true)
+                        ? (wire.previewUrl.flatMap(URL.init(string:)).map(Attachment.Preview.image)
+                            ?? .document(pages: 0))
+                        : .document(pages: wire.pages ?? 0)
+                )
+            },
             isRead: !(labelIds ?? []).contains("UNREAD"),
             isSaved: false,
             threadCount: 1,

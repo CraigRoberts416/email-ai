@@ -95,6 +95,13 @@ async function runMigrations() {
   // Elm header were sitting in the feed as "this email's picture". Clearing
   // them lets the backfill re-decide with the stricter rules. Costs Gmail
   // fetches, not model calls, and is bounded by the same 400.
+  // The files an email carried. JSONB rather than a join table: it is a
+  // handful of rows read only alongside their message, and never queried
+  // across messages.
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB
+  `);
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written

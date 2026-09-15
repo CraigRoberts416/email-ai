@@ -2,6 +2,7 @@ const messageStore    = require('./messageStore');
 const gmailSync       = require('./gmailSync');
 const { cleanEmailForAI } = require('./emailCleaner');
 const emailImage      = require('./emailImage');
+const emailAttachments = require('./emailAttachments');
 
 // Injected by index.js to avoid circular imports
 let _streamInterpretEmail     = null;
@@ -65,6 +66,16 @@ async function processNext(userId) {
       }
     } catch (err) {
       console.warn(`[worker] image extract failed on ${messageId}: ${err.message}`);
+    }
+
+    // The files, as metadata only. An email with a signed contract on it used
+    // to look identical to one carrying nothing, and "did they actually send
+    // it" is one of the few questions a mail client exists to answer.
+    try {
+      const files = emailAttachments.extractAttachments(rawMsg.payload);
+      if (files.length) await messageStore.setAttachments(userId, messageId, files);
+    } catch (err) {
+      console.warn(`[worker] attachment scan failed on ${messageId}: ${err.message}`);
     }
 
     // Save unsubscribe URL immediately — available before AI finishes

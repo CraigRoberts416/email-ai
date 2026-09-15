@@ -226,109 +226,127 @@ struct QuotedCard: View {
 // The last tile is always "open the real thread", which preserves the original
 // spec's carousel order: intent → attachments → open full email.
 
+/// The attachments on one email, as a row you scroll.
+///
+/// Built to `EmailAttachments` in the component library.
+///
+/// The dots and the "1/4" counter are gone. They were stating a page number
+/// for a row that does not page — the tiles are different widths and scroll
+/// freely — and an indicator that reports something false is worse than no
+/// indicator at all. What replaces them is the row itself: it starts on the
+/// text gutter and runs off the right edge, so a tile cut by the screen is
+/// the affordance. That is also one fewer piece of state to keep true.
 struct AttachmentCarousel: View {
     let attachments: [Attachment]
     var onOpenThread: () -> Void = {}
 
-    /// The dots used to read 1/N forever: `page` was declared and never
-    /// written, and `.viewAligned` had no position binding. An indicator
-    /// stating something false is worse than no indicator.
-    @State private var scrolledID: Int?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorSchemeContrast) private var contrast
-
-    private var page: Int { scrolledID ?? 0 }
-
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
+            // Counted, and it says what it counted. A bare number between
+            // other controls has no referent.
+            Text(attachments.count == 1 ? "1 ATTACHMENT" : "\(attachments.count) ATTACHMENTS")
+                .typeStyle(Style.kicker)
+                .foregroundStyle(Ink.secondary)
+                .monospacedDigit()
+                .padding(.horizontal, Metric.gutter)
+
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: Space.sm) {
-                    ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
-                        AttachmentTile(attachment: attachment).id(index)
+                LazyHStack(alignment: .top, spacing: Space.md) {
+                    ForEach(attachments) { attachment in
+                        AttachmentTile(attachment: attachment)
                     }
-                    OpenThreadTile(action: onOpenThread).id(attachments.count)
                 }
                 .padding(.horizontal, Metric.gutter)
                 .scrollTargetLayout()
             }
+            // Rests with a tile on the gutter rather than wherever the flick
+            // ended, so the column the eye reads down stays in one place.
             .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $scrolledID)
-
-            HStack(spacing: Space.xs + 2) {
-                ForEach(0..<(attachments.count + 1), id: \.self) { index in
-                    Circle()
-                        .fill(index == page ? Ink.primary : Ink.rule(contrast == .increased))
-                        .frame(width: 5, height: 5)
-                }
-                Spacer(minLength: 0)
-                Text("\(page + 1)/\(attachments.count + 1)")
-                    .typeStyle(Style.chip)
-                    .foregroundStyle(Ink.secondary)
-                    .monospacedDigit()
-            }
-            .padding(.horizontal, Metric.gutter)
-            // No haptic on a page change. A flicked carousel is continuous and
-            // frequent, and the dots already carry it — a detented picker would
-            // earn `Haptics.detent()`; this does not.
-            .animation(Move.resolved(Move.crisp, reduceMotion), value: page)
+            .scrollClipDisabled()
         }
-    }
-}
-
-struct AttachmentTile: View {
-    let attachment: Attachment
-
-    @Environment(\.colorSchemeContrast) private var contrast
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Group {
-                switch attachment.preview {
-                case .image(let url):
-                    AsyncImage(url: url) { image in
-                        image.resizable().scaledToFill()
-                    } placeholder: {
-                        Rectangle().fill(Ink.surfaceTertiary)
-                    }
-                case .document(let pages):
-                    DocumentFirstPage(pages: pages)
-                }
-            }
-            .frame(width: Metric.carouselTile)
-            // A floor rather than a fixed share: the footer sizes itself at
-            // accessibility sizes and the preview takes whatever is left,
-            // instead of the filename clipping against a hard 375pt tile.
-            .frame(minHeight: Metric.carouselTileHeight * 0.5)
-            .frame(maxHeight: .infinity)
-            .clipped()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(attachment.filename)
-                    .typeStyle(Style.bodySmall)
-                    .foregroundStyle(Ink.primary)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                Text(attachment.sizeLabel.uppercased())
-                    .typeStyle(Style.chip)
-                    .foregroundStyle(Ink.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Space.md + 2)
-            .padding(.vertical, Space.md)
-            .background(Ink.surface)
-            .overlay(alignment: .top) { Rule() }
-        }
-        .frame(width: Metric.carouselTile)
-        .frame(minHeight: Metric.carouselTileHeight)
-        .background(Ink.surfaceTertiary)
-        .clipShape(RoundedRectangle(cornerRadius: Corner.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Corner.md, style: .continuous)
-                // Structural.
-                .strokeBorder(Ink.rule(contrast == .increased), lineWidth: 1)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(
+            attachments.count == 1
+                ? "1 attachment"
+                : "\(attachments.count) attachments"
         )
     }
 }
+
+
+/// One attachment, to `AttachmentTile` in the library.
+///
+/// A file is one of the very few things in this product that earns a
+/// container. The rule for a card is that posts are decontained; the rule for
+/// an object you can open, save and send on its own is the opposite, and an
+/// attachment is exactly that — it can move, be selected, be compared, and it
+/// carries its own actions.
+struct AttachmentTile: View {
+    let attachment: Attachment
+
+    private let edge: CGFloat = 132
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            // Square, always. The source images are every shape an email can
+            // contain, and honouring each one turns a row into a ragged mess;
+            // one ratio is what makes the set read as a set.
+            Color.clear
+                .frame(width: edge, height: edge)
+                .overlay {
+                    switch attachment.preview {
+                    case .image(let url):
+                        AsyncImage(url: url, transaction: Transaction(animation: Move.crossfade)) { phase in
+                            if case .success(let image) = phase {
+                                image.resizable().scaledToFill()
+                            } else {
+                                Ink.surfaceTertiary
+                            }
+                        }
+                    case .document(let pages):
+                        documentFace(pages: pages)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: Corner.md, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(attachment.filename)
+                    .typeStyle(Style.monoCaption)
+                    .foregroundStyle(Ink.primary)
+                    .lineLimit(1)
+                    // The extension is the half that identifies the file, so
+                    // the middle gives way rather than the end.
+                    .truncationMode(.middle)
+                Text(attachment.sizeLabel.uppercased())
+                    .typeStyle(Style.monoMicro)
+                    .foregroundStyle(Ink.tertiary)
+            }
+            .frame(width: edge, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(attachment.filename), \(attachment.sizeLabel)")
+    }
+
+    /// No thumbnail exists for a document, so the tile states what it is
+    /// rather than drawing a fake page. The extension and the page count are
+    /// both counted facts, which is why they are mono.
+    private func documentFace(pages: Int) -> some View {
+        VStack(spacing: Space.xs) {
+            Text(attachment.filename.split(separator: ".").last.map { String($0).uppercased() } ?? "FILE")
+                .typeStyle(Style.documentType)
+                .foregroundStyle(Ink.primary)
+            if pages > 0 {
+                Text(pages == 1 ? "1 PAGE" : "\(pages) PAGES")
+                    .typeStyle(Style.monoMicro)
+                    .foregroundStyle(Ink.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Ink.surfaceTertiary)
+    }
+}
+
 
 /// A suggestion of the document's first page rather than a file-type badge.
 private struct DocumentFirstPage: View {
