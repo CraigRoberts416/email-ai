@@ -24,6 +24,7 @@ const gmailSync        = require('./gmailSync');
 const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
 const heroImage        = require('./heroImageGenerator');
+const emailImage       = require('./emailImage');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const unsubscribeCopy  = require('./unsubscribeCopy');
 const { cleanEmailForAI } = require('./emailCleaner');
@@ -1603,6 +1604,43 @@ async function runUnsubscribeBackfill(userId) {
   }
 }
 
+/// Gives posts that were interpreted before image extraction existed the
+/// picture their email was already carrying. Without this, only mail arriving
+/// from now on would ever show one, and the feed would stay half-decorated
+/// indefinitely.
+///
+/// The empty string is written when nothing is found, so a message is examined
+/// once and never again — the same trick the unsubscribe backfill uses. A
+/// message with no picture is a fact worth remembering.
+async function runImageBackfill(userId) {
+  try {
+    const messageIds = await messageStore.getMessageIdsNeedingImageBackfill(userId);
+    if (messageIds.length === 0) return;
+
+    console.log(`[image-backfill] ${messageIds.length} message(s) to check (user: ${userId.slice(0, 8)}…)`);
+    const BATCH = 10;
+    let found = 0;
+
+    for (let i = 0; i < messageIds.length; i += BATCH) {
+      const slice = messageIds.slice(i, i + BATCH);
+      await Promise.all(slice.map(async (messageId) => {
+        try {
+          const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
+          const picture = emailImage.pickHeroImage(emailImage.extractHtml(rawMsg.payload));
+          await messageStore.setImageUrl(userId, messageId, picture ?? '');
+          if (picture) found++;
+        } catch { /* one message's picture is never worth failing the pass */ }
+      }));
+      // Gmail's per-user rate limit is the real constraint here, not ours.
+      if (i + BATCH < messageIds.length) await new Promise(r => setTimeout(r, 400));
+    }
+
+    console.log(`[image-backfill] done — ${found} picture(s) found (user: ${userId.slice(0, 8)}…)`);
+  } catch (err) {
+    console.error(`[image-backfill] error for user ${userId.slice(0, 8)}…:`, err.message);
+  }
+}
+
 // ─── Bootstrap ────────────────────────────────────────────────────────────
 
 processingWorker.init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE });
@@ -1621,6 +1659,9 @@ app.listen(PORT, () => {
     for (const user of users) {
       processingWorker.startWorker(user.user_id);
       // Non-blocking backfill — runs in background, doesn't block startup
+      runImageBackfill(user.user_id).catch(err =>
+        console.error('[startup] image backfill error:', err.message)
+      );
       runUnsubscribeBackfill(user.user_id).catch(err =>
         console.error('[startup] backfill error:', err.message)
       );

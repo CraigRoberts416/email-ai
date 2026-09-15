@@ -204,6 +204,21 @@ async function setRiskVerdict(userId, messageId, { level, evidence }) {
   );
 }
 
+/// Messages already interpreted before image extraction existed. Scoped to
+/// what the feed actually draws on and capped, because each one costs a Gmail
+/// round trip for the full body — the whole backlog would be tens of thousands
+/// of fetches to decorate mail nobody will scroll to.
+async function getMessageIdsNeedingImageBackfill(userId, limit = 400) {
+  const { rows } = await query(`
+    SELECT message_id FROM messages
+    WHERE user_id = $1 AND image_url IS NULL
+      AND ai_status = 'done' AND post_cutoff = TRUE
+    ORDER BY internal_date DESC
+    LIMIT $2
+  `, [userId, limit]);
+  return rows.map(r => r.message_id);
+}
+
 async function getMessageIdsNeedingUnsubscribeBackfill(userId) {
   const { rows } = await query(
     'SELECT message_id FROM messages WHERE user_id = $1 AND unsubscribe_url IS NULL',
@@ -216,5 +231,6 @@ module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, setImageUrl, getMessageIdsNeedingUnsubscribeBackfill,
+  getMessageIdsNeedingImageBackfill,
   setRiskVerdict,
 };
