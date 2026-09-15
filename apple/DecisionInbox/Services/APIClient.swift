@@ -240,6 +240,51 @@ enum APIError: LocalizedError {
 // here, in one place, so the views never guess.
 
 extension APIClient.Card {
+    /// Person or brand, which decides the avatar's shape and whether a
+    /// generated hero image is allowed to stand in for a missing picture.
+    ///
+    /// It used to be `promo ? .brand : .person`, meaning the only brands in
+    /// the product were the ones carrying a List-Unsubscribe header. So
+    /// "Anthropic, PBC" was filed as a human being, got a circular avatar, and
+    /// was refused the fallback image on the grounds that inventing a
+    /// photograph of a person would be a lie — correct rule, wrong subject.
+    static func senderKind(name: String?, address: String?, promo: Bool) -> Sender.Kind {
+        let name = (name ?? "").trimmingCharacters(in: .whitespaces)
+        let local = (address ?? "").split(separator: "@").first.map(String.init)?.lowercased() ?? ""
+
+        if promo { return .brand }
+        if name.isEmpty && local.isEmpty { return .unknown }
+
+        // A mailbox nobody reads belongs to a company, whatever it signs
+        // itself as. This is the strongest signal available and it is in the
+        // address rather than the display name, which senders style freely.
+        let automated = [
+            "noreply", "no-reply", "donotreply", "do-not-reply", "notification",
+            "notifications", "mailer", "mail", "support", "help", "info",
+            "hello", "team", "news", "newsletter", "updates", "update",
+            "receipts", "receipt", "billing", "invoice", "account", "accounts",
+            "alerts", "alert", "service", "contact", "admin", "automated",
+        ]
+        if automated.contains(where: { local == $0 || local.hasPrefix($0 + "-") || local.hasPrefix($0 + ".") }) {
+            return .brand
+        }
+
+        // Legal suffixes are decisive; nobody is called "PBC".
+        let lowered = name.lowercased()
+        let corporate = [" inc", " inc.", " llc", " ltd", " ltd.", " corp", " corp.",
+                         " pbc", " co.", " gmbh", " plc", " s.a.", " b.v."]
+        if corporate.contains(where: { lowered.hasSuffix($0) || lowered.contains($0 + ",") }) {
+            return .brand
+        }
+
+        // A person's display name is a given name and a family name. One word
+        // ("Vercel", "StockX") or four is a company; two or three is a person,
+        // which also lets "Maria van der Berg" through.
+        let words = name.split(separator: " ").filter { !$0.isEmpty }
+        if name.isEmpty { return .brand }
+        return (2...3).contains(words.count) ? .person : .brand
+    }
+
     func asMessage(mailboxID: String) -> Message {
         let failed = aiStatus == "error"
         let interpreting = !failed && aiStatus != "done"
@@ -252,7 +297,7 @@ extension APIClient.Card {
             sender: Sender(
                 name: fromName ?? "",
                 address: fromEmail ?? "",
-                kind: promo ? .brand : ((fromName?.isEmpty ?? true) ? .unknown : .person),
+                kind: Self.senderKind(name: fromName, address: fromEmail, promo: promo),
                 logoURL: avatarUri.flatMap(URL.init(string:))
             ),
             subject: subject ?? "",
@@ -290,7 +335,14 @@ extension APIClient.Card {
         // invented photograph attached to a human would be a lie.
         if !failed, let picture = message.imageURL {
             message.shape = .media([picture])
-        } else if !failed, promo, let hero = message.heroImageURL {
+        } else if !failed, message.sender.kind == .brand, let hero = message.heroImageURL {
+            // Roughly half of all mail carries no picture of its own — a plain
+            // receipt has nothing to show — and a feed where every other post
+            // is a block of text does not read as a feed. A brand always has
+            // its generated hero to fall back on.
+            //
+            // Still never for a person: an invented photograph attached to a
+            // human being is a lie, and the absence is the honest answer.
             message.shape = .media([hero])
         }
         return message

@@ -219,7 +219,7 @@ async function getMessageOwners(messageId) {
   return rows.map(r => r.user_id);
 }
 
-async function getMessageIdsNeedingImageBackfill(userId, limit = 400) {
+async function getMessageIdsNeedingImageBackfill(userId, limit = 1200) {
   const { rows } = await query(`
     SELECT message_id FROM messages
     WHERE user_id = $1 AND image_url IS NULL
