@@ -681,7 +681,7 @@ enum Sample {
             quote: "Can you do Thursday at 2?",
             summary: "She needs a yes or no before she books the room.",
             actionLabel: nil, actionURL: nil,
-            kicker: .needsYou, density: .standard, shape: .text,
+            kicker: .needsYou, shape: .text,
             isRead: false, threadCount: 4, unsubscribeURL: nil,
             requiresAttention: true, isInterpreting: false
         ),
@@ -694,7 +694,7 @@ enum Sample {
             summary: "A vendor charge failed this morning. Nothing retries on its own.",
             actionLabel: "Update payment method",
             actionURL: URL(string: "https://ramp.com/settings/billing"),
-            kicker: .needsYou, density: .lead, shape: .text,
+            kicker: .needsYou, shape: .text,
             isRead: false, threadCount: 1, unsubscribeURL: nil,
             requiresAttention: true, isInterpreting: false
         ),
@@ -706,7 +706,7 @@ enum Sample {
             quote: "Departure moved to 8:15 AM",
             summary: "DL204 now leaves 55 minutes earlier than booked.",
             actionLabel: "Add ticket to Apple Wallet", actionURL: nil,
-            kicker: .fyi, density: .lead, shape: .text,
+            kicker: .fyi, shape: .text,
             isRead: false, threadCount: 2, unsubscribeURL: nil, isInterpreting: false
         ),
         Message(
@@ -717,7 +717,7 @@ enum Sample {
             quote: "Your account will be locked in 24 hours",
             summary: "The domain is not chase.com. Real banks never ask you to verify through a link.",
             actionLabel: nil, actionURL: nil,
-            kicker: .possibleScam, density: .standard, shape: .text,
+            kicker: .possibleScam, shape: .text,
             isRead: false, threadCount: 1, unsubscribeURL: nil, isInterpreting: false
         ),
         Message(
@@ -727,7 +727,7 @@ enum Sample {
             receivedAt: .now.addingTimeInterval(-5 * 3600),
             quote: nil, summary: "Sale ends Sunday",
             actionLabel: nil, actionURL: nil,
-            kicker: .promotion, density: .compact, shape: .text,
+            kicker: .promotion, shape: .text,
             isRead: false, threadCount: 1,
             unsubscribeURL: URL(string: "https://nike.com/unsubscribe"), isInterpreting: false
         ),
@@ -737,7 +737,7 @@ enum Sample {
             snippet: "Tickets go on sale Tuesday.",
             receivedAt: .now.addingTimeInterval(-6 * 3600),
             quote: nil, summary: nil, actionLabel: nil, actionURL: nil,
-            kicker: .promotion, density: .standard, shape: .text,
+            kicker: .promotion, shape: .text,
             isRead: false, threadCount: 1,
             unsubscribeURL: URL(string: "https://figma.com/unsubscribe"), isInterpreting: true
         ),
@@ -749,7 +749,7 @@ enum Sample {
             quote: "Sent the signed contract over",
             summary: "Contract is done. Forward to legal when you get a minute.",
             actionLabel: nil, actionURL: nil,
-            kicker: .handled, density: .standard,
+            kicker: .handled,
             shape: .carousel([
                 Attachment(id: "a1", filename: "Contract-final.pdf", byteCount: 2_400_000,
                            preview: .document(pages: 11)),

@@ -307,9 +307,8 @@ extension APIClient.Card {
             summary: summary,
             actionLabel: action,
             actionURL: actionUrl.flatMap(URL.init(string:)),
-            // Placeholders — `reinterpret` decides all three from the fields above.
+            // Placeholders — `reinterpret` decides both from the fields above.
             kicker: .reading,
-            density: .standard,
             shape: .text,
             heroImageURL: heroImageUrl.flatMap(URL.init(string:)),
             heroBackground: heroImageBgColor,

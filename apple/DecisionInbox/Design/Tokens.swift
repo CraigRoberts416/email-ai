@@ -125,6 +125,17 @@ struct TypeStyle {
     let font: Font
     let tracking: CGFloat
     let lineSpacing: CGFloat
+    /// The nominal point size, kept alongside the `Font` because SwiftUI will
+    /// not give it back and optical corrections have to scale with it.
+    var size: CGFloat = 0
+
+    /// How far an opening quotation mark should hang into the margin so the
+    /// reading edge lands on the first letter rather than on punctuation.
+    ///
+    /// A fraction of the size, never a constant: a value derived at 26pt is
+    /// wrong at every Dynamic Type step above and below it. DM Sans's left
+    /// side bearing on the curly quote is a little over a quarter of its em.
+    var hangingIndent: CGFloat { size * 0.26 }
 }
 
 enum Style {
@@ -134,30 +145,36 @@ enum Style {
         tracking: -0.84, lineSpacing: 0
     )
 
-    // The quote is a two-stop ramp, and the step between them is what makes a
-    // lead dominate. At 28pt everywhere it did the opposite: 86 characters of
-    // someone's actual words cost 109pt, so every post shouted and none stood
-    // out. Two lines at 17pt carry 93 characters in 44pt — more of the sender,
-    // in 40% of the room.
-
-    /// The pulled quote on a post that asks something of you.
-    static let quoteLead = TypeStyle(
-        font: .custom(Face.sans, size: 24, relativeTo: .title2),
-        tracking: -0.72, lineSpacing: 0
+    /// The pulled quote. ONE size, because there is one card.
+    ///
+    /// It was a two-stop ramp — 24pt when a post asked something of you, 17pt
+    /// otherwise — which made the card's most important line change size
+    /// depending on a judgement the model made. Identical treatment is a claim
+    /// of equivalence, so the skills are right that HANDLED and NEEDS YOU must
+    /// not look the same; but the kicker carries that difference, in weight
+    /// and rule, and it is the only element allowed to. Size stays fixed so
+    /// the vertical rhythm never shifts between two posts in the same feed.
+    ///
+    /// 26, between the old two. It is the anchor the rest of the card is
+    /// derived from: everything else is set by working outward from this.
+    static let quote = TypeStyle(
+        font: .custom(Face.sans, size: 26, relativeTo: .title2),
+        tracking: -0.78, lineSpacing: 1, size: 26
     )
 
-    /// The pulled quote everywhere else.
-    static let quoteStandard = TypeStyle(
-        font: .custom(Face.sans, size: 17, relativeTo: .headline),
-        tracking: -0.34, lineSpacing: 1
-    )
-
-    /// The machine's gloss. DM Mono's fixed 0.6em advance means 16pt mono
-    /// occupies the width of 20pt sans — the machine was set larger than the
-    /// human on every post. At 13 it is quieter and carries more.
+    /// The machine's gloss.
+    ///
+    /// Three sizes on the card, not four: the quote at 26, the sender name and
+    /// this summary sharing 14, the kicker at 12. Name and summary are the
+    /// same size and separate by family and position alone — a size difference
+    /// would be solving a grouping problem with the wrong tool.
+    ///
+    /// 14 rather than 15 because DM Mono's fixed 0.6em advance makes it read
+    /// larger and darker than DM Sans at the same nominal size. Matching the
+    /// numbers would set the machine louder than the human on every post.
     static let gloss = TypeStyle(
-        font: .custom(Face.mono, size: 13, relativeTo: .footnote),
-        tracking: 0.26, lineSpacing: 2
+        font: .custom(Face.mono, size: 14, relativeTo: .footnote),
+        tracking: 0.14, lineSpacing: 3
     )
 
     /// The count that opens the feed. Mono, because it is instrumentation.

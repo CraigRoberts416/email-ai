@@ -64,11 +64,10 @@ struct PostView: View {
             content
             // A lead is set apart by space, not a line. Isolation is the
             // strongest emphasis device there is, and here it is free.
-            if message.density == .lead {
-                Color.clear.frame(height: Space.sm)
-            } else {
-                Rule()
-            }
+            // One separator, every time. A lead used to be set apart by
+            // space instead of a line, which meant the feed's only structural
+            // grammar switched off for the posts that mattered most.
+            Rule()
         }
         .background(pressed ? Ink.surfaceTertiary : Ink.surface)
         .offset(x: dx)
@@ -314,22 +313,19 @@ struct PostView: View {
     /// not exist. It is overlaid rather than placed inline because the tappable
     /// body of the post is a `Button`, and a control inside a button's label
     /// never gets its own taps.
-    @ViewBuilder private var overflowMenu: some View {
-        if message.density != .compact {
-            Menu { menuItems } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Ink.secondary)
-                    .frame(width: Metric.tapTarget, height: Metric.tapTarget)
-                    .contentShape(.rect)
-            }
-            .accessibilityLabel("More actions")
-            // Centred on the header's first line and on the gutter, from the
-            // tokens rather than by eye.
-            .padding(.trailing, Metric.gutter - (Metric.tapTarget - 15) / 2)
-            .padding(.top, Metric.postPaddingY + Metric.avatar / 2 - Metric.tapTarget / 2)
-            .offset(x: dx)
+    private var overflowMenu: some View {
+        Menu { menuItems } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15))
+                .foregroundStyle(Ink.secondary)
+                .frame(width: Metric.tapTarget, height: Metric.tapTarget)
+                .contentShape(.rect)
         }
+        .accessibilityLabel("More actions")
+        // Centred on the header's first line and on the gutter, from the
+        // tokens rather than by eye.
+        .padding(.trailing, Metric.gutter - (Metric.tapTarget - 15) / 2)
+        .padding(.top, Space.xl + Metric.avatar / 2 - Metric.tapTarget / 2)
     }
 
     /// Wraps a filing action so it carries its own commit cue. Save, archive
@@ -344,54 +340,108 @@ struct PostView: View {
 
     // MARK: Content
 
-    @ViewBuilder private var content: some View {
-        if case .compact = message.density {
-            compactRow
-        } else {
-            standard
-        }
-    }
+    /// One card. There is no second layout.
+    ///
+    /// The feed used to have three: a lead, a standard, and a 44pt compact row
+    /// for anything broadcast. The compact row could not hold a picture, an
+    /// action row, or a summary, so most of a real mailbox — which is mostly
+    /// broadcast — rendered as a list of subject lines sitting inside a feed
+    /// of posts, and the two never read as the same product.
+    ///
+    /// The design skills allow variation across a repeated unit but not this
+    /// kind: "Do not make every row visually independent if they are clearly
+    /// part of one list. Repeated components should feel almost musical."
+    /// Variation now comes from what a message actually has — a picture, a
+    /// thing to click — not from a template chosen for it in advance.
+    private var content: some View { standard }
 
+    /// The card, in one piece and in one order.
+    ///
+    /// Every seam has exactly one owner of vertical space — `spacing: 0` plus
+    /// a single `.padding(.top:)` per element — because a VStack spacing plus
+    /// per-element padding produces the compound margin the skills warn about,
+    /// where two individually correct values make an incorrect relationship.
+    ///
+    /// The gaps are a three-level ladder rather than one repeated value, which
+    /// is what does the grouping now that the post has no fill, no radius and
+    /// no border to do it. Equal gaps everywhere erase structure:
+    ///
+    ///   kicker -> quote      4   tightest in the card. The kicker labels the
+    ///                            quote, so it has to bind downward; at the
+    ///                            same gap as the one above it, it read as
+    ///                            part of the sender's metadata instead.
+    ///   quote -> picture    12   associative
+    ///   picture -> summary  12   associative
+    ///   header -> kicker    20   separating
+    ///   summary -> CTA      20   separating
+    ///   CTA -> actions      20   separating
+    ///   card padding        20   with the hairline, the component boundary
     private var standard: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            // NOT a Button. A Button's label spanning the whole card holds the
-            // touch long enough that the scroll view never claims it, so the
-            // feed only scrolled from the masthead and from the 3-dot overflow
-            // — the two places that were not inside this control. The tap is
-            // attached at the post's root instead (see `body`), where a plain
-            // TapGesture is cancelled by a scroll the moment the finger moves.
-            VStack(alignment: .leading, spacing: Space.lg) {
-                header
+        // NOT a Button. A Button's label spanning the whole card holds the
+        // touch long enough that the scroll view never claims it, so the feed
+        // only scrolled from the masthead and from the 3-dot overflow — the
+        // two places that were not inside this control. The tap is attached at
+        // the post's root instead, where a plain TapGesture is cancelled by a
+        // scroll the moment the finger moves.
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
 
-                Group {
-                    switch message.shape {
-                    case .html(let url):       htmlBody(url)
-                    case .media(let urls):     mediaBody(urls)
-                    case .carousel(let items): carouselBody(items)
-                    case .quoted(let quoted):  quotedBody(quoted)
-                    case .degraded:            degradedBody
-                    case .text:                textBody
-                    }
+            KickerLabel(message.kicker)
+                .padding(.horizontal, Metric.gutter)
+                .padding(.top, Space.xl)
+                .accessibilityHidden(true)
+
+            // The one thing on this card the model did not write.
+            Group {
+                if message.isInterpreting && message.quote == nil {
+                    CaretLine(label: "Reading this one\u{2026}")
+                } else if let quote = message.quote {
+                    quoteText(quote, ink: message.isRead ? metaInk : Ink.primary)
+                } else if case .degraded = message.shape {
+                    degradedLine
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Metric.gutter)
+            .padding(.top, Space.xs)
             .accessibilityHidden(true)
 
-            if message.density == .lead, let label = message.actionLabel {
+            // Full bleed, deliberately, and never any other value. The photo
+            // and the hairline are the only two things that own the screen
+            // edge; the text owns the gutter. A third inset between them would
+            // be the near-alignment that reads as a mistake rather than a
+            // choice.
+            if case .media(let urls) = message.shape, let picture = urls.first {
+                pictureBand(picture)
+                    .padding(.top, Space.md)
+                    .accessibilityHidden(true)
+            }
+
+            if let summary = message.summary {
+                SummaryBlock(text: summary, emphasised: message.kicker == .possibleScam)
+                    .padding(.horizontal, Metric.gutter)
+                    .padding(.top, Space.md)
+                    .accessibilityHidden(true)
+            }
+
+            // Shown whenever there is something to click, rather than only on
+            // a density that no longer exists.
+            if let label = message.actionLabel, !label.isEmpty {
                 CTAButton(label: label) {
                     if let url = message.actionURL { UIApplication.shared.open(url) }
                 }
                 .padding(.horizontal, Metric.gutter)
-                .padding(.top, Space.sm)
+                .padding(.top, Space.xl)
             }
 
-            // The footer is in the spec, and taking it out was my call, not the
-            // design's. The argument for removing it — that swipe, the context
-            // menu and the rotor already covered these six — has since lost its
-            // first leg: the swipe had to go because a row-level DragGesture
-            // stops the feed scrolling at all. A long press is a discovery
-            // problem and the rotor is not a route most people have. This is
-            // the only visible way to act on a post without opening it.
+            // The footer is in the spec, and taking it out was my call rather
+            // than the design's. The argument for removing it — that swipe,
+            // the context menu and the rotor already covered these six — lost
+            // its first leg when the swipe had to go so the feed could scroll.
+            // A long press is a discovery problem and the rotor is not a route
+            // most people have, so this is the only visible way to act on a
+            // post without opening it.
             ActionRow(
                 message: message,
                 onReply: onReply,
@@ -402,9 +452,9 @@ struct PostView: View {
                 onUnsubscribe: onUnsubscribe
             )
             .padding(.horizontal, Metric.gutter)
-            .padding(.top, Space.xs)
+            .padding(.top, Space.xl)
         }
-        .padding(.vertical, Metric.postPaddingY)
+        .padding(.vertical, Space.xl)
     }
 
     // MARK: Header — one identity line, Twitter-style
@@ -412,11 +462,7 @@ struct PostView: View {
     private var header: some View {
         HStack(alignment: stackedHeader ? .top : .center, spacing: Space.md) {
             Button(action: onProfile) {
-                AvatarView(
-                    sender: message.sender,
-                    size: message.density == .compact ? Metric.avatarCompact : Metric.avatar,
-                    dimmed: message.density == .compact
-                )
+                AvatarView(sender: message.sender, size: Metric.avatar)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(message.sender.displayName), open sender")
@@ -496,35 +542,61 @@ struct PostView: View {
     /// height change still animates with `Move.layout`, which is what keeps
     /// neighbouring posts from jumping: one dominant event, one supporting one.
     private func quoteText(_ quote: String, ink: Color) -> some View {
+        // The opening quote mark hangs into the margin so the reading edge
+        // lands on the "A" of "Amount", not on the punctuation before it.
+        // Optically-aligned text against a mathematically-aligned kicker is
+        // the near-miss that reads as a bug in a card this precise.
+        //
+        // Expressed as a fraction of the current size rather than a constant,
+        // so it survives Dynamic Type: a magic -6 derived from 26pt is wrong
+        // at every other size. DM Sans's left side bearing on the curly quote
+        // is a shade over a quarter of its em.
+        //
+        // The glyphs are ours; everything between them is the sender's and
+        // passes through untouched — no smart-quote substitution, no
+        // normalisation. A verbatim pull is only worth having if it is
+        // verbatim.
         Text("\u{201C}\(quote)\u{201D}")
-            .typeStyle(Style.display)
+            .typeStyle(Style.quote)
             .foregroundStyle(ink)
             .lineLimit(3)
+            .padding(.leading, -Style.quote.hangingIndent)
             .transaction { $0.animation = nil }
     }
 
-    private var textBody: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            KickerLabel(message.kicker)
-
-            if message.isInterpreting && message.quote == nil {
-                CaretLine(label: "Reading this one\u{2026}")
-            } else if let quote = message.quote {
-                quoteText(quote, ink: message.isRead ? metaInk : Ink.primary)
-            }
-
-            if let summary = message.summary,
-               message.density == .lead || message.kicker == .possibleScam {
-                SummaryBlock(
-                    text: summary,
-                    density: message.density,
-                    emphasised: message.kicker == .possibleScam
-                )
-            }
-
-        }
-        .padding(.horizontal, Metric.gutter)
+    /// Interpretation failed. Says so rather than inventing a line.
+    private var degradedLine: some View {
+        Text("Couldn\u{2019}t read this one.")
+            .typeStyle(Style.quote)
+            .foregroundStyle(metaInk)
+            .lineLimit(2)
     }
+
+    /// The email's own photograph, or the sender's generated stand-in.
+    ///
+    /// The container's height is set by an empty shape and the image fills it
+    /// from behind: `.aspectRatio(_, contentMode: .fill)` on an AsyncImage may
+    /// return something larger than the space offered, which is how a tall
+    /// picture once grew until it took the whole screen.
+    ///
+    /// The box is reserved before the bytes arrive, so the action row below it
+    /// never jumps when a picture lands mid-scroll.
+    private func pictureBand(_ url: URL) -> some View {
+        Color.clear
+            .aspectRatio(Metric.mediaAspectWide, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                AsyncImage(url: url, transaction: Transaction(animation: Move.crossfade)) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                    } else {
+                        heroGround
+                    }
+                }
+            }
+            .clipped()
+    }
+
 
     /// Marketing mail is already designed, so the AI steps back and we render
     /// their own first 1:1 section rather than reinterpreting it.
@@ -548,51 +620,6 @@ struct PostView: View {
         }
     }
 
-    private func mediaBody(_ urls: [URL]) -> some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                KickerLabel(message.kicker)
-                if let quote = message.quote {
-                    quoteText(quote, ink: Ink.primary)
-                }
-            }
-            .padding(.horizontal, Metric.gutter)
-
-            // The one place the gutter breaks.
-            //
-            // The band's size comes from an empty shape, never from the image.
-            // `.aspectRatio(_, contentMode: .fill)` is allowed to return
-            // something LARGER than the space it was offered, so a tall
-            // picture grew until it took the whole screen and the post around
-            // it disappeared. A clear spacer sets the height, the photograph
-            // fills it from behind, and the frame cannot be argued with.
-            Color.clear
-                .aspectRatio(Metric.mediaAspectWide, contentMode: .fit)
-                .frame(maxWidth: .infinity)
-                .overlay {
-                    AsyncImage(url: urls[0], transaction: Transaction(animation: Move.crossfade)) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        case .failure:
-                            // A missing image is not a broken card. The post
-                            // drops back to its own ground rather than showing
-                            // a placeholder that means nothing to the reader.
-                            heroGround
-                        default:
-                            // Its own extracted ground, so nothing flashes white.
-                            heroGround
-                        }
-                    }
-                }
-                .clipped()
-
-            if let summary = message.summary {
-                SummaryBlock(text: summary, density: message.density, emphasised: false)
-                    .padding(.horizontal, Metric.gutter)
-            }
-        }
-    }
 
     /// The colour the generator extracted from the image itself, so the space
     /// it will occupy already belongs to that sender before the bytes arrive.
@@ -612,7 +639,7 @@ struct PostView: View {
                     quoteText(quote, ink: Ink.primary)
                 }
                 if let summary = message.summary {
-                    SummaryBlock(text: summary, density: message.density, emphasised: false)
+                    SummaryBlock(text: summary, emphasised: false)
                 }
             }
             .padding(.horizontal, Metric.gutter)
@@ -629,7 +656,7 @@ struct PostView: View {
                     quoteText(quote, ink: Ink.primary)
                 }
                 if let summary = message.summary {
-                    SummaryBlock(text: summary, density: message.density, emphasised: false)
+                    SummaryBlock(text: summary, emphasised: false)
                 }
             }
             QuotedCard(quoted: quoted)
@@ -654,62 +681,6 @@ struct PostView: View {
         .padding(.horizontal, Metric.gutter)
     }
 
-    /// A broadcast that asks nothing: one row, a mono sender, one clause, and
-    /// the two things you might do with it. No timestamp, no thread count, no
-    /// overflow — a receipt does not earn an identity line.
-    /// A broadcast that asks nothing: one 55pt row, a mono sender, one clause.
-    /// No timestamp, no thread count, no overflow — and no inline glyphs.
-    ///
-    /// The two glyphs set a 44pt tap-target floor and then 24pt of padding
-    /// stacked on top of it, for actions that already have three routes each:
-    /// the swipe, the context menu and the accessibility rotor. Removing them
-    /// takes the row from 69 to 56pt and gives the clause 88pt more measure —
-    /// 45 characters instead of 34.
-    private var compactRow: some View {
-        HStack(spacing: Space.md) {
-            Button(action: onProfile) {
-                AvatarView(sender: message.sender, size: Metric.avatarCompact, dimmed: true)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(message.sender.displayName), open sender")
-
-            // One baseline, not two lines. The sender is fixed-width so the
-            // clause always begins at the same x — the eye lands in the same
-            // place on every row, which is what makes a long list scannable
-            // without shrinking the type.
-            //
-            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                Text(message.sender.displayName.uppercased())
-                    .typeStyle(Style.compactSender)
-                    .foregroundStyle(Ink.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    // Wide enough for a real brand name, and it yields only
-                    // after the clause does. The sender is the identity
-                    // anchor: truncating it to protect a preview is the wrong
-                    // trade, which is why both Raycast and Superhuman cap the
-                    // subtitle instead.
-                    .frame(maxWidth: 124, alignment: .leading)
-                    .layoutPriority(1)
-
-                Text(message.summary ?? message.subject)
-                    .typeStyle(Style.bodyMedium)
-                    .foregroundStyle(message.isRead ? Ink.secondary : Ink.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                Spacer(minLength: 0)
-
-                Text(message.receivedAt.feedStamp)
-                    .typeStyle(Style.monoMicro)
-                    .foregroundStyle(Ink.tertiary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityHidden(true)
-        }
-        .padding(.horizontal, Metric.gutter)
-        .frame(height: 44)
-    }
 
 
     /// Spoken in the order it is read, and — crucially — with the quote
@@ -763,13 +734,16 @@ struct KickerLabel: View {
 
 // MARK: - Summary
 //
-// Mono is the machine's voice. A filled panel at lead density; a margin rule
-// everywhere else, because fill plus radius plus even padding reads as a code
-// block rather than editorial gloss.
+// Mono is the machine's voice, and it is always a margin rule — a filled panel
+// would be a card, a fill and a radius, inside a feed whose defining decision
+// is that posts have neither.
+//
+// It is shown on every post now. It used to appear only at lead density or on
+// a suspected scam, which meant the model's reasoning — the entire premise of
+// the product — was hidden on most of the feed.
 
 struct SummaryBlock: View {
     let text: String
-    let density: Density
     let emphasised: Bool
 
     @Environment(\.colorSchemeContrast) private var contrast

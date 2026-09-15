@@ -47,14 +47,6 @@ enum Kicker: String, Hashable {
     case notRead = "NOT READ"
 }
 
-/// How much room the message earns. The rule is whether it asks for something
-/// only the user can give — a decision, a reply, money, or their time.
-enum Density: Hashable {
-    case lead      // direct ask, deadline or money. Filled summary panel, one CTA.
-    case standard  // substantive, no ask. Margin-rule summary, no CTA.
-    case compact   // broadcast. A single row and two actions.
-}
-
 /// Which card shape the message gets. Resolved first-match-wins, and the
 /// underlying question is who did the design work: if the sender already
 /// designed it we show theirs, if only the AI understands it we show ours.
@@ -63,7 +55,7 @@ enum PostShape: Hashable {
     case media([URL])         // a human sender whose images carry the meaning
     case carousel([Attachment])
     case quoted(QuotedMessage)
-    case text                 // lead / standard / compact all render as text
+    case text                 // no picture; the quote carries the post
     case degraded             // interpretation failed; quote suppressed, never guessed
 }
 
@@ -110,7 +102,6 @@ struct Message: Identifiable, Hashable {
     var actionURL: URL?
 
     var kicker: Kicker
-    var density: Density
     var shape: PostShape
 
     /// Generated per sender domain, not per email — one image stands for
@@ -154,7 +145,6 @@ struct Message: Identifiable, Hashable {
     mutating func reinterpret(failed: Bool = false) {
         if failed {
             kicker = .notRead
-            density = .standard
             shape = .degraded
             return
         }
@@ -173,46 +163,6 @@ struct Message: Identifiable, Hashable {
             kicker = .fyi
         }
 
-        // Density follows what the message asks of you, not whether it
-        // happens to carry a URL. Driving `.lead` off actionLabel meant a
-        // NEEDS YOU post with nothing to click rendered byte-identical to an
-        // FYI — the one distinction the feed exists to draw, lost to a field
-        // that is about links.
-        // Density answers one question: does this ask for something only you
-        // can give — a decision, a reply, money, or your time?
-        //
-        // The old rule made a promotion compact only when it had no quote, and
-        // the server now writes a quote for everything. So nothing was ever
-        // compact, and a discount code got the same 28pt treatment as a
-        // declined payment. In a real mailbox that is most of the feed at full
-        // height, which is why it stopped being scannable.
-        if isAtRisk {
-            // Never compact. A suspected scam is not allowed to be the
-            // quietest thing on the screen.
-            density = .standard
-        } else if imageURL != nil {
-            // A message that brought its own photograph is never compact: a
-            // 44pt row has nowhere to put one, and the picture is the fastest
-            // thing on the card to read. This is what separates a feed from a
-            // list — StreetEasy showing the apartment rather than the words
-            // "new listings near you".
-            //
-            // It sits above the broadcast rule deliberately. Most mail that
-            // carries a real picture is marketing, so testing promotion first
-            // would mean the rule never fired.
-            density = .standard
-        } else if isPromotion || kicker == .receipt || kicker == .newsletter {
-            // Broadcast with nothing to show is compact even when it carries a
-            // link. Marketing mail always has somewhere it wants you to click,
-            // and honouring that as an "ask" gave a discount code the same
-            // room as a declined payment — which is how a feed of 200 became
-            // unreadable.
-            density = .compact
-        } else if requiresAttention || actionLabel?.isEmpty == false {
-            density = .lead
-        } else {
-            density = .standard
-        }
     }
 }
 
