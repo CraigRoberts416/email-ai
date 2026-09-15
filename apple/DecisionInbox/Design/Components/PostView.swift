@@ -81,6 +81,11 @@ struct PostView: View {
         // The post slides out of its own row rather than over its neighbours'.
         .clipped()
         .contentShape(.rect)
+        // The whole card opens the thread, and it is a TapGesture rather than
+        // a Button for exactly one reason: a scroll cancels it. The inner
+        // controls — avatar, CTA, action row — are real Buttons and still take
+        // their own taps first, so this only catches the reading surface.
+        .onTapGesture { onOpen() }
         // NO row-level DragGesture here, in either form. This was measured, not
         // reasoned about: with the same synthetic drag over the same feed, the
         // scroll offset reached 4681pt without it and exactly 0 with it —
@@ -349,29 +354,27 @@ struct PostView: View {
 
     private var standard: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            // Only the reading surface is the button. The action row keeps its
-            // own buttons — a control inside a button's label never receives a
-            // tap — and the pressed fill is lifted to the whole row so the
-            // ground still changes as one object.
-            Button { if !dragged { onOpen() } } label: {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    header
+            // NOT a Button. A Button's label spanning the whole card holds the
+            // touch long enough that the scroll view never claims it, so the
+            // feed only scrolled from the masthead and from the 3-dot overflow
+            // — the two places that were not inside this control. The tap is
+            // attached at the post's root instead (see `body`), where a plain
+            // TapGesture is cancelled by a scroll the moment the finger moves.
+            VStack(alignment: .leading, spacing: Space.lg) {
+                header
 
-                    Group {
-                        switch message.shape {
-                        case .html(let url):       htmlBody(url)
-                        case .media(let urls):     mediaBody(urls)
-                        case .carousel(let items): carouselBody(items)
-                        case .quoted(let quoted):  quotedBody(quoted)
-                        case .degraded:            degradedBody
-                        case .text:                textBody
-                        }
+                Group {
+                    switch message.shape {
+                    case .html(let url):       htmlBody(url)
+                    case .media(let urls):     mediaBody(urls)
+                    case .carousel(let items): carouselBody(items)
+                    case .quoted(let quoted):  quotedBody(quoted)
+                    case .degraded:            degradedBody
+                    case .text:                textBody
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
             }
-            .buttonStyle(PostPressStyle(pressed: $pressed))
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityHidden(true)
 
             if message.density == .lead, let label = message.actionLabel {
@@ -556,23 +559,33 @@ struct PostView: View {
             .padding(.horizontal, Metric.gutter)
 
             // The one place the gutter breaks.
-            AsyncImage(url: urls[0], transaction: Transaction(animation: Move.crossfade)) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                case .failure:
-                    // A missing image is not a broken card. The post drops back
-                    // to text rather than showing a placeholder that means
-                    // nothing to the reader.
-                    Color.clear.frame(height: 0)
-                default:
-                    // Its own extracted ground, so nothing flashes white.
-                    heroGround
+            //
+            // The band's size comes from an empty shape, never from the image.
+            // `.aspectRatio(_, contentMode: .fill)` is allowed to return
+            // something LARGER than the space it was offered, so a tall
+            // picture grew until it took the whole screen and the post around
+            // it disappeared. A clear spacer sets the height, the photograph
+            // fills it from behind, and the frame cannot be argued with.
+            Color.clear
+                .aspectRatio(Metric.mediaAspectWide, contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .overlay {
+                    AsyncImage(url: urls[0], transaction: Transaction(animation: Move.crossfade)) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                        case .failure:
+                            // A missing image is not a broken card. The post
+                            // drops back to its own ground rather than showing
+                            // a placeholder that means nothing to the reader.
+                            heroGround
+                        default:
+                            // Its own extracted ground, so nothing flashes white.
+                            heroGround
+                        }
+                    }
                 }
-            }
-            .aspectRatio(Metric.mediaAspectWide, contentMode: .fill)
-            .frame(maxWidth: .infinity)
-            .clipped()
+                .clipped()
 
             if let summary = message.summary {
                 SummaryBlock(text: summary, density: message.density, emphasised: false)
@@ -665,10 +678,6 @@ struct PostView: View {
             // place on every row, which is what makes a long list scannable
             // without shrinking the type.
             //
-            // And it opens. This row had no tap target beyond its avatar, so
-            // every compact post — most of a real feed — was inert: it could
-            // be swiped and long-pressed but not read.
-            Button { if !dragged { onOpen() } } label: {
             HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                 Text(message.sender.displayName.uppercased())
                     .typeStyle(Style.compactSender)
@@ -696,9 +705,6 @@ struct PostView: View {
                     .foregroundStyle(Ink.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect)
-            }
-            .buttonStyle(PostPressStyle(pressed: $pressed))
             .accessibilityHidden(true)
         }
         .padding(.horizontal, Metric.gutter)

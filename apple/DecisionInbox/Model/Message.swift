@@ -120,6 +120,12 @@ struct Message: Identifiable, Hashable {
     var heroImageURL: URL?
     var heroBackground: String?
 
+    /// The picture this email actually contained, proxied through our server
+    /// so fetching it cannot tell the sender when you looked. The hero says
+    /// what a sender is like; this says what this message is about, and when
+    /// both exist this one wins.
+    var imageURL: URL?
+
     var isRead: Bool
     var isSaved: Bool = false
     var threadCount: Int
@@ -184,11 +190,23 @@ struct Message: Identifiable, Hashable {
             // Never compact. A suspected scam is not allowed to be the
             // quietest thing on the screen.
             density = .standard
+        } else if imageURL != nil {
+            // A message that brought its own photograph is never compact: a
+            // 44pt row has nowhere to put one, and the picture is the fastest
+            // thing on the card to read. This is what separates a feed from a
+            // list — StreetEasy showing the apartment rather than the words
+            // "new listings near you".
+            //
+            // It sits above the broadcast rule deliberately. Most mail that
+            // carries a real picture is marketing, so testing promotion first
+            // would mean the rule never fired.
+            density = .standard
         } else if isPromotion || kicker == .receipt || kicker == .newsletter {
-            // Broadcast is compact even when it carries a link. Marketing mail
-            // always has somewhere it wants you to click, and honouring that
-            // as an "ask" gave a discount code the same room as a declined
-            // payment — which is how a feed of 200 became unreadable.
+            // Broadcast with nothing to show is compact even when it carries a
+            // link. Marketing mail always has somewhere it wants you to click,
+            // and honouring that as an "ask" gave a discount code the same
+            // room as a declined payment — which is how a feed of 200 became
+            // unreadable.
             density = .compact
         } else if requiresAttention || actionLabel?.isEmpty == false {
             density = .lead

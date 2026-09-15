@@ -423,6 +423,11 @@ final class FeedStore {
                 case "action": message.actionLabel = value
                 case "actionUrl": message.actionURL = value.flatMap(URL.init(string:))
                 case "unsubscribeUrl": message.unsubscribeURL = value.flatMap(URL.init(string:))
+                // The worker finds the email's picture before the model has
+                // finished writing about it, so the card can fill in while it
+                // is still being interpreted. The raw sender URL never reaches
+                // here — what arrives is already the proxy's.
+                case "imageUrl": message.imageURL = value.flatMap(URL.init(string:))
                 case "requiresAttention": message.requiresAttention = (value == "true")
                 case "riskLevel": message.isAtRisk = (value == "possible_scam")
                 default: break
@@ -636,7 +641,10 @@ private extension Message {
             actionUrl: actionURL?.absoluteString, requiresAttention: requiresAttention,
             unsubscribeUrl: unsubscribeURL?.absoluteString,
             avatarUri: nil, avatarFallbackText: nil,
-            heroImageUrl: nil, heroImageBgColor: nil, riskLevel: nil
+            // No pictures in a briefing: the recap is text the model writes
+            // about text, and an image URL is one more thing to send for
+            // nothing.
+            heroImageUrl: nil, heroImageBgColor: nil, imageUrl: nil, riskLevel: nil
         )
     }
 }

@@ -22,6 +22,7 @@ function rowToRecord(row) {
     unsubscribeUrl:    row.unsubscribe_url ?? null,
     riskLevel:         row.risk_level ?? 'none',
     riskEvidence:      row.risk_evidence ?? [],
+    imageUrl:          row.image_url ?? null,
   };
 }
 
@@ -177,6 +178,15 @@ async function updateLabelIds(userId, messageId, labelIds) {
   );
 }
 
+/// The sender's own picture for this message, as found in the HTML. Stored
+/// raw; it is only ever handed out through the proxy.
+async function setImageUrl(userId, messageId, url) {
+  await query(
+    'UPDATE messages SET image_url = $3 WHERE user_id = $1 AND message_id = $2',
+    [userId, messageId, url]
+  );
+}
+
 async function setUnsubscribeUrl(userId, messageId, url) {
   await query(
     'UPDATE messages SET unsubscribe_url = $3 WHERE user_id = $1 AND message_id = $2',
@@ -205,6 +215,6 @@ async function getMessageIdsNeedingUnsubscribeBackfill(userId) {
 module.exports = {
   upsertMessages, getMessage, getUnread, getAll,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
-  setUnsubscribeUrl, getMessageIdsNeedingUnsubscribeBackfill,
+  setUnsubscribeUrl, setImageUrl, getMessageIdsNeedingUnsubscribeBackfill,
   setRiskVerdict,
 };

@@ -77,6 +77,10 @@ struct APIClient {
         let avatarFallbackText: String?
         let heroImageUrl: String?
         let heroImageBgColor: String?
+        /// The picture this particular email carried, proxied through our
+        /// server. Distinct from the hero, which stands for the sender in
+        /// general — this one is about *this* message.
+        let imageUrl: String?
         /// `none` or `possible_scam`. Only ever set when the server could also
         /// say why — a flag it cannot explain is downgraded server-side.
         let riskLevel: String?
@@ -264,6 +268,7 @@ extension APIClient.Card {
             shape: .text,
             heroImageURL: heroImageUrl.flatMap(URL.init(string:)),
             heroBackground: heroImageBgColor,
+            imageURL: imageUrl.flatMap(URL.init(string:)),
             isRead: !(labelIds ?? []).contains("UNREAD"),
             isSaved: false,
             threadCount: 1,
@@ -274,11 +279,18 @@ extension APIClient.Card {
         )
         message.reinterpret(failed: failed)
 
-        // A bulk sender with a generated hero gets the image shape: their mail
-        // is already designed, and a picture of the brand reads faster than a
-        // second line of grey text. People never get one — a generated image
-        // of a person would be a lie.
-        if !failed, promo, let hero = message.heroImageURL {
+        // The email's own picture wins over the sender's generated one, for
+        // everybody — a photograph of the apartment StreetEasy is showing you
+        // says more than a photograph of what StreetEasy is like, and it is
+        // the real thing rather than a stand-in. It is not restricted to bulk
+        // senders: a person who sent you a picture sent you a picture.
+        //
+        // The hero stays as the fallback for designed mail with nothing
+        // usable in it. People still never get a *generated* image; an
+        // invented photograph attached to a human would be a lie.
+        if !failed, let picture = message.imageURL {
+            message.shape = .media([picture])
+        } else if !failed, promo, let hero = message.heroImageURL {
             message.shape = .media([hero])
         }
         return message

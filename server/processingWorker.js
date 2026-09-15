@@ -1,6 +1,7 @@
 const messageStore    = require('./messageStore');
 const gmailSync       = require('./gmailSync');
 const { cleanEmailForAI } = require('./emailCleaner');
+const emailImage      = require('./emailImage');
 
 // Injected by index.js to avoid circular imports
 let _streamInterpretEmail     = null;
@@ -37,6 +38,29 @@ async function processNext(userId) {
   try {
     const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
     const email  = cleanEmailForAI(rawMsg);
+
+    // The email's own picture, taken from the HTML we already have. Stored,
+    // never fetched here: the bytes come through our proxy so the sender
+    // cannot time the reader's scroll. Failing to find one is normal and
+    // costs the post nothing — it falls back to the sender's hero.
+    try {
+      const picture = emailImage.pickHeroImage(emailImage.extractHtml(rawMsg.payload));
+      if (picture) {
+        await messageStore.setImageUrl(userId, messageId, picture);
+        // The proxy's URL, never the sender's. Handing the raw one to the
+        // device over SSE would undo the entire point of proxying it — the
+        // phone would fetch the sender's CDN directly and announce itself.
+        const base = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
+        if (base) {
+          _emitSSE(userId, {
+            type: 'field-complete', messageId, field: 'imageUrl',
+            value: `${base.replace(/\/$/, '')}/messages/${encodeURIComponent(messageId)}/image`,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn(`[worker] image extract failed on ${messageId}: ${err.message}`);
+    }
 
     // Save unsubscribe URL immediately — available before AI finishes
     if (email.unsubscribeUrl) {

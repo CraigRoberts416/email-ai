@@ -67,6 +67,12 @@ async function runMigrations() {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS ai_attempts INT NOT NULL DEFAULT 0
   `);
 
+  // The sender's own picture for this message, extracted from its HTML. Held
+  // as the original URL and only ever served through the proxy.
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS image_url TEXT
+  `);
+
   // Re-queue only what the feed actually draws on. The rest of that batch is
   // pre-cutoff backlog going back to 2023 that the product deliberately does
   // not interpret, and re-queueing it would buy nothing and cost ~19,000

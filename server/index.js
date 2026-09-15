@@ -842,6 +842,12 @@ app.get('/feed', async (req, res) => {
         riskEvidence:       m.riskEvidence ?? [],
         heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
         heroImageBgColor:   cached?.bgColor ?? null,
+        // The message's own picture, proxied. Present only when the email
+        // actually carried one worth showing — the card falls back to the
+        // sender's hero rather than inventing something.
+        imageUrl:           m.imageUrl
+          ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}/image`
+          : null,
       };
     });
 
@@ -886,6 +892,77 @@ app.get('/messages/:messageId/body', async (req, res) => {
   } catch (err) {
     console.error('[message-body] error:', err.message);
     res.status(500).json({ error: 'failed to load message body' });
+  }
+});
+
+// The email's own picture, fetched by us and never by the reader.
+//
+// This is the whole reason the feed can show what a message is actually about.
+// Pointing an <img> at the sender's CDN would hand them a timestamped read
+// receipt for every post scrolled past — strictly worse than opening the mail,
+// which this product already refuses to leak. Here the sender sees one request
+// from a server, with no user agent, no cookie, and no relationship to when
+// anyone looked.
+//
+// The message id is the capability: you have to already be able to see the
+// message to name it, and the URL is only ever handed out to its owner.
+const emailImageCache = new Map();
+const EMAIL_IMAGE_WIDTH = 900;
+const EMAIL_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
+
+app.get('/messages/:messageId/image', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).end();
+
+  const key = `${userId}:${req.params.messageId}`;
+  try {
+    if (emailImageCache.has(key)) {
+      const hit = emailImageCache.get(key);
+      res.setHeader('Content-Type', hit.mime);
+      res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
+      return res.send(hit.bytes);
+    }
+
+    const record = await messageStore.getMessage(userId, req.params.messageId);
+    if (!record?.imageUrl) return res.status(404).end();
+
+    const upstream = await fetch(record.imageUrl, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000),
+      // No cookies, no referrer, nothing that identifies a person.
+      headers: { 'User-Agent': 'DecisionInbox/1.0 (+image-proxy)' },
+    });
+    if (!upstream.ok) return res.status(404).end();
+
+    const type = upstream.headers.get('content-type') ?? '';
+    if (!type.startsWith('image/')) return res.status(415).end();
+
+    const raw = Buffer.from(await upstream.arrayBuffer());
+    if (raw.length > EMAIL_IMAGE_MAX_BYTES) return res.status(413).end();
+
+    let bytes = raw;
+    let mime = type;
+    try {
+      const sharp = require('sharp');
+      bytes = await sharp(raw)
+        .resize(EMAIL_IMAGE_WIDTH, null, { withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer();
+      mime = 'image/webp';
+    } catch (err) {
+      // An animated GIF or an SVG we cannot re-encode still deserves to show.
+      console.warn(`[email-image] resize failed for ${req.params.messageId}: ${err.message}`);
+    }
+
+    emailImageCache.set(key, { bytes, mime });
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
+    res.send(bytes);
+  } catch (err) {
+    // A picture is decoration. It must never be able to fail a request the
+    // reader made for their mail.
+    console.warn('[email-image] error:', err.message);
+    res.status(404).end();
   }
 });
 
@@ -1014,6 +1091,12 @@ app.get('/all-mail', async (req, res) => {
         riskEvidence:       m.riskEvidence ?? [],
         heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
         heroImageBgColor:   cached?.bgColor ?? null,
+        // The message's own picture, proxied. Present only when the email
+        // actually carried one worth showing — the card falls back to the
+        // sender's hero rather than inventing something.
+        imageUrl:           m.imageUrl
+          ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}/image`
+          : null,
       };
     });
 
