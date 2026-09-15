@@ -73,6 +73,23 @@ async function runMigrations() {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS image_url TEXT
   `);
 
+  // Every hero generated before this instant came from a prompt that told the
+  // model to fall back to "a quiet, sensory still life", and it took that
+  // literally: an airline, a car service and a property marketplace all came
+  // back as the same dim photograph of a desk. They are not salvageable by
+  // tweaking anything downstream — the subject is wrong.
+  //
+  // Dropping them makes /feed treat each domain as uncached and regenerate it
+  // against the new prompt. The cutoff is a fixed instant rather than a flag,
+  // which makes this self-limiting: after the first pass every surviving row
+  // is newer than it, so re-running on every boot deletes nothing.
+  const dropped = await pool.query(`
+    DELETE FROM sender_domain_assets WHERE created_at < TIMESTAMPTZ '2026-09-15 12:45:00+00'
+  `);
+  if (dropped.rowCount) {
+    console.log(`[db] dropped ${dropped.rowCount} hero asset(s) from the still-life prompt`);
+  }
+
   // Re-queue only what the feed actually draws on. The rest of that batch is
   // pre-cutoff backlog going back to 2023 that the product deliberately does
   // not interpret, and re-queueing it would buy nothing and cost ~19,000
