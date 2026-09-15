@@ -41,6 +41,41 @@ extension View {
 
 private struct FeedEdges: ViewModifier {
     func body(content: Content) -> some View {
+        content
+            // The status bar strip, drawn explicitly.
+            //
+            // `scrollEdgeEffectStyle` alone did not cover this: with the
+            // navigation bar hidden the scroll view's frame extends under the
+            // status bar, so a post's avatar and name were rendering directly
+            // beneath the clock — which is the "floating banner" that reads as
+            // a bug, because it is one. A material of our own is the thing
+            // that actually guarantees the separation, and it is drawn at the
+            // top edge rather than left to a system effect that may or may not
+            // reach it.
+            .overlay(alignment: .top) { TopVeil() }
+            .modifier(ScrollEdges())
+    }
+}
+
+/// Exactly the safe-area strip and no more. Sized from the geometry rather
+/// than from a constant, because 59pt is an iPhone 17 Pro and nothing else.
+private struct TopVeil: View {
+    var body: some View {
+        GeometryReader { proxy in
+            let inset = proxy.safeAreaInsets.top
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .frame(height: inset)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ScrollEdges: ViewModifier {
+    func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content
                 .scrollEdgeEffectStyle(.soft, for: .top)
