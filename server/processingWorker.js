@@ -44,7 +44,11 @@ async function processNext(userId) {
     // cannot time the reader's scroll. Failing to find one is normal and
     // costs the post nothing — it falls back to the sender's hero.
     try {
-      const picture = emailImage.pickHeroImage(emailImage.extractHtml(rawMsg.payload));
+      // Ranked, then measured. The name of an image never says whether it is
+      // a photograph or a 1280x102 masthead strip, so every candidate is
+      // fetched and checked until one is actually a picture.
+      const candidates = emailImage.pickCandidates(emailImage.extractHtml(rawMsg.payload));
+      const picture = await emailImage.resolveBest(candidates);
       if (picture) {
         await messageStore.setImageUrl(userId, messageId, picture);
         // The proxy's URL, never the sender's. Handing the raw one to the

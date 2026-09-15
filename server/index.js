@@ -1655,7 +1655,8 @@ async function runImageBackfill(userId) {
       await Promise.all(slice.map(async (messageId) => {
         try {
           const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
-          const picture = emailImage.pickHeroImage(emailImage.extractHtml(rawMsg.payload));
+          const candidates = emailImage.pickCandidates(emailImage.extractHtml(rawMsg.payload));
+          const picture = await emailImage.resolveBest(candidates);
           await messageStore.setImageUrl(userId, messageId, picture ?? '');
           if (picture) found++;
         } catch { /* one message's picture is never worth failing the pass */ }
@@ -1670,6 +1671,66 @@ async function runImageBackfill(userId) {
   }
 }
 
+/// Pulls new mail on a timer, for everyone, whether or not anyone opens the app.
+///
+/// Gmail push has not delivered a single notification in seven days — the
+/// watch registers and stays valid, but nothing ever arrives at the endpoint,
+/// so the only thing that has actually been syncing this mailbox is
+/// /auth/register on app open. The log shows the shape of that: a sync at
+/// 13:17, nothing for nine hours, then 23 messages at once at 22:40. The feed
+/// was hours stale every time it was opened and there was no way to tell.
+///
+/// This does not replace push — push is still the right mechanism and worth
+/// repairing — but freshness should not depend on a delivery path that can
+/// fail silently and invisibly. A poll is cheap: one history call per user per
+/// interval, and Gmail's history API returns nothing when nothing changed.
+const SYNC_INTERVAL_MS = 4 * 60 * 1000;
+
+async function syncEveryone() {
+  let users;
+  try {
+    users = await userStore.getAllUsers();
+  } catch (err) {
+    console.error('[poll] could not list users:', err.message);
+    return;
+  }
+
+  for (const user of users) {
+    try {
+      const { newUnreadIds } = await gmailSync.incrementalSync(user.user_id);
+      if (!newUnreadIds.length) continue;
+
+      console.log(`[poll] ${newUnreadIds.length} new for ${user.user_id.slice(0, 8)}…`);
+      processingWorker.wakeWorker(user.user_id);
+
+      // Announce them the same way the push path would, so a feed that is
+      // already open fills in rather than waiting for the next cold start.
+      for (const messageId of newUnreadIds) {
+        const record = await messageStore.getMessage(user.user_id, messageId);
+        if (!record) continue;
+        emitSSE(user.user_id, {
+          type:               'message-added',
+          messageId:          record.messageId,
+          threadId:           record.threadId,
+          labelIds:           record.labelIds,
+          subject:            record.subject,
+          fromName:           record.fromName,
+          fromEmail:          record.fromEmail,
+          snippet:            record.snippet,
+          internalDate:       record.internalDate,
+          postCutoff:         record.postCutoff,
+          aiStatus:           record.aiStatus,
+          avatarUri:          resolveAvatarUri({ sender: { domain: record.fromEmail.split('@')[1] ?? '' } }),
+          avatarFallbackText: (record.fromName || record.fromEmail || '?').charAt(0).toUpperCase(),
+        });
+      }
+    } catch (err) {
+      // One mailbox failing must not stop the others.
+      console.warn(`[poll] sync failed for ${user.user_id.slice(0, 8)}…: ${err.message}`);
+    }
+  }
+}
+
 // ─── Bootstrap ────────────────────────────────────────────────────────────
 
 processingWorker.init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE });
@@ -1678,6 +1739,10 @@ watchManager.startWatchRenewalCron();
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+
+  setInterval(() => {
+    syncEveryone().catch(err => console.error('[poll] error:', err.message));
+  }, SYNC_INTERVAL_MS);
 
   // Resume workers and renew expiring watches for all existing users.
   // This ensures that after a cold start, processing and push notifications

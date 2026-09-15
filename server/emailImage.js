@@ -71,14 +71,21 @@ function declaredEdge(tag, axis) {
 }
 
 /**
- * The one image worth showing from this email, or null.
+ * Every image in this email worth considering, best first.
  *
- * Deliberately conservative: a wrong picture on a card is worse than none,
- * because the card is a claim about what the message is. When nothing clears
- * the bar the post falls back to the sender's generated hero, which is honest
- * about being a stand-in.
+ * It used to return one. That was the bug behind "some emails don't show a
+ * picture": the name-based tests here cannot tell a 1280x102 masthead strip
+ * from a photograph, so the real check happens later against actual pixels —
+ * and when the single committed pick failed that check, the post was left with
+ * nothing, even though the email often carried a perfectly good photo three
+ * images further down. Ranking and falling through costs one extra HEAD-sized
+ * fetch and recovers most of those.
+ *
+ * Deliberately conservative about what enters the list at all: a wrong picture
+ * on a card is worse than none, because the card is a claim about what the
+ * message is.
  */
-function pickHeroImage(html) {
+function pickCandidates(html) {
   if (!html) return null;
 
   const tags = html.match(/<img\b[^>]*>/gi) ?? [];
@@ -111,16 +118,70 @@ function pickHeroImage(html) {
     candidates.push({ url, area: (width ?? 0) * (height ?? 0), stated: width !== null });
   }
 
-  if (!candidates.length) return null;
+  if (!candidates.length) return [];
 
-  // Prefer the largest thing the email actually sized. Among unsized images,
-  // document order wins: the first big picture in a marketing email is nearly
-  // always the one the layout was built around.
-  const sized = candidates.filter(c => c.stated && c.area > 0);
-  if (sized.length) {
-    return sized.reduce((best, c) => (c.area > best.area ? c : best)).url;
+  // Sized images first, largest to smallest — the email told us how big it
+  // meant them to be, and that is the best signal available before fetching.
+  // Unsized ones follow in document order: the first big picture in a
+  // marketing email is nearly always the one the layout was built around.
+  const sized = candidates.filter(c => c.stated && c.area > 0)
+    .sort((a, b) => b.area - a.area);
+  const unsized = candidates.filter(c => !(c.stated && c.area > 0));
+
+  const ordered = [...sized, ...unsized].map(c => c.url);
+  // Four is enough. Past that an email is a catalogue and the fifth image is
+  // not what it is about.
+  return Array.from(new Set(ordered)).slice(0, 4);
+}
+
+/// Back-compat for anything still asking for a single pick.
+function pickHeroImage(html) {
+  return pickCandidates(html)[0] ?? null;
+}
+
+/// Fetched and measured, because the name never says. Returns the first
+/// candidate whose actual pixels are a photograph rather than a masthead
+/// strip, or null when the email has nothing usable.
+///
+/// This runs server-side during interpretation, never on the reader's device
+/// and never on their request path — which is also what keeps the sender from
+/// learning when anyone looked.
+async function resolveBest(candidates, { fetchImpl = fetch } = {}) {
+  let sharp;
+  try {
+    sharp = require('sharp');
+  } catch {
+    // Without sharp there is no measurement, so trust the ranking rather than
+    // dropping the picture entirely.
+    return candidates[0] ?? null;
   }
-  return candidates[0].url;
+
+  for (const url of candidates) {
+    try {
+      const res = await fetchImpl(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(8000),
+        headers: { 'User-Agent': 'DecisionInbox/1.0 (+image-proxy)' },
+      });
+      if (!res.ok) continue;
+      if (!(res.headers.get('content-type') ?? '').startsWith('image/')) continue;
+
+      const raw = Buffer.from(await res.arrayBuffer());
+      if (raw.length > 12 * 1024 * 1024) continue;
+
+      const meta = await sharp(raw).metadata();
+      const w = meta.width ?? 0;
+      const h = meta.height ?? 0;
+      if (!w || !h) continue;
+      if (Math.min(w, h) < MIN_EDGE) continue;
+      if (Math.max(w / h, h / w) > MAX_ASPECT) continue;
+
+      return url;
+    } catch {
+      // One candidate failing is why there is a list.
+    }
+  }
+  return null;
 }
 
 // ─── Signed URLs ──────────────────────────────────────────────────────────
@@ -154,4 +215,6 @@ function buildImageUrl(host, userId, messageId) {
   return `https://${host}/messages/${encodeURIComponent(messageId)}/image?t=${token}`;
 }
 
-module.exports = { extractHtml, pickHeroImage, signImage, buildImageUrl };
+module.exports = {
+  extractHtml, pickCandidates, pickHeroImage, resolveBest, signImage, buildImageUrl,
+};

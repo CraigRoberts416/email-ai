@@ -33,20 +33,25 @@ struct ThreadView: View {
     private var sheetColor: Color { .sheet(fromHex: message.heroBackground) }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    masthead
-                    messageCard
-                    DiscussSection(model: discuss)
-                }
-                .padding(.bottom, Space.xxxl + Space.xxl)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                masthead
+                messageCard
+                DiscussSection(model: discuss)
             }
-            .scrollIndicators(.hidden)
-            .ignoresSafeArea(edges: .top)
-
-            askBar
         }
+        .scrollIndicators(.hidden)
+        .ignoresSafeArea(edges: .top)
+        // A real inset, not an overlay in a ZStack.
+        //
+        // Stacked, the bar floated over the scroll view: the last line of a
+        // thread sat underneath it, the padding meant to clear it was a guess
+        // that was wrong for every message of a different length, and the
+        // keyboard had nothing to push. `safeAreaInset` reserves the space, so
+        // content ends above the field and scrolls to a true bottom — and the
+        // field rides the keyboard up on its own, which is the behaviour of
+        // every messaging app on the phone.
+        .safeAreaInset(edge: .bottom, spacing: 0) { askBar }
         .background(sheetColor.ignoresSafeArea())
         .overlay(alignment: .top) { floatingControls }
         // Both bars, and owned here rather than by whoever pushed this view.
@@ -320,7 +325,22 @@ struct ThreadView: View {
     private var askBar: some View {
         DiscussInput(message: message, model: discuss)
             .padding(.horizontal, Space.lg)
+            .padding(.top, Space.sm)
             .padding(.bottom, Space.sm)
+            // The sheet's own colour behind it, carried to the screen edge.
+            // Without this the bar sat on whatever happened to scroll under it
+            // and its contrast changed as you moved — and this sheet's colour
+            // is extracted from a photograph, so "whatever is behind it" is
+            // not a value anything can be checked against.
+            .background {
+                sheetColor
+                    .overlay(alignment: .top) {
+                        Rectangle()
+                            .fill(Ink.onSheet.opacity(0.12))
+                            .frame(height: Metric.hairline)
+                    }
+                    .ignoresSafeArea(edges: .bottom)
+            }
     }
 
     private func load() async {

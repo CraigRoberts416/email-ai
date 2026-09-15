@@ -95,13 +95,20 @@ async function runMigrations() {
   // Elm header were sitting in the feed as "this email's picture". Clearing
   // them lets the backfill re-decide with the stricter rules. Costs Gmail
   // fetches, not model calls, and is bounded by the same 400.
+  // Every "no picture here" verdict reached before candidates could fall
+  // through is worth re-asking. Extraction used to commit to a single image,
+  // so an email whose first candidate measured as a masthead strip was written
+  // off entirely — even when a real photograph sat three images below it. That
+  // is most of the 173 empties in this mailbox.
   const recheck = await pool.query(`
     UPDATE messages SET image_url = NULL
-    WHERE image_url IS NOT NULL
-      AND (image_url ~* '\\.gif(\\?|$)' OR image_url ~* '(banner|header|masthead|preheader|wordmark)')
+    WHERE post_cutoff = TRUE
+      AND (image_url = ''
+           OR image_url ~* '\\.gif(\\?|$)'
+           OR image_url ~* '(banner|header|masthead|preheader|wordmark)')
   `);
   if (recheck.rowCount) {
-    console.log(`[db] cleared ${recheck.rowCount} misidentified email picture(s) for re-extraction`);
+    console.log(`[db] re-asking ${recheck.rowCount} message(s) for a picture`);
   }
 
   // Re-queue only what the feed actually draws on. The rest of that batch is

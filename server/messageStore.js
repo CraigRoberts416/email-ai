@@ -78,19 +78,50 @@ async function getMessage(userId, messageId) {
 // All Mail is where the rest lives.
 const FEED_LIMIT = 200;
 
+/// Gmail's own category tabs, because the volume in a real mailbox is not
+/// distributed the way attention is.
+///
+/// This mailbox has 207 unread in Primary and 3,677 in Promotions and Updates.
+/// Ordering the feed purely by date gave Primary 25 of its 200 slots: the
+/// person's actual correspondence was 12% of their own feed, and everything
+/// they recognised was buried under retailers. That is the entire "this
+/// doesn't look like my inbox" complaint, and no amount of card design fixes
+/// it — the wrong mail was being selected.
+///
+/// Slots are budgeted per tier and the result is still sorted by date, so the
+/// feed stays chronological. Promotions are not excluded; they simply cannot
+/// crowd out a reply from a human being.
+const TIER_BUDGET = { 0: 130, 1: 45, 2: 35 };
+
+const TIER_SQL = `CASE
+  WHEN 'CATEGORY_PROMOTIONS' = ANY(label_ids)
+    OR 'CATEGORY_SOCIAL' = ANY(label_ids)
+    OR 'CATEGORY_FORUMS' = ANY(label_ids) THEN 2
+  WHEN 'CATEGORY_UPDATES' = ANY(label_ids) THEN 1
+  ELSE 0
+END`;
+
 async function getUnread(userId, { limit = FEED_LIMIT } = {}) {
   const { rows } = await query(`
-    SELECT * FROM messages
-    WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
-    ORDER BY
-      CASE
-        WHEN 'UNREAD' = ANY(label_ids) AND post_cutoff = TRUE  THEN 1
-        WHEN 'UNREAD' = ANY(label_ids) AND post_cutoff = FALSE THEN 2
-        ELSE 3
-      END,
-      internal_date DESC
+    WITH scoped AS (
+      SELECT *, ${TIER_SQL} AS tier
+      FROM messages
+      WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
+    ),
+    ranked AS (
+      SELECT *, row_number() OVER (
+        PARTITION BY tier
+        ORDER BY post_cutoff DESC, internal_date DESC
+      ) AS rn
+      FROM scoped
+    )
+    SELECT * FROM ranked
+    WHERE (tier = 0 AND rn <= $3)
+       OR (tier = 1 AND rn <= $4)
+       OR (tier = 2 AND rn <= $5)
+    ORDER BY post_cutoff DESC, internal_date DESC
     LIMIT $2
-  `, [userId, limit]);
+  `, [userId, limit, TIER_BUDGET[0], TIER_BUDGET[1], TIER_BUDGET[2]]);
   return rows.map(rowToRecord);
 }
 
