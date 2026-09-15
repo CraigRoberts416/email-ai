@@ -332,17 +332,25 @@ extension APIClient.Card {
         // The hero stays as the fallback for designed mail with nothing
         // usable in it. People still never get a *generated* image; an
         // invented photograph attached to a human would be a lie.
+        // SPEC: a picture on a feed card is ALWAYS from the email itself, and
+        // never the generated hero. No exceptions, for any sender.
+        //
+        // The hero is a portrait of a sender in general. On a card it would be
+        // making a claim about *this message* using an image that has nothing
+        // to do with it — a painting of an aircraft above a receipt for a
+        // seat-selection fee. It is decoration wearing the clothes of evidence,
+        // and in a product whose entire premise is that the quote is verbatim
+        // and the summary is grounded, that is the one thing the card cannot
+        // be allowed to do.
+        //
+        // A card with no picture is the honest and common case: roughly half
+        // of all mail carries no image worth showing. It gets text, and text
+        // is not a failure state.
+        //
+        // The hero keeps its job on the thread screen, where it is plainly the
+        // sender's banner and is not standing in for content.
         if !failed, let picture = message.imageURL {
             message.shape = .media([picture])
-        } else if !failed, message.sender.kind == .brand, let hero = message.heroImageURL {
-            // Roughly half of all mail carries no picture of its own — a plain
-            // receipt has nothing to show — and a feed where every other post
-            // is a block of text does not read as a feed. A brand always has
-            // its generated hero to fall back on.
-            //
-            // Still never for a person: an invented photograph attached to a
-            // human being is a lie, and the absence is the honest answer.
-            message.shape = .media([hero])
         }
         return message
     }

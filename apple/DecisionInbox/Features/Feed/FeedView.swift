@@ -135,6 +135,11 @@ struct FeedView: View {
                     .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
                 }
                 .scrollIndicators(.hidden)
+                // Content used to run straight under the clock and under the
+                // floating tab bar with nothing between them, so a post's CTA
+                // could sit in the notch and the dateline had bare white above
+                // it. Both edges dissolve now.
+                .feedEdges()
                 .onAppear { scroller = proxy }
                 // Two geometry observers, both of which return a value that is
                 // CONSTANT during ordinary scrolling, so `body` is not

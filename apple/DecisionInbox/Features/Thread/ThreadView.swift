@@ -42,6 +42,7 @@ struct ThreadView: View {
         }
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
+        .feedEdges()
         // A real inset, not an overlay in a ZStack.
         //
         // Stacked, the bar floated over the scroll view: the last line of a
@@ -315,11 +316,16 @@ struct ThreadView: View {
     }
 
     private func circleLabel(_ symbol: String) -> some View {
+        // Glass rather than a flat scrim disc. These two sit on a photograph
+        // whose tone is whatever the sender's image happened to be, so a fixed
+        // black wash is a guess that is wrong for a bright hero and heavy on a
+        // dark one. Glass takes its value from what is actually behind it,
+        // which is the only thing that holds across every sender.
         Image(systemName: symbol)
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(Ink.onSheet)
             .frame(width: 40, height: 40)
-            .background(Ink.scrim, in: Circle())
+            .glassControl(fallback: Ink.scrim, in: Circle())
     }
 
     private var askBar: some View {
