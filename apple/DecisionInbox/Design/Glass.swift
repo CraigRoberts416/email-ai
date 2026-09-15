@@ -28,10 +28,17 @@ extension View {
     /// A floating control — a pill, a back button, an ask field — on Liquid
     /// Glass, falling back to the flat fill it used to have.
     ///
-    /// `interactive` for anything that responds to touch, because the glass
-    /// reacts to the press and a control that does not is the odd one out.
+    /// NOT interactive by default, and that is the whole point of this comment.
+    /// `.glassEffect(.regular.interactive())` handles its own touches, so
+    /// putting it on a Button's *label* means the glass eats the tap and the
+    /// Button never fires — which is exactly what happened: every back button
+    /// in the app went dead the moment they were put on glass.
+    ///
+    /// Interactive glass is for a standalone glass surface that is itself the
+    /// control. When something else owns the press, the glass is only a
+    /// background.
     func glassControl(
-        interactive: Bool = true,
+        interactive: Bool = false,
         fallback: Color = Ink.surface,
         in shape: some Shape = Capsule()
     ) -> some View {

@@ -326,6 +326,9 @@ struct ThreadView: View {
             .foregroundStyle(Ink.onSheet)
             .frame(width: 40, height: 40)
             .glassControl(fallback: Ink.scrim, in: Circle())
+            // Glass draws but does not hit-test, so the tappable area was the
+            // glyph rather than the disc around it.
+            .contentShape(.circle)
     }
 
     private var askBar: some View {

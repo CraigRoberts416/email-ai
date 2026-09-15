@@ -100,6 +100,12 @@ struct SenderProfileView: View {
                     // sender, so a fixed disc is wrong for a bright one and
                     // heavy on a dark one.
                     .glassControl(fallback: banner == nil ? .clear : Ink.scrim, in: Circle())
+                    // The glass is a background layer and contributes no hit
+                    // shape of its own, so without this only the 15pt chevron
+                    // glyph was tappable — a target you have to aim at, inside
+                    // a control that looks 40pt wide. The flat scrim it
+                    // replaced was a real shape and had been doing this job.
+                    .contentShape(.circle)
             }
             .buttonStyle(.plain)
             .padding(.leading, Space.md)
