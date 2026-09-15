@@ -111,6 +111,11 @@ struct Message: Identifiable, Hashable {
     var heroImageURL: URL?
     var heroBackground: String?
 
+    /// Who this sender is, in one line, generated per domain. Shown on the
+    /// profile where a social app puts a bio. Nil when the model did not
+    /// recognise them.
+    var senderDescription: String?
+
     /// The picture this email actually contained, proxied through our server
     /// so fetching it cannot tell the sender when you looked. The hero says
     /// what a sender is like; this says what this message is about, and when

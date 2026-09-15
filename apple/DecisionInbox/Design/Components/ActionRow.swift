@@ -128,7 +128,7 @@ struct ActionRow: View {
         .buttonStyle(TapStyle())
         .accessibilityLabel(
             message.threadCount > 1
-                ? "Discuss, \(message.threadCount) messages in thread"
+                ? "Discuss, \(message.threadCount) emails in thread"
                 : "Discuss"
         )
     }

@@ -102,6 +102,13 @@ async function runMigrations() {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB
   `);
 
+  // One line about who a sender is, generated alongside their hero and cached
+  // per domain. Nullable on purpose: a missing sentence is a blank, and a
+  // wrong one is the product asserting something false about a real company.
+  await pool.query(`
+    ALTER TABLE sender_domain_assets ADD COLUMN IF NOT EXISTS description TEXT
+  `);
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written

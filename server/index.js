@@ -851,6 +851,7 @@ app.get('/feed', async (req, res) => {
         riskEvidence:       m.riskEvidence ?? [],
         heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
         heroImageBgColor:   cached?.bgColor ?? null,
+        senderDescription:  cached?.description ?? null,
         // The message's own picture, proxied. Present only when the email
         // actually carried one worth showing — the card falls back to the
         // sender's hero rather than inventing something.
@@ -1205,6 +1206,7 @@ app.get('/all-mail', async (req, res) => {
         riskEvidence:       m.riskEvidence ?? [],
         heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
         heroImageBgColor:   cached?.bgColor ?? null,
+        senderDescription:  cached?.description ?? null,
         // The message's own picture, proxied. Present only when the email
         // actually carried one worth showing — the card falls back to the
         // sender's hero rather than inventing something.

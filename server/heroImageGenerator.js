@@ -74,14 +74,26 @@ async function extractBgColor(imageBuffer) {
 
 // ─── DB access ────────────────────────────────────────────────────────────
 
+async function getDescription(domain) {
+  const root = rootDomain(domain);
+  if (!root) return null;
+  const { rows } = await query(
+    'SELECT description FROM sender_domain_assets WHERE domain = $1',
+    [root]
+  );
+  return rows[0]?.description ?? null;
+}
+
 async function getCachedAsset(domain) {
   const root = rootDomain(domain);
   if (!root) return null;
   const { rows } = await query(
-    'SELECT bg_color FROM sender_domain_assets WHERE domain = $1',
+    'SELECT bg_color, description FROM sender_domain_assets WHERE domain = $1',
     [root]
   );
-  return rows[0] ? { domain: root, bgColor: rows[0].bg_color } : null;
+  return rows[0]
+    ? { domain: root, bgColor: rows[0].bg_color, description: rows[0].description ?? null }
+    : null;
 }
 
 async function getCachedImageBytes(domain) {
@@ -94,14 +106,58 @@ async function getCachedImageBytes(domain) {
   return rows[0] ? { bytes: rows[0].image_bytes, mime: rows[0].image_mime } : null;
 }
 
-async function saveAsset(domain, imageBuffer, mime, bgColor) {
+async function saveAsset(domain, imageBuffer, mime, bgColor, description) {
   const root = rootDomain(domain);
   await query(
-    `INSERT INTO sender_domain_assets (domain, image_bytes, image_mime, bg_color)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO sender_domain_assets (domain, image_bytes, image_mime, bg_color, description)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (domain) DO NOTHING`,
-    [root, imageBuffer, mime, bgColor]
+    [root, imageBuffer, mime, bgColor, description ?? null]
   );
+}
+
+/// One line about who a sender is — the thing a profile's bio slot is for.
+///
+/// Deliberately not a summary of their mail: the counts under it already
+/// report volume and demand, and saying the same thing in prose spends the one
+/// line that could tell the reader something they did not already know.
+///
+/// Returns null rather than a guess. An empty bio is a missing sentence; a
+/// wrong one is the product asserting something false about a real company,
+/// on a screen whose entire job is identification.
+async function generateDescription(openai, senderName, domain) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.3,
+      max_tokens: 60,
+      messages: [{
+        role: 'user',
+        content: [
+          'Write one line describing who this email sender is, for a profile page in a mail app.',
+          '',
+          `Sender: ${senderName || domain}`,
+          `Domain: ${domain}`,
+          '',
+          'RULES',
+          '- Under 90 characters. One sentence, or a short fragment plus a sentence.',
+          '- Say what the organisation IS and what it sends. "The airline. Booking',
+          '  confirmations, schedule changes, and SkyMiles."',
+          '- Never describe the reader\'s relationship to them, their volume of mail,',
+          '  or whether it needs attention. That is counted elsewhere.',
+          '- No marketing language, no adjectives the company would choose for itself.',
+          '- If you do not recognise the sender, reply with exactly: UNKNOWN',
+        ].join('\n'),
+      }],
+    });
+
+    const text = response.choices?.[0]?.message?.content?.trim();
+    if (!text || text === 'UNKNOWN' || text.length > 140) return null;
+    return text;
+  } catch (err) {
+    console.warn(`[hero] description failed for ${domain}: ${err?.message ?? err}`);
+    return null;
+  }
 }
 
 // ─── OpenAI image generation ──────────────────────────────────────────────
@@ -164,10 +220,15 @@ function ensureHeroAsset(openai, domain, senderName) {
       if (existing) return;
 
       const prompt = buildPrompt(senderName, root);
-      const imageBuffer = await generateImage(openai, prompt);
+      // In parallel: the description is a cheap text call and has no reason to
+      // wait on an image generation that takes an order of magnitude longer.
+      const [imageBuffer, description] = await Promise.all([
+        generateImage(openai, prompt),
+        generateDescription(openai, senderName, root),
+      ]);
       const bgColor = await extractBgColor(imageBuffer);
-      await saveAsset(root, imageBuffer, 'image/png', bgColor);
-      console.log(`[hero] generated asset for ${root} (bg ${bgColor})`);
+      await saveAsset(root, imageBuffer, 'image/png', bgColor, description);
+      console.log(`[hero] generated asset for ${root} (bg ${bgColor}${description ? ', described' : ''})`);
     } catch (err) {
       failedAt.set(root, Date.now());
       console.warn(`[hero] generation failed for ${root}:`, err?.message ?? err);
@@ -198,6 +259,6 @@ module.exports = {
   isGeneratable,
   getCachedAsset,
   getCachedImageBytes,
-  ensureHeroAsset,
+  ensureHeroAsset, getDescription,
   buildHeroImageUrl,
 };

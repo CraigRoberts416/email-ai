@@ -655,8 +655,8 @@ private extension Message {
             // No pictures in a briefing: the recap is text the model writes
             // about text, and an image URL is one more thing to send for
             // nothing.
-            heroImageUrl: nil, heroImageBgColor: nil, imageUrl: nil,
-            attachments: nil, riskLevel: nil
+            heroImageUrl: nil, heroImageBgColor: nil, senderDescription: nil,
+            imageUrl: nil, attachments: nil, riskLevel: nil
         )
     }
 }

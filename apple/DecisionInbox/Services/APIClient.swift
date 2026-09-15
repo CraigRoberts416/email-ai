@@ -77,6 +77,10 @@ struct APIClient {
         let avatarFallbackText: String?
         let heroImageUrl: String?
         let heroImageBgColor: String?
+        /// One line about who this sender is, generated per domain. Nil when
+        /// the model did not recognise them — a blank is a missing sentence,
+        /// a guess would be a false claim about a real company.
+        let senderDescription: String?
         /// The picture this particular email carried, proxied through our
         /// server. Distinct from the hero, which stands for the sender in
         /// general — this one is about *this* message.
@@ -326,6 +330,7 @@ extension APIClient.Card {
             shape: .text,
             heroImageURL: heroImageUrl.flatMap(URL.init(string:)),
             heroBackground: heroImageBgColor,
+            senderDescription: senderDescription,
             imageURL: imageUrl.flatMap(URL.init(string:)),
             attachments: (attachments ?? []).map { wire in
                 Attachment(

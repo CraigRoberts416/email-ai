@@ -15,13 +15,26 @@ struct SenderProfileView: View {
 
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @State private var lane: Lane = .messages
+    @State private var lane: Lane = .emails
     @State private var open: Message?
 
+    /// `emails`, not `messages`. This is a mail client — the thing on screen
+    /// is an email, and calling it a message borrows a word from chat apps
+    /// where it means something slightly different.
     enum Lane: String, CaseIterable, Identifiable {
-        case messages, media, docs
+        case emails, media, docs
         var id: String { rawValue }
         var label: String { rawValue.uppercased() }
+
+        /// Carries the tab on its own when the tab is closed, so each has to
+        /// be unambiguous without its label.
+        var symbol: String {
+            switch self {
+            case .emails:   return "tray.full"
+            case .media:    return "photo.on.rectangle"
+            case .docs:     return "paperclip"
+            }
+        }
     }
 
     private var all: [Message] { store.messages(from: sender.address) }
@@ -64,7 +77,7 @@ struct SenderProfileView: View {
                 switch lane {
                 case .media:   mediaGrid
                 case .docs:    docsList
-                case .messages: messageList
+                case .emails:  emailList
                 }
             }
             .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
@@ -156,15 +169,24 @@ struct SenderProfileView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
 
-                // Where a profile would carry a bio. This sender did not write
-                // one, so it is ours — and it is counted from their actual mail
-                // rather than written by a model, which makes it checkable.
-                // Mono, so it is never mistaken for their words.
-                Text(characterisation)
-                    .typeStyle(Style.gloss)
-                    .foregroundStyle(Ink.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, Space.sm)
+                // Where a profile carries a bio: who this sender is.
+                //
+                // Not a summary of their mail. The counts directly below
+                // already report volume and what has been asked of you, and
+                // saying that again in prose spends the one line that could
+                // tell you something you did not already know.
+                //
+                // Absent rather than invented when the model does not
+                // recognise the sender: a blank is a missing sentence, a guess
+                // is a false claim about a real company on the one screen whose
+                // whole job is identification.
+                if let description = senderDescription {
+                    Text(description)
+                        .typeStyle(Style.gloss)
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, Space.sm)
+                }
 
                 metaRow
                     .padding(.top, Space.sm)
@@ -180,23 +202,8 @@ struct SenderProfileView: View {
         }
     }
 
-    /// One line about what this sender sends, derived from what they actually
-    /// sent. Every number here is counted, so nothing can be wrong in the way
-    /// a generated sentence can.
-    private var characterisation: String {
-        guard !all.isEmpty else { return "NOTHING FROM THEM YET." }
-        let recent = Array(all.prefix(10))
-        let asked = recent.count { $0.kicker == .needsYou }
-        let promos = all.count { $0.isPromotion }
-
-        var kind = "Mostly correspondence."
-        if promos > all.count / 2 { kind = "Mostly broadcast." }
-        else if all.allSatisfy({ $0.kicker == .receipt }) { kind = "Receipts." }
-
-        let attention = asked == 0
-            ? "None of the last \(recent.count) asked anything of you."
-            : "\(asked) of the last \(recent.count) needed you."
-        return "\(kind) \(attention)"
+    private var senderDescription: String? {
+        all.compactMap(\.senderDescription).first
     }
 
     /// What Twitter fills with a location and a join date.
@@ -256,9 +263,9 @@ struct SenderProfileView: View {
     // MARK: Lanes
 
     /// Their mail, in the feed's own card.
-    @ViewBuilder private var messageList: some View {
+    @ViewBuilder private var emailList: some View {
         if all.isEmpty {
-            EmptyStateView(headline: "Nothing from them.", detail: "NO MAIL FROM THIS SENDER YET.")
+            EmptyStateView(headline: "Nothing from them.", detail: "NO EMAIL FROM THIS SENDER YET.")
                 .frame(height: 240)
         } else {
             ForEach(all) { message in
@@ -370,7 +377,7 @@ struct SenderProfileView: View {
     /// a fact worth knowing; a follower count would be a fiction.
     private var stats: some View {
         HStack(spacing: Space.md) {
-            stat(all.count, all.count == 1 ? "MESSAGE" : "MESSAGES")
+            stat(all.count, all.count == 1 ? "EMAIL" : "EMAILS")
             Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
             stat(threads.count, threads.count == 1 ? "THREAD" : "THREADS")
             if !replies.isEmpty {
@@ -396,30 +403,45 @@ struct SenderProfileView: View {
 
     /// Underline, not a pill. A filled segment would be the only soft
     /// container in the product, and the rule already does the job.
+    /// Full width, icon alone when closed, icon and name when open.
+    ///
+    /// Three labels across 390pt forces either truncation or 10pt type, and
+    /// neither is worth paying when the icon already says which is which. The
+    /// name appears on the tab you are actually in, where there is room for it
+    /// — which is also the only tab whose name you need.
     private var lanePicker: some View {
-        HStack(spacing: Space.xl) {
+        HStack(spacing: 0) {
             ForEach(Lane.allCases) { option in
                 Button {
                     withAnimation(Move.crisp) { lane = option }
                 } label: {
-                    VStack(spacing: Space.sm) {
-                        Text(option.label)
-                            .typeStyle(Style.kicker)
-                            .foregroundStyle(lane == option ? Ink.primary : Ink.tertiary)
+                    VStack(spacing: Space.sm + 2) {
+                        HStack(spacing: Space.xs + 2) {
+                            Image(systemName: option.symbol)
+                                .font(.system(size: 17))
+                            if lane == option {
+                                Text(option.label)
+                                    .typeStyle(Style.kicker)
+                            }
+                        }
+                        .foregroundStyle(lane == option ? Ink.primary : Ink.tertiary)
+                        .frame(height: 22)
+
+                        // Spans the tab, not the label: at full width an
+                        // underline that hugs a word leaves the rest of the
+                        // column looking unclaimed.
                         Rectangle()
                             .fill(lane == option ? Ink.primary : .clear)
                             .frame(height: 2)
                     }
+                    .frame(maxWidth: .infinity)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(option.label.capitalized)
                 .accessibilityAddTraits(lane == option ? [.isSelected, .isButton] : .isButton)
             }
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.top, Space.sm)
+        .padding(.top, Space.xl)
     }
-
-
 }
