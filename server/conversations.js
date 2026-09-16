@@ -13,7 +13,9 @@
 
 const { query } = require('./db');
 const gmailSync = require('./gmailSync');
+const messageStore = require('./messageStore');
 const { newText } = require('./replyText');
+const { extractAttachments } = require('./emailAttachments');
 
 const FREE_MAIL = new Set([
   'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com',
@@ -323,7 +325,12 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
 /// practice — the caps are for the thread with a decade of history in it, where
 /// the recent end is the part anyone scrolls to.
 async function hydrateBodies(userId, rows, { limit = 60, concurrency = 8 } = {}) {
-  const missing = rows.filter(r => r.body_text === null || r.body_text === undefined)
+  // Either one missing is a reason to fetch, because one fetch answers both.
+  // Scoping this to the body alone left the message that actually had an
+  // attachment unfixed, since its body had already been stored.
+  const blank = v => v === null || v === undefined;
+  const missing = rows
+    .filter(r => blank(r.body_text) || blank(r.attachments))
     .slice(-limit);
   if (!missing.length) return;
 
@@ -339,6 +346,19 @@ async function hydrateBodies(userId, rows, { limit = 60, concurrency = 8 } = {})
           'UPDATE messages SET body_text = $1 WHERE user_id = $2 AND message_id = $3',
           [text, userId, row.message_id]
         );
+
+        // The files, from the payload already in hand.
+        //
+        // Nadia wrote "please also see the Token 101 attached" and the bubble
+        // showed no attachment — it was waiting on the interpretation worker,
+        // which is about what a message means and has nothing to do with what
+        // it carries. This fetch is already paid for and the parts are right
+        // here.
+        if (row.attachments === null || row.attachments === undefined) {
+          const files = extractAttachments(full.payload);
+          row.attachments = files;
+          await messageStore.setAttachments(userId, row.message_id, files);
+        }
       } catch (err) {
         // A message that will not fetch falls back to its fragment rather than
         // failing the conversation. Left NULL so the next open tries again —

@@ -1099,7 +1099,21 @@ app.get('/conversations/:id/messages', async (req, res) => {
   try {
     const user = await userStore.getUser(userId);
     const messages = await conversations.conversationMessages(userId, user?.email, req.params.id, { resolveAvatar: resolveAvatarUri });
-    res.json(stripLoneSurrogates({ messages }));
+    // The same signed thumbnail the feed hands out. A file is the same file
+    // whichever surface it appears on, and without this an image attachment
+    // in a thread was a grey tile with a filename on it.
+    const withPreviews = messages.map(m => ({
+      ...m,
+      attachments: (m.attachments ?? []).map(a => ({
+        ...a,
+        previewUrl: a.isImage
+          ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
+            + `/attachments/${encodeURIComponent(a.id)}`
+            + `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`
+          : null,
+      })),
+    }));
+    res.json(stripLoneSurrogates({ messages: withPreviews }));
   } catch (err) {
     console.error('[conversation-messages] error:', err.message);
     res.status(500).json({ error: 'failed to load conversation' });
