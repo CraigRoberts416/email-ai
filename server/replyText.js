@@ -175,4 +175,4 @@ function unwrap(text) {
   return out.join('\n');
 }
 
-module.exports = { newText, stripHtml };
+module.exports = { newText, stripHtml, unwrap };

@@ -14,7 +14,7 @@
 const { query } = require('./db');
 const gmailSync = require('./gmailSync');
 const messageStore = require('./messageStore');
-const { newText } = require('./replyText');
+const { newText, unwrap } = require('./replyText');
 const { extractAttachments } = require('./emailAttachments');
 
 const FREE_MAIL = new Set([
@@ -333,7 +333,14 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
     // The fragments remain as a fallback, for the moment between a message
     // arriving and its body being fetched, and for the rare mail that is all
     // quoted text. An empty bubble would be worse than a short one.
-    body: row.body_text || row.quote || row.snippet || '',
+    // Unwrapped on the way out as well as on the way in.
+    //
+    // Clearing the column at boot and re-fetching worked, and then kept
+    // half-working: the instance draining during a deploy re-wrote some rows
+    // with the previous code, so every release left a handful of bodies
+    // wrapped. Normalising at read time is idempotent and does not care which
+    // version wrote the row.
+    body: unwrap(row.body_text || '') || row.quote || row.snippet || '',
     summary: row.summary ?? null,
     internalDate: Number(row.internal_date),
     unread: (row.label_ids ?? []).includes('UNREAD'),
