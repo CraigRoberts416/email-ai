@@ -106,8 +106,10 @@ struct APIClient {
 
     // MARK: Conversations
 
-    struct ConversationWire: Decodable {
-        struct Participant: Decodable {
+    // Codable, not just Decodable: these are cached to disk so the People
+    // list renders from what was true a minute ago instead of an empty screen.
+    struct ConversationWire: Codable {
+        struct Participant: Codable {
             let name: String?
             let email: String
             /// Their organisation's mark, not a photograph of them. See the

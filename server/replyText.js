@@ -72,7 +72,14 @@ function findPart(payload, mimeType) {
  */
 function newText(payload) {
   const plain = findPart(payload, 'text/plain');
-  const raw = plain || stripHtml(findPart(payload, 'text/html'));
+  // A text/plain part is not a promise that the part is text. Retailers
+  // routinely paste the HTML build into it — one sender's "plain" body opened
+  // `<p>Hi CRAIG,</p><br><br>` and that is what reached the list row. Trust
+  // the declared type, but check it.
+  const looksLikeHtml = /<\/?(p|br|div|table|td|tr|span|a|img|h[1-6])\b[^>]*>/i.test(plain);
+  const raw = plain && !looksLikeHtml
+    ? plain
+    : stripHtml(plain || findPart(payload, 'text/html'));
   if (!raw) return '';
 
   let text = raw.replace(/\r\n/g, '\n');

@@ -210,35 +210,49 @@ final class FeedStore {
 
     /// Pulls the conversation list. Cheap enough to call on every appearance:
     /// it is one request and the result is small.
+    ///
+    /// Reads the cache first, so the list is on screen before the request goes
+    /// out. The people who wrote to you a minute ago are still the people who
+    /// wrote to you, and a headline saying otherwise while the network answers
+    /// is the app narrating its own plumbing.
     func loadConversations() async {
         guard let account = auth.accounts.first else { return }
+
+        if conversations.isEmpty, let cached = FeedCache.loadConversations(for: account.id) {
+            conversations = cached.map(Self.conversation(from:))
+            conversationsLoaded = true
+        }
+
         do {
             let wire = try await client(account.id).conversations()
-            conversations = wire.map { c in
-                Conversation(
-                    id: c.id,
-                    participants: c.participants.map { p in
-                        Sender(
-                            name: p.name ?? "",
-                            address: p.email,
-                            // Everyone in here is a person by construction —
-                            // the server refuses to build a conversation that
-                            // contains an automated address.
-                            kind: .person,
-                            logoURL: nil
-                        )
-                    },
-                    preview: c.preview ?? "",
-                    lastAt: Date(timeIntervalSince1970: c.lastAt / 1000),
-                    lastFromMe: c.lastFromMe ?? false,
-                    unread: c.unread ?? false,
-                    messageCount: c.messageCount ?? 0
-                )
-            }
+            conversations = wire.map(Self.conversation(from:))
+            FeedCache.saveConversations(wire, for: account.id)
         } catch {
             print("[conversations] load failed: \(error)")
         }
         conversationsLoaded = true
+    }
+
+    private static func conversation(from c: APIClient.ConversationWire) -> Conversation {
+        Conversation(
+            id: c.id,
+            participants: c.participants.map { p in
+                Sender(
+                    name: p.name ?? "",
+                    address: p.email,
+                    // Everyone in here is a person by construction — the
+                    // server refuses to build a conversation that contains an
+                    // automated address.
+                    kind: .person,
+                    logoURL: nil
+                )
+            },
+            preview: c.preview ?? "",
+            lastAt: Date(timeIntervalSince1970: c.lastAt / 1000),
+            lastFromMe: c.lastFromMe ?? false,
+            unread: c.unread ?? false,
+            messageCount: c.messageCount ?? 0
+        )
     }
 
     func messages(in conversation: Conversation) async -> [ConversationMessage] {

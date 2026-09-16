@@ -21,6 +21,9 @@ enum FeedCache {
         let cards: [APIClient.Card]
         let savedAt: Date
         let recap: APIClient.Recap?
+        /// Optional so an envelope written before conversations were cached
+        /// still decodes rather than being thrown away as corrupt.
+        var conversations: [APIClient.ConversationWire]?
     }
 
     private static var directory: URL? {
@@ -70,7 +73,14 @@ enum FeedCache {
     static func save(_ cards: [APIClient.Card], recap: APIClient.Recap?, for accountID: String) {
         sweep()
         guard let file = file(for: accountID) else { return }
-        let envelope = Envelope(cards: Array(cards.prefix(200)), savedAt: .now, recap: recap)
+        // Conversations are carried forward rather than dropped: the feed and
+        // the People list load independently, and whichever writes last must
+        // not erase the other's cache.
+        let existing = raw(for: accountID)
+        let envelope = Envelope(
+            cards: Array(cards.prefix(200)), savedAt: .now, recap: recap,
+            conversations: existing?.conversations
+        )
         guard let data = try? JSONEncoder().encode(envelope) else { return }
         // Written without file protection set to `complete` so a background
         // fetch before first unlock can still read it — the same reason the
@@ -89,6 +99,36 @@ enum FeedCache {
             return nil
         }
         return (envelope.cards, envelope.recap)
+    }
+
+    /// Mail from people, cached the same way and for the same reason — a cold
+    /// start showed "Reading your mail…" where a list of names had been.
+    static func saveConversations(_ conversations: [APIClient.ConversationWire], for accountID: String) {
+        guard let file = file(for: accountID) else { return }
+        let existing = raw(for: accountID)
+        let envelope = Envelope(
+            cards: existing?.cards ?? [], savedAt: .now, recap: existing?.recap,
+            conversations: Array(conversations.prefix(80))
+        )
+        guard let data = try? JSONEncoder().encode(envelope) else { return }
+        try? data.write(to: file, options: [.atomic])
+    }
+
+    static func loadConversations(for accountID: String) -> [APIClient.ConversationWire]? {
+        guard let envelope = raw(for: accountID),
+              Date.now.timeIntervalSince(envelope.savedAt) < maximumAge,
+              let conversations = envelope.conversations, !conversations.isEmpty
+        else { return nil }
+        return conversations
+    }
+
+    /// The envelope as written, with no age check — for read-modify-write,
+    /// where expiring half of it would silently drop the other half.
+    private static func raw(for accountID: String) -> Envelope? {
+        guard let file = file(for: accountID),
+              let data = try? Data(contentsOf: file)
+        else { return nil }
+        return try? JSONDecoder().decode(Envelope.self, from: data)
     }
 
     static func clear(for accountID: String) {

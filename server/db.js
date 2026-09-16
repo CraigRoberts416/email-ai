@@ -140,6 +140,17 @@ async function runMigrations() {
     console.log(`[db] re-asking ${stale.rowCount} message(s) for a body`);
   }
 
+  // Bodies stored before a text/plain part was checked for actually being
+  // text. Senders paste the HTML build into it, and one list row read
+  // `<p>Hi CRAIG,</p><br><br>`.
+  const markup = await pool.query(`
+    UPDATE messages SET body_text = NULL
+    WHERE body_text ~* '</?(p|br|div|table|td|tr|span|img|h[1-6])[ />]'
+  `);
+  if (markup.rowCount) {
+    console.log(`[db] re-asking ${markup.rowCount} message(s) whose body was markup`);
+  }
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written

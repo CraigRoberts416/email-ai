@@ -126,8 +126,11 @@ function setKey(addresses) {
 function firstLine(body) {
   if (!body) return '';
   const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
-  const words = lines.find(l => !/^(https?:\/\/|www\.)\S*$/i.test(l));
-  return (words ?? lines[0] ?? '').replace(/\s+/g, ' ').trim();
+  // Every line that is language, run together — not the first one. A body
+  // opens with "Hi Craig," far more often than it opens with the point, and a
+  // row reading only the greeting says nothing at all.
+  const words = lines.filter(l => !/^(https?:\/\/|www\.)\S*$/i.test(l));
+  return (words.length ? words : lines).join(' ').replace(/\s+/g, ' ').trim();
 }
 
 /**
