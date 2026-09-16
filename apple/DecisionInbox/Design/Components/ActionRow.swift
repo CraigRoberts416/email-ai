@@ -25,15 +25,22 @@ struct ActionRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
 
-    /// Raising every target to a real 44pt makes the row 5 × 44 wide before any
-    /// gaps. With `Space.xl` between them that is 316pt against 361pt of usable
-    /// width — tight, and gone the moment the type grows. The gaps give ground
-    /// before the targets do.
-    /// Six 44pt targets are 264pt, and the card's measure is 358. That leaves
-    /// 94 for five gaps, so 20 does not fit and the archive glyph was clipped
-    /// off the right edge of every post. 16 fits with room; the gaps give
-    /// ground before the targets do.
-    private var spacing: CGFloat { typeSize >= .xxxLarge ? Space.sm : Space.lg }
+    @State private var picking = false
+    /// Which reaction is under the finger mid-drag.
+    @State private var focus: Int?
+
+    /// Zero, because the targets already carry the spacing.
+    ///
+    /// Each glyph sits in its own 44pt box, so butting the boxes together
+    /// still puts 44pt between glyph centres — comfortably more than the
+    /// smallest distance a finger can distinguish, and exactly the pitch the
+    /// design was drawn at. Adding 16 on top of that pushed the centres to 60
+    /// and spread four related icons across 224pt, which stopped reading as a
+    /// group and started reading as a toolbar.
+    ///
+    /// The targets themselves do NOT shrink. The drawn row got tighter; the
+    /// touchable row did not, which is the whole point of separating the two.
+    private var spacing: CGFloat { 0 }
     /// At accessibility sizes no arrangement of five 44pt glyphs fits, so the
     /// row collapses to one labelled menu rather than clipping, or wrapping
     /// into something that no longer reads as a footer.
@@ -47,8 +54,20 @@ struct ActionRow: View {
         }
     }
 
+    /// Four on a ground, two outside it.
+    ///
+    /// Six evenly spaced glyphs read as six equal options, and they are not:
+    /// four of them act on the conversation and two file it away. Spacing
+    /// alone was not enough to say so — a wider gap in a row of identical
+    /// marks reads as a layout accident. A soft ground under the acting four
+    /// makes the grouping structural, and the filing two then need no
+    /// container of their own because being *outside* one is the statement.
+    ///
+    /// This is the one place the product reintroduces a container it removed
+    /// on purpose elsewhere. It earns it by carrying a distinction the feed
+    /// cannot otherwise make.
     private var row: some View {
-        HStack(spacing: spacing) {
+        HStack(spacing: 0) {
             // The same four actions on every post, promotion or not.
             //
             // Unsubscribe used to take this row's first slots on promotional
@@ -57,15 +76,23 @@ struct ActionRow: View {
             // list-management control in the row that acts on the
             // conversation. It lives in the header now, next to the sender it
             // actually concerns.
-            react
-            // `arrow.turn.up.left/right`, read from the glyphs in the file
-            // rather than picked by eye — arrowshape is the filled-body arrow
-            // and this row is drawn in the thin one.
-            actOn("arrow.turn.up.left", label: "Reply", action: onReply)
-            actOn("arrow.turn.up.right", label: "Forward", action: onForward)
-            discuss
+            HStack(spacing: spacing) {
+                react
+                // `arrow.turn.up.left/right`, read from the glyphs in the file
+                // rather than picked by eye — arrowshape is the filled-body
+                // arrow and this row is drawn in the thin one.
+                actOn("arrow.turn.up.left", label: "Reply", action: onReply)
+                actOn("arrow.turn.up.right", label: "Forward", action: onForward)
+                discuss
+            }
+            .padding(.horizontal, Space.sm + 2)
+            .background(Ink.surfaceTertiary, in: Capsule())
+            // The picker is drawn from the acting group so it can be aligned
+            // to the react target's own leading edge, and lifted above the row
+            // rather than over it.
+            .overlay(alignment: .bottomLeading) { picker }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: Space.md)
 
             file(message.isSaved ? "bookmark.fill" : "bookmark", label: "Save", action: onSave)
             file("archivebox", label: "Archive", action: onArchive)
@@ -81,8 +108,8 @@ struct ActionRow: View {
             Button("Forward", systemImage: "arrowshape.turn.up.right", action: onForward)
             Button("Discuss", systemImage: "sparkles", action: onDiscuss)
             Menu("React") {
-                ForEach(Self.reactions, id: \.self) { emoji in
-                    Button(emoji) { onReact(emoji) }
+                ForEach(Reaction.all) { reaction in
+                    Button("\(reaction.emoji)  \(reaction.label)") { onReact(reaction.emoji) }
                 }
                 if message.reaction != nil {
                     Button("Remove reaction", role: .destructive) { onReact(nil) }
@@ -121,7 +148,8 @@ struct ActionRow: View {
                         .monospacedDigit()
                 }
             }
-            .foregroundStyle(Ink.secondary)
+            // Acting, so black — it sits on the ground with the other three.
+            .foregroundStyle(Ink.primary)
             .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
             .contentShape(.rect)
         }
@@ -146,31 +174,132 @@ struct ActionRow: View {
     /// itself, which is the cheapest possible indicator and cannot disagree
     /// with the thing it reports.
     @ViewBuilder private var react: some View {
-        Menu {
-            ForEach(Self.reactions, id: \.self) { emoji in
-                Button(emoji) { onReact(emoji) }
+        Group {
+            if let reaction = message.reaction {
+                Text(reaction).font(.system(size: Metric.iconAction))
+            } else {
+                Image(systemName: "face.smiling")
+                    .font(.system(size: Metric.iconAction))
+                    .foregroundStyle(Ink.primary)
             }
-            if message.reaction != nil {
-                Divider()
-                Button("Remove reaction", role: .destructive) { onReact(nil) }
-            }
-        } label: {
-            Group {
-                if let reaction = message.reaction {
-                    Text(reaction).font(.system(size: 17))
+        }
+        .frame(width: Metric.tapTarget, height: Metric.tapTarget)
+        .contentShape(.rect)
+        .gesture(pickGesture)
+        // Tap is a separate, simpler contract than the press-and-drag: open
+        // the row, or clear a reaction that is already set. Attached after the
+        // drag gesture so the drag wins when both could apply.
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                if picking {
+                    close()
+                } else if message.reaction != nil {
+                    Haptics.commit()
+                    onReact(nil)
                 } else {
-                    Image(systemName: "face.smiling")
-                        .font(.system(size: Metric.iconAction))
-                        .foregroundStyle(Ink.secondary)
+                    open()
                 }
             }
-            .frame(width: Metric.tapTarget, height: Metric.tapTarget)
-            .contentShape(.rect)
+        )
+        .accessibilityLabel(reactionLabel)
+        // VoiceOver cannot drag a dock, so the whole set is offered as named
+        // actions instead. This is the only route for it, so it lists every
+        // reaction rather than a representative few.
+        .accessibilityActions {
+            ForEach(Reaction.all) { reaction in
+                Button(reaction.label) { onReact(reaction.emoji) }
+            }
+            if message.reaction != nil {
+                Button("Remove reaction") { onReact(nil) }
+            }
         }
-        .accessibilityLabel(message.reaction.map { "Reacted \($0). Change reaction" } ?? "React")
     }
 
-    private static let reactions = ["\u{1F44D}", "\u{2705}", "\u{1F440}", "\u{1F389}", "\u{1F614}", "\u{2757}"]
+    private var reactionLabel: String {
+        guard let reaction = message.reaction else { return "React" }
+        let named = Reaction.label(for: reaction) ?? reaction
+        return "Reacted \(named). Tap to clear, press and hold to change"
+    }
+
+    @ViewBuilder private var picker: some View {
+        if picking {
+            ReactionPicker(reactions: Reaction.all, focus: focus)
+                // Clear of the row, and hung from the acting group's leading
+                // edge so it rises out of the react target rather than from
+                // the centre of the card.
+                .offset(y: -(Metric.tapTarget + Space.md))
+                .transition(
+                    .scale(scale: 0.86, anchor: .bottomLeading)
+                        .combined(with: .opacity)
+                )
+                .zIndex(1)
+        }
+    }
+
+    /// Press, then drag across without lifting — one continuous gesture, which
+    /// is what makes it feel like a dock rather than a menu.
+    private var pickGesture: some Gesture {
+        LongPressGesture(minimumDuration: 0.18)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                guard case .second(true, let drag) = value else { return }
+                if !picking { open() }
+                guard let drag else { return }
+                let next = hit(drag.location)
+                if next != focus {
+                    // One tick per item crossed. This is the only feedback
+                    // that the thing under your finger changed, since your
+                    // finger is covering it.
+                    if next != nil { Haptics.detent() }
+                    focus = next
+                }
+            }
+            .onEnded { value in
+                guard case .second(true, let drag) = value else { return }
+                // Lifting off the row leaves the picker up so it can be
+                // tapped — a press that opened something should not close it
+                // again just because the finger did not travel.
+                guard let drag, let index = hit(drag.location) else { return }
+                Haptics.commit()
+                onReact(Reaction.all[index].emoji)
+                close()
+            }
+    }
+
+    /// Which reaction a point in the react target's space is over, if any.
+    ///
+    /// Vertical distance matters as much as horizontal. Picking by x alone
+    /// means dragging your thumb down the card and letting go still commits a
+    /// reaction, when dragging away from a picker is how every control of this
+    /// kind is cancelled. The band is generous — the finger is expected to
+    /// wander while crossing a row it cannot see under itself — but it ends.
+    private func hit(_ point: CGPoint) -> Int? {
+        guard Self.liveBand.contains(point.y) else { return nil }
+        // The picker hangs from the acting group's leading edge and the react
+        // target sits one ground-padding in from it, so the two coordinate
+        // spaces differ by exactly that padding.
+        return ReactionPicker.focus(at: point.x + Space.sm + 2, count: Reaction.all.count)
+    }
+
+    /// In the react target's own coordinate space, where 0 is its top edge.
+    /// The picker sits above it, so the band reaches well into negative y and
+    /// only a little below the target itself.
+    private static let liveBand: ClosedRange<CGFloat> = -150...60
+
+    private func open() {
+        Haptics.announce()
+        withAnimation(reduceMotion ? nil : Move.crisp) {
+            picking = true
+            focus = nil
+        }
+    }
+
+    private func close() {
+        withAnimation(reduceMotion ? nil : Move.exit) {
+            picking = false
+            focus = nil
+        }
+    }
 
     /// Acting on the message.
     private func actOn(
@@ -178,7 +307,7 @@ struct ActionRow: View {
         label: String,
         action: @escaping () -> Void
     ) -> some View {
-        icon(systemName, size: Metric.iconAction, tint: Ink.secondary, label: label, action: action)
+        icon(systemName, size: Metric.iconAction, tint: Ink.primary, label: label, action: action)
     }
 
     /// Filing it away.
@@ -203,7 +332,12 @@ struct ActionRow: View {
                 .foregroundStyle(tint)
                 // Was `tapTarget * 0.6` — 26.4pt, under the 44pt minimum at
                 // every type size rather than only the large ones.
-                .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget, alignment: .leading)
+                //
+                // Centred, not leading. With the boxes butted together the
+                // glyph's position inside its own box *is* the rhythm of the
+                // row, and leading-aligned glyphs next to the centred ones in
+                // `react` and `discuss` put two different pitches in one group.
+                .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
                 .contentShape(.rect)
         }
         .buttonStyle(TapStyle())

@@ -76,13 +76,15 @@ enum Haptics {
         notice.notificationOccurred(.error)
     }
 
-    /// `UISelectionFeedbackGenerator` is declared and, in the current feature
-    /// set, never called. It is kept because a future detented control — a
-    /// snooze-time picker, a per-sender frequency stepper — is the correct home
-    /// for it. If none ships, delete it; do not find a use for it.
+    /// One tick per item crossed in a detented control.
     ///
-    /// A flicked carousel does **not** earn it: continuous, frequent, and the
-    /// page dots already carry the state.
+    /// Its call site is the reaction picker, which is the case this was held
+    /// open for: discrete stops, one live at a time, and — the part that
+    /// actually earns the cue — the finger is covering the thing it is
+    /// choosing, so touch is the only channel that can report the change.
+    ///
+    /// A flicked carousel still does **not** earn it: continuous, frequent,
+    /// and the page dots already carry the state.
     static func detent() {
         guard enabled else { return }
         selection.selectionChanged()

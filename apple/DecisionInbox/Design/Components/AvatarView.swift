@@ -14,10 +14,19 @@ struct AvatarView: View {
 
     @Environment(\.colorSchemeContrast) private var contrast
 
-    private var corner: CGFloat {
-        // Circles crop logos badly and read as people, so brands get a tile.
-        sender.kind == .brand ? size * 0.25 : size / 2
-    }
+    /// Everything is a circle.
+    ///
+    /// Brands used to get a rounded tile, for a real reason: a circle crops a
+    /// wide wordmark, and cropping somebody's logo is worse than using the
+    /// wrong shape. But a second shape is an expensive way to solve that — it
+    /// splits the feed's identity column into two silhouettes and makes
+    /// "brand or person" the loudest thing a row says about a sender.
+    ///
+    /// The cheaper answer is below: *contain* the mark instead of filling with
+    /// it. A wordmark then sits inside the circle at its own proportions with
+    /// nothing cut off, and the ground plus the hairline read as the avatar.
+    /// One shape, no crop, and the column scans as one system.
+    private var corner: CGFloat { size / 2 }
 
     var body: some View {
         ZStack {
@@ -27,7 +36,15 @@ struct AvatarView: View {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
-                        image.resizable().scaledToFill()
+                        // A face fills its circle; a wordmark is fitted inside
+                        // one. Inset so the mark never touches the ring.
+                        if sender.kind == .brand {
+                            image.resizable()
+                                .scaledToFit()
+                                .padding(size * 0.16)
+                        } else {
+                            image.resizable().scaledToFill()
+                        }
                     default:
                         monogram
                     }
@@ -81,13 +98,11 @@ struct AvatarStack: View {
         HStack(spacing: -(size * 0.4)) {
             ForEach(Array(senders.prefix(max).enumerated()), id: \.element.id) { index, sender in
                 AvatarView(sender: sender, size: size)
-                    .overlay(
-                        RoundedRectangle(
-                            cornerRadius: sender.kind == .brand ? size * 0.25 : size / 2,
-                            style: .continuous
-                        )
-                        .strokeBorder(ringColor, lineWidth: 2)
-                    )
+                    // Matches the avatar it separates, which is now a circle
+                    // for every sender class — a rounded-tile ring around a
+                    // circular avatar would show as a sliver of ground at each
+                    // corner where the two shapes disagree.
+                    .overlay(Circle().strokeBorder(ringColor, lineWidth: 2))
                     .opacity(staggered && !shown ? 0 : 1)
                     .animation(
                         // Reduce Motion: the whole set lands together.

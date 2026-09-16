@@ -367,7 +367,41 @@ struct PostView: View {
     /// part of one list. Repeated components should feel almost musical."
     /// Variation now comes from what a message actually has — a picture, a
     /// thing to click — not from a template chosen for it in advance.
-    private var content: some View { standard }
+    @ViewBuilder private var content: some View {
+        if isPromoPost { promo } else { standard }
+    }
+
+    /// A promotion that came with its own picture.
+    ///
+    /// Marketing mail is the one genre where a brand paid somebody to design
+    /// the thing, and the standard card throws all of that away: it crops the
+    /// image into a band, puts our pull quote above it and our summary below,
+    /// and what survives is our reading of an advert rather than the advert.
+    ///
+    /// Promotions without a picture are NOT this. There is nothing to lead
+    /// with, so they stay on the standard card — the same rule the rest of the
+    /// product uses, that the shape follows what the message actually is.
+    /// The words under a promotion's picture, and there are always words.
+    ///
+    /// The model's pulled line when it has written one. Otherwise the subject,
+    /// which is the sender's own text and is always present — the same trust
+    /// anchor the quote is, just not chosen by us. Nothing here is invented:
+    /// if the model has not read the mail yet, the card shows what the sender
+    /// themselves put at the top of it rather than a guess or a blank.
+    private var promoCaption: String {
+        if let quote = message.quote, !quote.isEmpty { return quote }
+        let subject = message.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !subject.isEmpty { return subject }
+        // No subject either — a real, if rare, piece of bulk mail. The snippet
+        // is the last verbatim thing available.
+        return message.snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isPromoPost: Bool {
+        guard message.isPromotion else { return false }
+        if case .media(let urls) = message.shape { return !urls.isEmpty }
+        return false
+    }
 
     /// The card, in one piece and in one order.
     ///
@@ -486,7 +520,104 @@ struct PostView: View {
         .padding(.vertical, Space.xl)
     }
 
-    // MARK: Header — one identity line, Twitter-style
+    // MARK: Promotion — Instagram's order, with our last line
+
+    /// Picture first and edge to edge, the action attached to the bottom of
+    /// it, then the words. Instagram's anatomy, because Instagram solved this
+    /// exact problem: a designed image that wants to lead, and a caption that
+    /// has to say something without competing with it.
+    ///
+    /// One departure from Instagram, and it is deliberate: the action row goes
+    /// *last*, below the caption, where Instagram puts the caption last. The
+    /// row is this product's one constant — the control you reach for should
+    /// never be in a different place twice — and consistency across the feed
+    /// outranks fidelity to another app's layout.
+    private var promo: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+
+            if case .media(let urls) = message.shape, let picture = urls.first {
+                PromoMedia(url: picture)
+                    .padding(.top, Space.lg)
+                    .accessibilityHidden(true)
+            }
+
+            if let label = message.actionLabel, !label.isEmpty {
+                CTAStrip(label: label) {
+                    if let url = message.actionURL { UIApplication.shared.open(url) }
+                }
+            }
+
+            // The sender's own line, as a caption. Their name leads it the way
+            // a handle leads an Instagram caption — it is the same sentence,
+            // and splitting it into two blocks would invent a hierarchy the
+            // words do not have.
+            //
+            // ALWAYS present. This block used to be `if let quote`, and on a
+            // promotion the model had not read yet that left a photograph, six
+            // icons and not one word about what had arrived — a card that
+            // cannot be understood at all. A picture is the message only when
+            // there is also a sentence saying whose it is and what it wants.
+            // Every other card in the product guarantees a line; this one now
+            // does too.
+            //
+            // Concatenated rather than two views in an HStack, so the sender's
+            // name and their sentence wrap as one paragraph — the name is the
+            // first words of the caption, not a label beside it. `.typeStyle`
+            // returns a View and cannot be joined, so the two runs take the
+            // style's parts directly.
+            (Text(message.sender.displayName)
+                .font(Style.sender.font)
+                .tracking(Style.sender.tracking)
+                + Text("  ")
+                + Text(promoCaption)
+                .font(Style.bodySmall.font)
+                .tracking(Style.bodySmall.tracking))
+                .lineSpacing(Style.bodySmall.lineSpacing)
+                .foregroundStyle(message.isRead ? metaInk : Ink.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Metric.gutter)
+                .padding(.top, Space.lg)
+                .accessibilityHidden(true)
+
+            // Still the machine's voice, still mono, just no longer boxed —
+            // a ruled panel under an advert reads as a second advert.
+            //
+            // When there is no read yet, this says so rather than going blank.
+            // Nothing is ever invented to fill it.
+            Group {
+                if let summary = message.summary, !summary.isEmpty {
+                    Text(summary)
+                        .typeStyle(Style.monoCaption)
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if message.isInterpreting {
+                    CaretLine(label: "Reading this one\u{2026}")
+                }
+            }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.top, Space.sm)
+            .accessibilityHidden(true)
+
+            ActionRow(
+                message: message,
+                onReply: onReply,
+                onDiscuss: onDiscuss,
+                onForward: onForward,
+                onSave: onSave,
+                onArchive: onArchive,
+                onUnsubscribe: onUnsubscribe,
+                onReact: onReact
+            )
+            .padding(.horizontal, Metric.gutter)
+            .padding(.top, Space.xl)
+        }
+        .padding(.vertical, Space.xl)
+    }
+
+    // MARK: Header — identity on the left, controls on the right
 
     private var header: some View {
         HStack(alignment: stackedHeader ? .top : .center, spacing: Space.md) {
@@ -502,25 +633,27 @@ struct PostView: View {
                 .highPriorityGesture(TapGesture().onEnded { onProfile() })
                 .accessibilityLabel("\(message.sender.displayName), open sender")
 
-            // At accessibility sizes the identity line stacks: laid out
-            // horizontally, a `lineLimit(1)` name beside a non-compressing
+            // Name over meta, both on the left — the Header frame in the
+            // component library, and a correction.
+            //
+            // It used to run the name and the meta on one line with the meta
+            // pushed to the right edge, which spent the widest gap in the card
+            // separating a sender from their own timestamp. Two things that
+            // belong to each other were the furthest apart, and the chip and
+            // the overflow — which belong to nobody — sat between them. Stacked,
+            // the whole left side is one identity block and the right side is
+            // controls, which is what the header actually contains.
+            //
+            // This was already the layout at accessibility sizes, for a
+            // different reason: a `lineLimit(1)` name beside a non-compressing
             // `· time · count` truncates the name to nothing while the
-            // timestamp survives. The identity anchor must not lose to a
-            // timestamp.
-            if stackedHeader {
-                VStack(alignment: .leading, spacing: Space.xxs) {
-                    senderName
-                    HStack(spacing: Space.xs + 2) { meta }
-                    if let tag { tagChip(tag) }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(spacing: Space.xs + 2) {
-                    senderName.frame(maxWidth: .infinity, alignment: .leading)
-                    meta
-                }
+            // timestamp survives. One layout now, correct at every size.
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                senderName
+                meta
                 if let tag { tagChip(tag) }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             // Unsubscribe belongs to the sender, so it sits on the sender's
             // line. In the action row it took the first slots on promotional
@@ -561,16 +694,25 @@ struct PostView: View {
             .truncationMode(.tail)
     }
 
-    @ViewBuilder private var meta: some View {
-        Text("·").typeStyle(Style.separator).foregroundStyle(metaInk)
-        Text(message.receivedAt.feedStamp)
-            .typeStyle(Style.meta).foregroundStyle(metaInk)
+    /// One mono line under the name.
+    ///
+    /// The thread count is spelled out rather than left as a bare numeral.
+    /// "12m · 4" needs the reader to already know what the 4 counts; now that
+    /// the line has a whole row to itself there is no reason to make them
+    /// guess, and a count with no noun is the thing this product keeps
+    /// promising not to print.
+    private var meta: some View {
+        Text(metaText)
+            .typeStyle(Style.meta)
+            .foregroundStyle(metaInk)
+            .lineLimit(1)
+            .monospacedDigit()
+    }
 
-        if message.threadCount > 1 {
-            Text("·").typeStyle(Style.separator).foregroundStyle(metaInk)
-            Text("\(message.threadCount)")
-                .typeStyle(Style.meta).foregroundStyle(metaInk)
-        }
+    private var metaText: String {
+        let stamp = message.receivedAt.feedStamp
+        guard message.threadCount > 1 else { return stamp }
+        return "\(stamp) · \(message.threadCount) emails in thread"
     }
 
     private func tagChip(_ tag: String) -> some View {
@@ -841,7 +983,19 @@ struct SummaryBlock: View {
 
 // MARK: - CTA
 //
-// A black hairline, never grey — a grey outline reads as disabled.
+// A hairline pill in the border grey, with a chevron.
+//
+// It was a full-black 1pt outline at sender weight, which made it the loudest
+// mark on the card — sitting one line above an action row that already offers
+// reply, forward and discuss. Two competing invitations, one of them shouting,
+// and the quieter one was the row people actually need.
+//
+// The worry that a grey outline reads as disabled is real but does not apply
+// here: a disabled control greys its *label*, and this label stays at full
+// ink. The border is doing containment, not state. It now matches the weight
+// of the unsubscribe chip it shares a card with, which is the right comparison
+// — both are things the sender is offering rather than things the app asks of
+// you.
 
 struct CTAButton: View {
     let label: String
@@ -849,16 +1003,72 @@ struct CTAButton: View {
 
     var body: some View {
         Button(action: action) {
-            Text(label)
-                .typeStyle(Style.sender)
-                .foregroundStyle(Ink.primary)
-                .padding(.horizontal, Space.lg)
-                .padding(.vertical, 9)
-                .overlay(
-                    Capsule().strokeBorder(Ink.primary, lineWidth: 1)
-                )
+            HStack(spacing: Space.xs + 2) {
+                Text(label)
+                    .typeStyle(Style.bodySmall)
+                    .foregroundStyle(Ink.primary)
+                // Says it leaves for somewhere else, which the words alone do
+                // not — half these labels are verbs that could equally mean
+                // something happens in place.
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Ink.secondary)
+            }
+            .padding(.horizontal, Space.md + 2)
+            .padding(.vertical, 9)
+            .frame(minHeight: Metric.tapTarget)
+            .overlay(
+                Capsule().strokeBorder(Ink.border, lineWidth: 1)
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(TapStyle())
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(.isLink)
+    }
+}
+
+// MARK: - CTA strip
+//
+// The promotion's action, attached to the bottom of its picture.
+//
+// A pill floating in the gutter under an edge-to-edge image reads as belonging
+// to the card; a strip that touches the image reads as belonging to the *ad*,
+// which is the truth — these words are the sender's, not ours. It is the one
+// full-bleed control in the product, and it is full-bleed for the same reason
+// the picture above it is: both are things the sender supplied.
+//
+// Only ever under media. Without a picture there is nothing to attach to, and
+// a grey bar hanging in white is just a button that lost its shape — those
+// promotions keep the ordinary `CTAButton`.
+
+struct CTAStrip: View {
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Space.md) {
+                Text(label)
+                    .typeStyle(Style.sender)
+                    .foregroundStyle(Ink.primary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Ink.secondary)
+            }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.vertical, Space.md + 2)
+            .frame(minHeight: Metric.tapTarget)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Ink.surfaceTertiary)
+            .contentShape(.rect)
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(.isLink)
     }
 }
 

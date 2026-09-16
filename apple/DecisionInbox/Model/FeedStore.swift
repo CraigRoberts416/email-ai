@@ -849,13 +849,21 @@ enum Sample {
             isRead: false, threadCount: 1, unsubscribeURL: nil, isInterpreting: false
         ),
         Message(
+            // The promotion-with-a-picture shape, which nothing in this set
+            // covered before and which therefore could not be looked at
+            // without a real mailbox. The image URL is not expected to
+            // resolve — `heroGround` stands in, which is also what ships when
+            // a sender's CDN is slow.
             id: "m5", threadID: "t5", mailboxID: "mb1", sender: nike,
             subject: "Members get early access",
             snippet: "48 hours of early access.",
             receivedAt: .now.addingTimeInterval(-5 * 3600),
-            quote: nil, summary: "Sale ends Sunday",
-            actionLabel: nil, actionURL: nil,
-            kicker: .promotion, shape: .text,
+            quote: "Members get 48 hours of early access to the Pegasus 41.",
+            summary: "Sale ends Sunday. Nothing needed from you.",
+            actionLabel: "Shop early access",
+            actionURL: URL(string: "https://nike.com/early-access"),
+            kicker: .promotion,
+            shape: .media([URL(string: "https://example.invalid/pegasus.jpg")!]),
             isRead: false, threadCount: 1,
             unsubscribeURL: URL(string: "https://nike.com/unsubscribe"), isInterpreting: false
         ),

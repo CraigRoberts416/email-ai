@@ -10,6 +10,11 @@ import SwiftUI
 //   DM Sans — what a human wrote, or what the user will do
 //   DM Mono — what the machine wrote or counted
 //
+// A serif was tried for the masthead read and the pull quote and taken back
+// out. Two voices is the whole system; a third had to earn its place against
+// that, and on real mail it did not — it read as a magazine imposed on
+// somebody's inbox rather than as the inbox speaking.
+//
 // Values mirror the Figma variables in Email-App-Component-Library.
 
 // MARK: - Colour
@@ -129,13 +134,48 @@ struct TypeStyle {
     /// not give it back and optical corrections have to scale with it.
     var size: CGFloat = 0
 
+    /// The face this style is drawn in, so the hanging indent can be measured
+    /// against the right one.
+    var face: String = Face.sans
+
     /// How far an opening quotation mark should hang into the margin so the
     /// reading edge lands on the first letter rather than on punctuation.
     ///
     /// A fraction of the size, never a constant: a value derived at 26pt is
-    /// wrong at every Dynamic Type step above and below it. DM Sans's left
-    /// side bearing on the curly quote is a little over a quarter of its em.
-    var hangingIndent: CGFloat { size * 0.26 }
+    /// wrong at every Dynamic Type step above and below it. The fraction is
+    /// measured from the face rather than guessed — it was hard-coded at 0.26,
+    /// which was somebody's eyeball of DM Sans and silently wrong for any
+    /// other face. Measuring costs one glyph lookup, cached, and cannot drift.
+    var hangingIndent: CGFloat { size * TypeMetrics.quoteBearing(face) }
+}
+
+/// Measured facts about a face, cached.
+enum TypeMetrics {
+    private static var cache: [String: CGFloat] = [:]
+
+    /// The left side bearing of “ in a face, as a fraction of point size.
+    static func quoteBearing(_ face: String) -> CGFloat {
+        if let hit = cache[face] { return hit }
+        let measured = measure(face)
+        cache[face] = measured
+        return measured
+    }
+
+    private static func measure(_ face: String) -> CGFloat {
+        let probe: CGFloat = 100
+        guard let font = UIFont(name: face, size: probe) else { return 0.26 }
+        var glyph = CGGlyph()
+        var character = UniChar(0x201C)   // “
+        guard CTFontGetGlyphsForCharacters(font, &character, &glyph, 1) else { return 0.26 }
+        var rect = CGRect.zero
+        withUnsafePointer(to: glyph) {
+            rect = CTFontGetBoundingRectsForGlyphs(font, .horizontal, $0, nil, 1)
+        }
+        // A bearing that came back nonsense means the glyph is missing; the
+        // old constant is a better answer than hanging the line by zero.
+        guard rect.origin.x.isFinite, rect.origin.x > 0 else { return 0.26 }
+        return rect.origin.x / probe
+    }
 }
 
 enum Style {
@@ -143,6 +183,35 @@ enum Style {
     static let display = TypeStyle(
         font: .custom(Face.sans, size: 28, relativeTo: .title),
         tracking: -0.84, lineSpacing: 0
+    )
+
+    /// The masthead's read — the sentence the model writes about this mailbox
+    /// this morning, and the thing somebody lands on.
+    ///
+    /// 29 rather than 25, and 114% leading rather than the default. The first
+    /// pass was the right content at the wrong size: everything in the
+    /// masthead sat in one narrow band (11 / 25 / 11) and a composition with
+    /// no size ladder reads as flat no matter what it says.
+    /// The masthead's read — the sentence the model writes about this mailbox
+    /// this morning, and the thing somebody lands on.
+    ///
+    /// Leading is ZERO added, which for display type is the point. The recap
+    /// runs to five lines on a busy morning, and at 29pt every extra point of
+    /// leading is multiplied four times over — enough that the sentence stopped
+    /// reading as one paragraph and started reading as a list of lines. Large
+    /// text needs proportionally *less* leading than body text, not more; the
+    /// face's own metrics are already generous at this size.
+    static let headline = TypeStyle(
+        font: .custom(Face.sansMedium, size: 29, relativeTo: .title),
+        tracking: -1.16, lineSpacing: 0, size: 29
+    )
+
+    /// A count inside a mono line. One step up from the label beside it, so
+    /// the footer carries its own small ladder instead of running at a single
+    /// weight all the way across.
+    static let countInline = TypeStyle(
+        font: .custom(Face.monoMedium, size: 15, relativeTo: .subheadline),
+        tracking: -0.15, lineSpacing: 0
     )
 
     /// The pulled quote. ONE size, because there is one card.
@@ -410,6 +479,8 @@ enum Metric {
     /// primer and the sheets all sit at 24.
     static let gutterWide: CGFloat = Space.xl
     static let heroTopPad: CGFloat = 80
+    /// The air above the greeting. Large on purpose — see `Masthead`.
+    static let mastheadTop: CGFloat = 120
     static let postPaddingY: CGFloat = Space.xl
     static let avatar: CGFloat = 40
     static let avatarCompact: CGFloat = 24

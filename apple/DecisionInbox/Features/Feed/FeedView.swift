@@ -530,59 +530,138 @@ struct Masthead: View {
         // all open the same way: date, then a greeting large enough to be a
         // greeting, then the state of things. The counts still lead the state;
         // they just no longer lead the screen.
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(alignment: .leading, spacing: 0) {
             // Where you are, before anything else. Pure orientation, and the
             // one line here that is never written by a model.
-            Text(Date.now.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
-                    .uppercased())
+            Text(dateline)
                 .typeStyle(Style.sectionHeader)
                 .foregroundStyle(Ink.tertiary)
+                .padding(.bottom, Space.md + 2)
 
-            Text(recap?.greeting ?? fallbackGreeting)
-                .typeStyle(Style.display)
+            headline
+                .padding(.bottom, Space.lg + 2)
+
+            counts
+        }
+        .padding(.horizontal, Metric.gutter)
+        // 120. The masthead's job is to orient somebody before the feed starts
+        // asking things of them, and it cannot do that shoulder to shoulder
+        // with the first post — the space above it is most of what makes it
+        // read as a title page rather than another row.
+        .padding(.top, Metric.mastheadTop)
+        .padding(.bottom, Space.xl)
+        // The masthead has to claim the full width before anything is drawn
+        // behind it. `LazyVStack(alignment: .leading)` sizes a child to its
+        // own content, so the masthead was as wide as its longest line — 236pt
+        // — and the atmosphere inherited that, which drew a grey rectangle
+        // with a hard edge two thirds of the way across the screen. The text
+        // is left-aligned either way, so nothing about the type moves.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(alignment: .top) {
+            MastheadAtmosphere(weather: weather)
+                // Taller than the text so the washes are already fading by the
+                // time the first post's hairline arrives.
+                .frame(height: 340)
+        }
+        .animation(Move.crossfade, value: recap)
+    }
+
+    /// What the washes behind the greeting are saying.
+    private var weather: MastheadAtmosphere.Weather {
+        if isReading { return .reading }
+        return waiting > 0 ? .needsYou : .clear
+    }
+
+    /// The sentence somebody lands on.
+    ///
+    /// The model already writes a read of this particular mailbox every
+    /// morning, and it used to sit under the counts in 12pt grey — the most
+    /// orienting thing on the screen set smaller than the number it explains.
+    /// It leads now, because it is the only line here that is different today
+    /// than it was yesterday, and the spec's own risk section says this
+    /// product fails by leaving people disoriented rather than uninformed.
+    ///
+    /// When there is no read, the greeting and the count take the slot as one
+    /// sentence rather than leaving a headline-shaped hole. Nothing is ever
+    /// invented to fill it.
+    @ViewBuilder private var headline: some View {
+        if let read = recap?.summary, !read.isEmpty, !isReading {
+            Text(read)
+                .typeStyle(Style.headline)
                 .foregroundStyle(Ink.primary)
                 .fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity)
-                .padding(.bottom, Space.xs)
-
-            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                // A zero here is an assertion about someone's mailbox, and
-                // during the first pass it is one the app has not earned — it
-                // has not finished looking. An em dash is the honest glyph for
-                // a number that does not exist yet, and it holds the same
-                // baseline so nothing shifts when the count arrives.
-                Text(isReading ? "\u{2014}" : "\(waiting > 0 ? waiting : total)")
-                    .typeStyle(Style.tickCount)
-                    .foregroundStyle(isReading ? Ink.tertiary : Ink.primary)
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                Text(isReading ? "READING" : (waiting > 0 ? "NEED YOU" : "NEW"))
-                    .typeStyle(Style.kicker)
-                    .foregroundStyle(isReading ? Ink.tertiary : Ink.primary)
-                if waiting > 0, !isReading {
-                    Text("· \(total) NEW")
-                        .typeStyle(Style.kicker)
-                        .foregroundStyle(Ink.tertiary)
-                        .monospacedDigit()
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(recap?.greeting ?? fallbackGreeting)
+                    .typeStyle(Style.headline)
+                    .foregroundStyle(Ink.tertiary)
+                if !isReading {
+                    Text(waiting > 0
+                         ? "\(waiting) need you today."
+                         : "Nothing is waiting on you.")
+                        .typeStyle(Style.headline)
+                        .foregroundStyle(Ink.primary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .contentTransition(.opacity)
+        }
+    }
 
-            if let summary = recap?.summary {
-                // Uncapped, for the same reason the card's summary is: this
-                // sentence is what orients somebody who has just opened a feed
-                // of their own mail, and two lines put an ellipsis in it.
-                Text(summary)
-                    .typeStyle(Style.gloss)
-                    .foregroundStyle(Ink.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .contentTransition(.opacity)
-                    .padding(.top, Space.xs)
+    /// The counts, as a footer under the read.
+    ///
+    /// Still mono, still instrumentation, and still the first thing in the
+    /// state — they simply no longer lead the screen. The figure steps up from
+    /// its label so the line carries its own small ladder instead of being one
+    /// weight all the way across.
+    @ViewBuilder private var counts: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Space.xs + 2) {
+            if isReading {
+                // A zero here is an assertion about someone's mailbox, and
+                // during the first pass it is one the app has not earned — it
+                // has not finished looking.
+                Rectangle()
+                    .fill(Ink.tertiary)
+                    .frame(width: Metric.unreadBar, height: 13)
+                Text("STILL READING YOUR MAIL")
+                    .typeStyle(Style.kicker)
+                    .foregroundStyle(Ink.tertiary)
+            } else if waiting > 0 {
+                Text("\(waiting)")
+                    .typeStyle(Style.countInline)
+                    .foregroundStyle(Ink.primary)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                Text("NEED YOU")
+                    .typeStyle(Style.kicker)
+                    .foregroundStyle(Ink.primary)
+                Text("·")
+                    .typeStyle(Style.kicker)
+                    .foregroundStyle(Ink.tertiary)
+                Text("\(total) NEW")
+                    .typeStyle(Style.kicker)
+                    .foregroundStyle(Ink.tertiary)
+                    .monospacedDigit()
+            } else {
+                // Nothing waiting is the good morning, and it does not need a
+                // zero printed at size to say so.
+                Text("\(total) NEW · NONE NEED YOU")
+                    .typeStyle(Style.kicker)
+                    .foregroundStyle(Ink.tertiary)
+                    .monospacedDigit()
             }
         }
-        .padding(.horizontal, Metric.gutter)
-        .padding(.top, Space.xl)
-        .padding(.bottom, Space.lg)
-        .animation(Move.crossfade, value: recap)
+    }
+
+    private var dateline: String {
+        let day = Date.now
+            .formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+            .uppercased()
+        // The greeting moves into the dateline once the read has taken the
+        // headline, so it is still said — just not twice at size.
+        guard let read = recap?.summary, !read.isEmpty, !isReading else { return day }
+        return "\(day) · \((recap?.greeting ?? fallbackGreeting).uppercased())"
     }
 
     private var fallbackGreeting: String {
