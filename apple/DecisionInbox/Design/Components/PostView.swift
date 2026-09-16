@@ -11,6 +11,10 @@ import SwiftUI
 /// that does, and that break is what makes it read as a post rather than an
 /// image inside a card.
 struct PostView: View {
+    /// Opens whatever the sender attached. One per card rather than one per
+    /// feed, because the sheet has to be presented from the row the file is in.
+    @State private var opener = AttachmentOpener()
+
     let message: Message
     /// Which mailbox this arrived in. Nil with a single mailbox — a tag on
     /// every row when there is only one thing it can mean is pure noise.
@@ -50,6 +54,12 @@ struct PostView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// Which file is being fetched, if any — the tile dims while it is.
+    private var openingID: Attachment.ID? {
+        if case .loading(let id) = opener.state { return id }
+        return nil
+    }
 
     private var increasedContrast: Bool { contrast == .increased }
     /// `Ink.tertiary` measures 3.0:1 — below AA — and carries the `·`
@@ -105,6 +115,8 @@ struct PostView: View {
         // ours would double it.
         .contextMenu { menuItems }
         .overlay(alignment: .topTrailing) { overflowMenu }
+        // Presented from the row, because that is where the file is.
+        .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(accessibilityValue)
@@ -430,8 +442,15 @@ struct PostView: View {
             // Breaks the gutter like the picture does, because it is the same
             // kind of thing: content the sender supplied, not a label we wrote.
             if !message.attachments.isEmpty {
-                AttachmentCarousel(attachments: message.attachments, onOpenThread: onOpen)
-                    .padding(.top, Space.lg)
+                AttachmentCarousel(
+                    attachments: message.attachments,
+                    onOpenThread: onOpen,
+                    onOpen: { file in
+                        Task { await opener.open(file, authorization: nil) }
+                    },
+                    opening: openingID
+                )
+                .padding(.top, Space.lg)
             }
 
             // Shown whenever there is something to click, rather than only on
@@ -681,7 +700,14 @@ struct PostView: View {
             }
             .padding(.horizontal, Metric.gutter)
 
-            AttachmentCarousel(attachments: items, onOpenThread: onOpen)
+            AttachmentCarousel(
+                attachments: items,
+                onOpenThread: onOpen,
+                onOpen: { file in
+                    Task { await opener.open(file, authorization: nil) }
+                },
+                opening: openingID
+            )
         }
     }
 

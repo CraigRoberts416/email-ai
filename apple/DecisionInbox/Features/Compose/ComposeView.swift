@@ -24,6 +24,9 @@ struct ComposeView: View {
 
     let intent: Intent
     var message: Message?
+    /// Somebody's address, tapped in a thread. An email address in a message
+    /// is a person to write to, not a page to visit.
+    var prefilledTo: String?
 
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -222,8 +225,14 @@ struct ComposeView: View {
     }
 
     private func prefill() {
-        guard let message else {
+        // An address tapped in a thread fills the TO field and puts the cursor
+        // in the body — the recipient is the one thing already decided.
+        if let prefilledTo, to.isEmpty {
+            to = prefilledTo
             bodyFocused = true
+        }
+        guard let message else {
+            if prefilledTo == nil { bodyFocused = true }
             return
         }
         if let prefix = intent.subjectPrefix {

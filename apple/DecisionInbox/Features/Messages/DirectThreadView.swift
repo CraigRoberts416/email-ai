@@ -22,6 +22,7 @@ struct DirectThreadView: View {
     @State private var seeded = false
     @State private var opener = AttachmentOpener()
     @State private var link: LinkTarget?
+    @State private var writeTo: String?
 
     var body: some View {
         ScrollView {
@@ -84,11 +85,31 @@ struct DirectThreadView: View {
         // A link in a message is part of reading the message. Following one
         // should not throw the reader out of the app and lose their place in
         // the thread.
+        //
+        // Routed by scheme, because they are not the same thing.
+        // `SFSafariViewController` accepts http and https and traps on
+        // anything else — handing it the `mailto:` from a signature crashed
+        // the app outright. An address is not a page to visit anyway; it is a
+        // person to write to.
         .environment(\.openURL, OpenURLAction { url in
-            link = LinkTarget(url: url)
-            return .handled
+            switch url.scheme?.lowercased() {
+            case "http", "https":
+                link = LinkTarget(url: url)
+                return .handled
+            case "mailto":
+                writeTo = url.emailAddress
+                return .handled
+            default:
+                // tel:, maps:, anything a message might carry. The system
+                // knows what to do with these and this app does not.
+                return .systemAction
+            }
         })
         .sheet(item: $link) { SafariView(url: $0.url).ignoresSafeArea() }
+        .sheet(item: $writeTo) { address in
+            ComposeView(intent: .new, prefilledTo: address)
+                .environment(store)
+        }
         .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
         .overlay(alignment: .bottom) {
             if case .failed(let why) = opener.state {

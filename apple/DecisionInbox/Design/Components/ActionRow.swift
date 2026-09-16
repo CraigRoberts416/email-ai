@@ -308,6 +308,11 @@ struct QuotedCard: View {
 struct AttachmentCarousel: View {
     let attachments: [Attachment]
     var onOpenThread: () -> Void = {}
+    /// Tapping a file opens the file. It used to fall through to the card's
+    /// own tap target, so a PDF opened the email instead — and the email did
+    /// not show the PDF either.
+    var onOpen: (Attachment) -> Void = { _ in }
+    var opening: Attachment.ID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
@@ -322,7 +327,11 @@ struct AttachmentCarousel: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: Space.md) {
                     ForEach(attachments) { attachment in
-                        AttachmentTile(attachment: attachment)
+                        Button { onOpen(attachment) } label: {
+                            AttachmentTile(attachment: attachment)
+                                .opacity(opening == attachment.id ? 0.55 : 1)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, Metric.gutter)

@@ -9,18 +9,25 @@ import SwiftUI
 /// hand-rolled card would be a worse version of it that breaks on the first
 /// site with an unusual `og:image`.
 ///
-/// PRIVACY, stated plainly because it cuts against how the rest of this app
-/// works: building the rich card means this device fetches the destination.
-/// Everywhere else the server fetches on the reader's behalf precisely so a
-/// sender learns nothing about when mail was opened — and a link preview does
-/// tell the destination that somebody looked. For a portfolio site that is
-/// nothing; for a tracking link it is a read receipt. Known trackers are
-/// therefore never fetched: they get the offline card, built from the URL
-/// alone.
+/// PRIVACY — and this is why the rich card is OFF by default.
+///
+/// Building it means this device fetches the destination, which tells that
+/// destination somebody looked. Everywhere else in this app the server fetches
+/// on the reader's behalf precisely so a sender learns nothing about when mail
+/// was opened; a link preview would hand that back. For a portfolio site it is
+/// nothing, for a tracking link it is a read receipt, and the reader cannot
+/// tell which is which by looking.
+///
+/// So the default is the offline card, built from the URL alone and costing
+/// nothing. Turning previews on is a real trade and belongs to the reader, not
+/// to us. Known trackers are never fetched even when it is on — there is no
+/// version of that request that is not the thing the tracker was put there to
+/// record.
 struct LinkCard: View {
     let url: URL
     var onDark = false
 
+    @AppStorage("links.richPreviews") private var richPreviews = false
     @State private var metadata: LPLinkMetadata?
     @State private var resolved = false
 
@@ -36,7 +43,7 @@ struct LinkCard: View {
         .task {
             guard !resolved else { return }
             resolved = true
-            guard Self.isSafeToFetch(url) else { return }
+            guard richPreviews, Self.isSafeToFetch(url) else { return }
             metadata = await Self.fetch(url)
         }
     }

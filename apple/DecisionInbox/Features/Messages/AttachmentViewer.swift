@@ -90,6 +90,21 @@ struct LinkTarget: Identifiable, Equatable {
     var id: String { url.absoluteString }
 }
 
+extension String: @retroactive Identifiable {
+    public var id: String { self }
+}
+
+extension URL {
+    /// The address out of a `mailto:`, without the query a signature may have
+    /// hung off it (`?subject=`, `?cc=`).
+    var emailAddress: String? {
+        guard scheme?.lowercased() == "mailto" else { return nil }
+        let raw = absoluteString.dropFirst("mailto:".count)
+        let address = raw.split(separator: "?", maxSplits: 1).first.map(String.init) ?? String(raw)
+        return address.removingPercentEncoding ?? address
+    }
+}
+
 /// The system preview, presented as a sheet.
 struct QuickLookView: UIViewControllerRepresentable {
     let url: URL

@@ -12,6 +12,15 @@ struct SettingsPrivacyView: View {
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
+    /// Off, and off is the honest default.
+    ///
+    /// A rich link card is drawn from the destination's own page, which means
+    /// this phone has to ask for it — and asking tells that site somebody
+    /// opened the mail. Everywhere else the server fetches so a sender learns
+    /// nothing. This is the one place the reader can hand that back, so it is
+    /// theirs to switch on knowingly rather than ours to switch on quietly.
+    @AppStorage("links.richPreviews") private var richPreviews = false
+
     @State private var showingStorage = false
     @State private var exporting: ExportFile?
 
@@ -27,6 +36,13 @@ struct SettingsPrivacyView: View {
             Rule()
 
             SettingsGroup("CONTROLS")
+            Rule()
+            SettingsToggle(
+                title: "Rich link previews",
+                subtitle: "OFF: A LINK SHOWS ITS ADDRESS AND NOTHING IS FETCHED",
+                isOn: $richPreviews
+            )
+            SettingsParagraph("On, a link in a message is drawn the way Messages draws one \u{2014} picture, headline, site. Building that means this phone loads the page, which tells whoever runs it that you opened the mail. Known trackers are never loaded either way.")
             Rule()
             SettingsLink(
                 title: "Export your posts",
