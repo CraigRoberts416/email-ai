@@ -25,6 +25,7 @@ const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
 const heroImage        = require('./heroImageGenerator');
 const emailImage       = require('./emailImage');
+const conversations    = require('./conversations');
 const crypto           = require('crypto');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const unsubscribeCopy  = require('./unsubscribeCopy');
@@ -1071,6 +1072,37 @@ app.get('/messages/:messageId/attachments/:attachmentId', async (req, res) => {
   } catch (err) {
     console.warn('[attachment] error:', err.message);
     res.status(404).end();
+  }
+});
+
+// ─── Conversations ────────────────────────────────────────────────────────
+//
+// Mail from people, grouped by participant set. See conversations.js for why
+// the set and not the Gmail thread is the unit.
+
+app.get('/conversations', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const user = await userStore.getUser(userId);
+    const list = await conversations.listConversations(userId, user?.email);
+    res.json(stripLoneSurrogates({ conversations: list }));
+  } catch (err) {
+    console.error('[conversations] error:', err.message);
+    res.status(500).json({ error: 'failed to load conversations' });
+  }
+});
+
+app.get('/conversations/:id/messages', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const user = await userStore.getUser(userId);
+    const messages = await conversations.conversationMessages(userId, user?.email, req.params.id);
+    res.json(stripLoneSurrogates({ messages }));
+  } catch (err) {
+    console.error('[conversation-messages] error:', err.message);
+    res.status(500).json({ error: 'failed to load conversation' });
   }
 });
 

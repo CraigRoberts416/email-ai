@@ -20,6 +20,18 @@ function metadataToRecord(msg, postCutoff = false) {
   const getHeader = (n) => headers.find(h => h.name.toLowerCase() === n.toLowerCase())?.value ?? '';
   const fromRaw   = getHeader('from');
   const { name: fromName, email: fromEmail } = parseSender(fromRaw);
+
+  // Who else was on it. Without this a conversation cannot be identified at
+  // all: the unit of a direct message is the set of people in it, and until
+  // now the only address stored was the sender's.
+  const participants = [];
+  for (const header of ['to', 'cc']) {
+    for (const part of getHeader(header).split(',')) {
+      const { name, email } = parseSender(part.trim());
+      if (email) participants.push({ name, email: email.toLowerCase() });
+    }
+  }
+
   return {
     messageId:    msg.id,
     threadId:     msg.threadId ?? null,
@@ -30,6 +42,7 @@ function metadataToRecord(msg, postCutoff = false) {
     snippet:      decodeHtmlEntities(msg.snippet ?? ''),
     internalDate: Number(msg.internalDate) || Date.now(),
     historyId:    msg.historyId ?? null,
+    participants,
     postCutoff,
   };
 }

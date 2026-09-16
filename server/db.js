@@ -109,6 +109,13 @@ async function runMigrations() {
     ALTER TABLE sender_domain_assets ADD COLUMN IF NOT EXISTS description TEXT
   `);
 
+  // Everyone who was on a message besides the sender. A direct message is
+  // identified by its participant set, so without this there is nothing to
+  // group a conversation by.
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS participants JSONB
+  `);
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written
