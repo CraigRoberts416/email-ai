@@ -298,9 +298,12 @@ struct MessageGroup: View {
                 // thing with a boundary and a name, which is exactly the test
                 // this system uses to decide what gets a container.
                 ForEach(message.attachments) { attachment in
+                    // Never `onDark`. A card is a sibling of the bubble, not
+                    // a thing inside it — it sits on the page whichever side
+                    // it is aligned to. Tinting it for the black bubble drew a
+                    // white-on-white card that read as a gap in the thread.
                     AttachmentBubble(
                         attachment: attachment,
-                        onDark: group.mine,
                         isOpening: opener?.state == .loading(attachment.id)
                     ) {
                         Task { await opener?.open(attachment, authorization: nil) }
@@ -320,7 +323,7 @@ struct MessageGroup: View {
                 // Messages does exactly this, which is why a 90-character
                 // tracking URL never appears as text there.
                 ForEach(split.links, id: \.absoluteString) { url in
-                    LinkCard(url: url, onDark: group.mine)
+                    LinkCard(url: url)
                         .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
                 }
             }
