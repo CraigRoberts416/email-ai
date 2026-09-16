@@ -104,6 +104,43 @@ struct APIClient {
         let previewUrl: String?
     }
 
+    // MARK: Conversations
+
+    struct ConversationWire: Decodable {
+        struct Participant: Decodable { let name: String?; let email: String }
+        let id: String
+        let participants: [Participant]
+        let preview: String?
+        let lastAt: Double
+        let lastFromMe: Bool?
+        let unread: Bool?
+        let messageCount: Int?
+    }
+
+    struct ConversationMessageWire: Decodable {
+        let messageId: String
+        let subject: String?
+        let fromName: String?
+        let fromEmail: String?
+        let mine: Bool
+        let body: String?
+        let internalDate: Double
+        let attachments: [AttachmentWire]?
+    }
+
+    func conversations() async throws -> [ConversationWire] {
+        struct Wrapper: Decodable { let conversations: [ConversationWire] }
+        let wrapper: Wrapper = try await get("/conversations")
+        return wrapper.conversations
+    }
+
+    func conversationMessages(_ id: String) async throws -> [ConversationMessageWire] {
+        struct Wrapper: Decodable { let messages: [ConversationMessageWire] }
+        let path = "/conversations/\(id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id)/messages"
+        let wrapper: Wrapper = try await get(path)
+        return wrapper.messages
+    }
+
     // MARK: Requests
 
     func feed() async throws -> FeedResponse {

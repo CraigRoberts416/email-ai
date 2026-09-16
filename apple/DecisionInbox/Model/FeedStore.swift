@@ -27,6 +27,12 @@ final class FeedStore {
     /// P5 — the action receipt. One at a time; a new one replaces the old.
     var receipt: Receipt?
 
+    /// Mail from people, grouped by who is in it. Loaded separately from the
+    /// feed because it answers a different question — the feed asks what
+    /// arrived, this asks who you are talking to.
+    var conversations: [Conversation] = []
+    var conversationsLoaded = false
+
     /// The masthead, written by the model rather than assembled from a
     /// template. Nil until it lands — the feed does not wait on it.
     var recap: APIClient.Recap?
@@ -201,6 +207,83 @@ final class FeedStore {
     /// about someone's mailbox, and the app must never make it on the strength
     /// of a request that did not come back.
     var loadFailure: String?
+
+    /// Pulls the conversation list. Cheap enough to call on every appearance:
+    /// it is one request and the result is small.
+    func loadConversations() async {
+        guard let account = auth.accounts.first else { return }
+        do {
+            let wire = try await client(account.id).conversations()
+            conversations = wire.map { c in
+                Conversation(
+                    id: c.id,
+                    participants: c.participants.map { p in
+                        Sender(
+                            name: p.name ?? "",
+                            address: p.email,
+                            // Everyone in here is a person by construction —
+                            // the server refuses to build a conversation that
+                            // contains an automated address.
+                            kind: .person,
+                            logoURL: nil
+                        )
+                    },
+                    preview: c.preview ?? "",
+                    lastAt: Date(timeIntervalSince1970: c.lastAt / 1000),
+                    lastFromMe: c.lastFromMe ?? false,
+                    unread: c.unread ?? false,
+                    messageCount: c.messageCount ?? 0
+                )
+            }
+        } catch {
+            print("[conversations] load failed: \(error)")
+        }
+        conversationsLoaded = true
+    }
+
+    func messages(in conversation: Conversation) async -> [ConversationMessage] {
+        guard let account = auth.accounts.first else { return [] }
+        do {
+            let wire = try await client(account.id).conversationMessages(conversation.id)
+            return wire.map { m in
+                let subject = (m.subject ?? "").trimmingCharacters(in: .whitespaces)
+                // A bare reply prefix is not a subject, it is punctuation left
+                // over from a mail client. Showing "RE:" above a bubble would
+                // add a line that says nothing.
+                let meaningful = subject
+                    .replacingOccurrences(of: #"^((re|fwd|fw)\s*:\s*)+"#, with: "",
+                                          options: [.regularExpression, .caseInsensitive])
+                    .trimmingCharacters(in: .whitespaces)
+                return ConversationMessage(
+                    id: m.messageId,
+                    sender: Sender(
+                        name: m.fromName ?? "",
+                        address: m.fromEmail ?? "",
+                        kind: .person,
+                        logoURL: nil
+                    ),
+                    mine: m.mine,
+                    body: m.body ?? "",
+                    subject: meaningful.isEmpty ? nil : meaningful,
+                    receivedAt: Date(timeIntervalSince1970: m.internalDate / 1000),
+                    attachments: (m.attachments ?? []).map { wire in
+                        Attachment(
+                            id: wire.id,
+                            filename: wire.filename,
+                            byteCount: wire.byteCount ?? 0,
+                            preview: (wire.isImage == true)
+                                ? (wire.previewUrl.flatMap(URL.init(string:)).map(Attachment.Preview.image)
+                                    ?? .document(pages: 0))
+                                : .document(pages: wire.pages ?? 0)
+                        )
+                    }
+                )
+            }
+        } catch {
+            print("[conversations] messages failed: \(error)")
+            return []
+        }
+    }
 
     func refresh() async {
         syncMailboxes()

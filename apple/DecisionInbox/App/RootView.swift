@@ -17,13 +17,20 @@ struct RootView: View {
                     Tab("Feed", systemImage: "house", value: 0) {
                         FeedView(scrollTopSignal: scrollTop)
                     }
-                    Tab("Saved", systemImage: "bookmark", value: 1) {
+                    // People sit beside the feed rather than inside it. The
+                    // feed answers what arrived; this answers who you are
+                    // talking to, and a reply from someone you know should not
+                    // have to win a sort against everything a retailer sent.
+                    Tab("People", systemImage: "bubble.left.and.bubble.right", value: 1) {
+                        DirectMessagesView()
+                    }
+                    Tab("Saved", systemImage: "bookmark", value: 2) {
                         SavedView()
                     }
-                    Tab("You", systemImage: "person.crop.circle", value: 2) {
+                    Tab("You", systemImage: "person.crop.circle", value: 3) {
                         NavigationStack { SettingsView() }
                     }
-                    Tab("Search", systemImage: "magnifyingglass", value: 3, role: .search) {
+                    Tab("Search", systemImage: "magnifyingglass", value: 4, role: .search) {
                         SearchView()
                     }
                 }

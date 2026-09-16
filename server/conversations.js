@@ -33,6 +33,15 @@ const CORPORATE = [
   ' co.', ' gmbh', ' plc', ' s.a.', ' b.v.',
 ];
 
+/// Primary is the absence of a category label. Gmail applies exactly one of
+/// these to everything it sorts, so no label means it decided this was
+/// correspondence.
+function isPrimary(labelIds) {
+  const labels = labelIds ?? [];
+  return !labels.some(l => typeof l === 'string' && l.startsWith('CATEGORY_')
+    && l !== 'CATEGORY_PERSONAL');
+}
+
 function isPerson({ name, email, hasUnsubscribe }) {
   if (!email) return false;
   if (hasUnsubscribe) return false;
@@ -96,6 +105,16 @@ async function listConversations(userId, ownEmail, { limit = 60 } = {}) {
     const fromEmail = (row.from_email ?? '').toLowerCase();
     const mine = fromEmail === me;
     const hasUnsubscribe = !!row.unsubscribe_url;
+
+    // Gmail's own classification, and it outranks every heuristic below it.
+    //
+    // A word count on the display name is a weak test and the real mailbox
+    // proved it immediately: "Ally Bank", "American Express", "USPS Informed
+    // Delivery" and "Nextdoor Local News" are all two or three words and all
+    // filed as people. Google already sorted this mail — anything carrying a
+    // CATEGORY_ label is Promotions, Social, Updates or Forums, and Primary is
+    // the absence of one. That is the signal.
+    if (!isPrimary(row.label_ids)) continue;
 
     // Who is in this, other than me.
     const others = [];
@@ -178,6 +197,7 @@ async function conversationMessages(userId, ownEmail, id) {
     for (const p of row.participants ?? []) {
       if (p?.email && p.email !== me) others.add(p.email.toLowerCase());
     }
+    if (!isPrimary(row.label_ids)) continue;
     if (setKey(Array.from(others)) !== setKey(Array.from(wanted))) continue;
 
     out.push({
@@ -198,4 +218,4 @@ async function conversationMessages(userId, ownEmail, id) {
   return out;
 }
 
-module.exports = { listConversations, conversationMessages, isPerson, setKey };
+module.exports = { listConversations, conversationMessages, isPerson, isPrimary, setKey };
