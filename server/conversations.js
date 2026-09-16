@@ -33,6 +33,26 @@ const CORPORATE = [
   ' co.', ' gmbh', ' plc', ' s.a.', ' b.v.',
 ];
 
+/// Words that appear in a company's name and effectively never in a person's.
+///
+/// Gmail files plenty of commercial mail in Primary — a bank alert and a card
+/// statement are correspondence by its reckoning — so Primary alone let "Ally
+/// Bank" and "American Express" through as people. Two words each, no legal
+/// suffix, no automated local part: nothing else available catches them.
+const TRADE_WORDS = new Set([
+  'bank', 'express', 'insurance', 'assurance', 'airlines', 'airways', 'air',
+  'health', 'healthcare', 'medical', 'dental', 'energy', 'electric', 'gas',
+  'capital', 'financial', 'finance', 'credit', 'card', 'rewards', 'loyalty',
+  'store', 'shop', 'market', 'markets', 'media', 'news', 'group', 'holdings',
+  'partners', 'ventures', 'labs', 'studio', 'studios', 'agency', 'services',
+  'solutions', 'systems', 'technologies', 'tech', 'digital', 'global',
+  'international', 'university', 'college', 'school', 'hospital', 'clinic',
+  'motors', 'auto', 'realty', 'properties', 'hotel', 'hotels', 'resorts',
+  'airline', 'railway', 'transit', 'telecom', 'wireless', 'mobile', 'cable',
+  'delivery', 'logistics', 'shipping', 'post', 'mail', 'support', 'team',
+  'club', 'society', 'association', 'foundation', 'institute', 'council',
+]);
+
 /// Primary is the absence of a category label. Gmail applies exactly one of
 /// these to everything it sorts, so no label means it decided this was
 /// correspondence.
@@ -56,6 +76,11 @@ function isPerson({ name, email, hasUnsubscribe }) {
   const display = (name ?? '').trim();
   const lowered = display.toLowerCase();
   if (CORPORATE.some(sfx => lowered.endsWith(sfx) || lowered.includes(sfx + ','))) return false;
+
+  // Any trade word anywhere in the name. "Ally Bank" is not somebody called
+  // Bank.
+  const nameTokens = lowered.split(/[\s,]+/).map(w => w.replace(/[.]/g, '')).filter(Boolean);
+  if (nameTokens.some(w => TRADE_WORDS.has(w))) return false;
 
   // A person's display name is a given name and a family name. One word is a
   // company; many words is a company or a mailing list.
