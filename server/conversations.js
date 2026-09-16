@@ -63,6 +63,19 @@ const TRADE_WORDS = new Set([
   'reminder', 'reminders', 'invoice', 'receipt', 'statement', 'newsletter',
 ]);
 
+/// A draft is not a message. Gmail keeps it in the thread next to the message
+/// it eventually became, so without this a reply appears twice — once as the
+/// thing you typed and once as the thing you sent.
+function isDraft(labelIds) {
+  return (labelIds ?? []).includes('DRAFT');
+}
+
+/// For comparing two copies of the same message. Case and whitespace are the
+/// only things that differ between Gmail's duplicates.
+function normalise(text) {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 400);
+}
+
 /// Primary is the absence of a category label. Gmail applies exactly one of
 /// these to everything it sorts, so no label means it decided this was
 /// correspondence.
@@ -380,11 +393,26 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
   // sorted incoming mail, and it has no meaning for something you wrote; a
   // reply you sent into a thread belongs in that thread whatever category
   // label the thread happens to carry.
+  //
+  // Drafts and duplicates are both excluded, and both were only visible once
+  // sent mail started rendering at all. Gmail keeps the DRAFT of a reply in
+  // the thread beside the message it became, and files the sent copy more
+  // than once when a thread carries several labels — so one reply arrived as
+  // three rows and drew three identical bubbles.
+  const seenText = new Set();
   for (const row of rows) {
     if (taken.has(row.message_id)) continue;
     const fromEmail = (row.from_email ?? '').toLowerCase();
     if (fromEmail !== me) continue;
     if (!row.thread_id || !threads.has(row.thread_id)) continue;
+    if (isDraft(row.label_ids)) continue;
+
+    // Same words, same sender, same thread: one message however many rows
+    // Gmail kept. Normalised because the copies differ only in whitespace.
+    const fingerprint = normalise(row.body_text || row.snippet || '');
+    if (fingerprint && seenText.has(fingerprint)) continue;
+    if (fingerprint) seenText.add(fingerprint);
+
     kept.push({ row, fromEmail, mine: true });
     taken.add(row.message_id);
   }

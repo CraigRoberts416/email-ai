@@ -36,15 +36,22 @@ struct AvatarView: View {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
-                        // A face fills its circle; a wordmark is fitted inside
-                        // one. Inset so the mark never touches the ring.
-                        if sender.kind == .brand {
-                            image.resizable()
-                                .scaledToFit()
-                                .padding(size * 0.16)
-                        } else {
-                            image.resizable().scaledToFill()
-                        }
+                        // Contained, never filled — for every sender class.
+                        //
+                        // Every image this view can receive is a domain mark
+                        // from logo.dev, including the ones on people: a person
+                        // at a company gets their company's logo, because the
+                        // product has no source for anybody's actual face. So
+                        // "a face fills its circle" had no faces to apply to,
+                        // and cropping a wordmark to fill was the failure mode
+                        // it was written to avoid.
+                        //
+                        // When real profile photos exist this splits again —
+                        // on whether the image is a photo, which is the real
+                        // question, rather than on what the sender is.
+                        image.resizable()
+                            .scaledToFit()
+                            .padding(size * 0.16)
                     default:
                         monogram
                     }

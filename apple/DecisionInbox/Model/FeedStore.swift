@@ -244,7 +244,14 @@ final class FeedStore {
                     // server refuses to build a conversation that contains an
                     // automated address.
                     kind: .person,
-                    logoURL: nil
+                    // This was hardcoded to nil, and it is why nobody in
+                    // People or in a thread header had a picture. The server
+                    // sends `avatarUri` on every participant and always has;
+                    // the thread's own message mapping reads it correctly.
+                    // This one path threw it away, so every row fell back to a
+                    // grey monogram and the whole screen looked like the
+                    // feature had never been built.
+                    logoURL: p.avatarUri.flatMap(URL.init(string:))
                 )
             },
             preview: c.preview ?? "",
