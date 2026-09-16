@@ -116,6 +116,17 @@ async function runMigrations() {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS participants JSONB
   `);
 
+  // What the sender actually wrote, with the quoted history cut off.
+  //
+  // A conversation was rendering `quote || snippet` — the model's pulled
+  // sentence, or Gmail's 200-character preview. Both are fragments, and in a
+  // chat bubble a fragment reads as the whole message, so every turn looked
+  // truncated because it was. NULL means never fetched; '' means fetched and
+  // there was nothing but quoted text.
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS body_text TEXT
+  `);
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written

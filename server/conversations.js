@@ -12,6 +12,8 @@
 // when you write back.
 
 const { query } = require('./db');
+const gmailSync = require('./gmailSync');
+const { newText } = require('./replyText');
 
 const FREE_MAIL = new Set([
   'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'icloud.com',
@@ -106,6 +108,12 @@ function setKey(addresses) {
   return Array.from(new Set(addresses.map(a => a.toLowerCase()))).sort().join('|');
 }
 
+/// A body collapsed to one line, for a list row that shows one line.
+function firstLine(body) {
+  if (!body) return '';
+  return body.replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Every conversation this user has with people, newest first.
  *
@@ -133,7 +141,8 @@ function avatarFor(email, resolve) {
 async function listConversations(userId, ownEmail, { limit = 60, resolveAvatar } = {}) {
   const { rows } = await query(`
     SELECT message_id, thread_id, subject, from_name, from_email, snippet,
-           internal_date, participants, unsubscribe_url, label_ids, quote, summary
+           internal_date, participants, unsubscribe_url, label_ids, quote, summary,
+           body_text
     FROM messages
     WHERE user_id = $1 AND post_cutoff = TRUE
     ORDER BY internal_date DESC
@@ -207,9 +216,13 @@ async function listConversations(userId, ownEmail, { limit = 60, resolveAvatar }
       c.threadId = row.thread_id;
       c.subject = row.subject;
       c.lastFromMe = mine;
-      // The quote when the model pulled one, the snippet otherwise. Never the
-      // subject: a preview should be something that was said.
-      c.preview = row.quote || row.snippet || '';
+      // The real first line when the body has been fetched, the model's quote
+      // or Gmail's snippet until then. Never the subject: a preview should be
+      // something that was said.
+      //
+      // The list does not fetch. Sixty conversations is sixty Gmail round
+      // trips for one line each, where opening a thread pays for one thread.
+      c.preview = firstLine(row.body_text) || row.quote || row.snippet || '';
     }
   }
 
@@ -232,25 +245,34 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
   // messages, is the OLDEST four thousand. Every conversation worth opening is
   // recent, so the rows were all from 2023 and every thread rendered empty
   // while the endpoint returned 200.
+  //
+  // The limit still has to be taken off the NEWEST end, which is why the sort
+  // is inverted inside and put back outside. A DESC-limited subquery reversed
+  // to ASC gives the most recent 500 in reading order; ASC on the outside
+  // alone would silently be the same bug in a narrower scope.
   const { rows } = await query(`
-    SELECT message_id, thread_id, subject, from_name, from_email, snippet,
-           internal_date, participants, label_ids, quote, summary, attachments
-    FROM messages
-    WHERE user_id = $1
-      AND (
-        lower(from_email) = ANY($2::text[])
-        OR EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements(COALESCE(participants, '[]'::jsonb)) AS p
-          WHERE lower(p->>'email') = ANY($2::text[])
+    SELECT * FROM (
+      SELECT message_id, thread_id, subject, from_name, from_email, snippet,
+             internal_date, participants, label_ids, quote, summary, attachments,
+             body_text
+      FROM messages
+      WHERE user_id = $1
+        AND (
+          lower(from_email) = ANY($2::text[])
+          OR EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(COALESCE(participants, '[]'::jsonb)) AS p
+            WHERE lower(p->>'email') = ANY($2::text[])
+          )
         )
-      )
+      ORDER BY internal_date DESC
+      LIMIT 500
+    ) recent
     ORDER BY internal_date ASC
-    LIMIT 500
   `, [userId, addresses]);
 
   const me = (ownEmail ?? '').toLowerCase();
-  const out = [];
+  const kept = [];
 
   for (const row of rows) {
     const fromEmail = (row.from_email ?? '').toLowerCase();
@@ -262,24 +284,71 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
     }
     if (!isPrimary(row.label_ids)) continue;
     if (setKey(Array.from(others)) !== setKey(Array.from(wanted))) continue;
-
-    out.push({
-      messageId: row.message_id,
-      threadId: row.thread_id,
-      subject: row.subject,
-      fromName: row.from_name,
-      fromEmail,
-      avatarUri: resolveAvatar ? avatarFor(fromEmail, resolveAvatar) : null,
-      mine,
-      body: row.quote || row.snippet || '',
-      summary: row.summary ?? null,
-      internalDate: Number(row.internal_date),
-      unread: (row.label_ids ?? []).includes('UNREAD'),
-      attachments: row.attachments ?? [],
-    });
+    kept.push({ row, fromEmail, mine });
   }
 
-  return out;
+  // The message, not a preview of it.
+  //
+  // Sync stores metadata only — `snippet` is Gmail's 200-character teaser and
+  // `quote` is one sentence the model pulled out for a feed card. Either one in
+  // a chat bubble is a truncated message presented as a whole one. The body is
+  // fetched once per message and kept.
+  await hydrateBodies(userId, kept.map(m => m.row));
+
+  return kept.map(({ row, fromEmail, mine }) => ({
+    messageId: row.message_id,
+    threadId: row.thread_id,
+    subject: row.subject,
+    fromName: row.from_name,
+    fromEmail,
+    avatarUri: resolveAvatar ? avatarFor(fromEmail, resolveAvatar) : null,
+    mine,
+    // The fragments remain as a fallback, for the moment between a message
+    // arriving and its body being fetched, and for the rare mail that is all
+    // quoted text. An empty bubble would be worse than a short one.
+    body: row.body_text || row.quote || row.snippet || '',
+    summary: row.summary ?? null,
+    internalDate: Number(row.internal_date),
+    unread: (row.label_ids ?? []).includes('UNREAD'),
+    attachments: row.attachments ?? [],
+  }));
+}
+
+/// Gmail holds the body; the database holds metadata. This closes the gap for
+/// one conversation's worth of messages, writes what it finds back, and mutates
+/// the rows in place so the caller reads one shape whether it hit cache or not.
+///
+/// Bounded three ways: only rows with no `body_text`, only the most recent 60,
+/// and eight requests at a time. A conversation is a handful of messages in
+/// practice — the caps are for the thread with a decade of history in it, where
+/// the recent end is the part anyone scrolls to.
+async function hydrateBodies(userId, rows, { limit = 60, concurrency = 8 } = {}) {
+  const missing = rows.filter(r => r.body_text === null || r.body_text === undefined)
+    .slice(-limit);
+  if (!missing.length) return;
+
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, missing.length) }, async () => {
+    while (next < missing.length) {
+      const row = missing[next++];
+      try {
+        const full = await gmailSync.fetchFullMessage(userId, row.message_id);
+        const text = newText(full.payload);
+        row.body_text = text;
+        await query(
+          'UPDATE messages SET body_text = $1 WHERE user_id = $2 AND message_id = $3',
+          [text, userId, row.message_id]
+        );
+      } catch (err) {
+        // A message that will not fetch falls back to its fragment rather than
+        // failing the conversation. Left NULL so the next open tries again —
+        // this is usually a rate limit or a deleted message, and only one of
+        // those is permanent.
+        console.error('[conversations] body fetch failed', row.message_id, err.message);
+      }
+    }
+  });
+  await Promise.all(workers);
 }
 
 module.exports = { listConversations, conversationMessages, isPerson, isPrimary, setKey };
