@@ -127,6 +127,19 @@ async function runMigrations() {
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS body_text TEXT
   `);
 
+  // Bodies stored before link footnotes were recognised as quoted material.
+  // A tracker rewrites every URL and leaves the rewrite in brackets on its own
+  // line, so these are cached with 70 characters of hex where the sender wrote
+  // nothing. Clearing them re-asks Gmail on next open; NULL is the "never
+  // fetched" state and costs one round trip, not a model call.
+  const stale = await pool.query(`
+    UPDATE messages SET body_text = NULL
+    WHERE body_text ~ '(^|\\n)[[:space:]]*[[<][[:space:]]*(https?://|mailto:)[^[:space:]]*[[:space:]]*[]>][[:space:]]*($|\\n)'
+  `);
+  if (stale.rowCount) {
+    console.log(`[db] re-asking ${stale.rowCount} message(s) for a body`);
+  }
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written
