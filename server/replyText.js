@@ -87,10 +87,20 @@ function newText(payload) {
 
   // A run of ">" lines is quoted material wherever it appears, including
   // before any marker — some clients quote without announcing it.
-  text = text
+  //
+  // A line that is nothing but a bracketed bare URL goes with them. That is
+  // the footnote an HTML-to-text converter leaves behind, and a link tracker
+  // leaves two — the sender's real link, then a 70-character rewrite of the
+  // same destination on the line below it. The same rule applies: it is a copy
+  // of the link directly above, so it is not the sender saying anything twice.
+  const kept = text
     .split('\n')
     .filter(line => !/^\s*>/.test(line))
-    .join('\n');
+    .filter(line => !/^\s*[[<]\s*(https?:\/\/|mailto:|data:)\S*\s*[\]>]\s*$/i.test(line));
+
+  // Unless that was the whole message. Somebody who sends one link in
+  // brackets and nothing else has still sent something.
+  if (kept.join('').trim()) text = kept.join('\n');
 
   return text
     .replace(/\n{3,}/g, '\n\n')

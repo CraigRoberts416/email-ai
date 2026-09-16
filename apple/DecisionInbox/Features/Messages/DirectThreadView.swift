@@ -19,8 +19,13 @@ struct DirectThreadView: View {
     var body: some View {
         ScrollView {
                 LazyVStack(alignment: .leading, spacing: Space.sm + 2) {
-                    if messages.isEmpty && loaded {
-                        Text("NOTHING YET")
+                    if messages.isEmpty {
+                        // Two different facts, and they were rendering as the
+                        // same blank screen. The first open of a thread now
+                        // fetches each message's body from Gmail, which takes
+                        // a few seconds — long enough that saying nothing
+                        // reads as "there is nothing here".
+                        Text(loaded ? "NOTHING YET" : "READING\u{2026}")
                             .typeStyle(Style.monoMicro)
                             .foregroundStyle(Ink.tertiary)
                             .frame(maxWidth: .infinity)
