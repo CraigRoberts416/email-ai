@@ -59,6 +59,14 @@ struct DirectThreadView: View {
         .defaultScrollAnchor(.bottom)
         .background(Ink.surface)
         .safeAreaInset(edge: .top, spacing: 0) { header }
+        // A bottom inset, not an overlay: the scroll view reserves the space,
+        // so the last bubble can always be scrolled clear of the pill instead
+        // of hiding under it forever.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            ThreadComposer(conversation: conversation, replyingTo: messages.last) {
+                Task { await refresh() }
+            }
+        }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
         // No loading state, because there is nothing to load. What was said
@@ -75,13 +83,7 @@ struct DirectThreadView: View {
             seeded = true
             messages = store.cachedMessages(in: conversation)
         }
-        .task {
-            let fresh = await store.messages(in: conversation)
-            // An empty result is how a failed request looks too, and wiping a
-            // thread the reader is looking at is worse than showing it a
-            // minute stale.
-            if !fresh.isEmpty { messages = fresh }
-        }
+        .task { await refresh() }
         // A link in a message is part of reading the message. Following one
         // should not throw the reader out of the app and lose their place in
         // the thread.
@@ -126,6 +128,14 @@ struct DirectThreadView: View {
                     }
             }
         }
+    }
+
+    /// Re-reads the thread. An empty result is how a failed request looks
+    /// too, and wiping a thread the reader is looking at is worse than showing
+    /// it a minute stale.
+    private func refresh() async {
+        let fresh = await store.messages(in: conversation)
+        if !fresh.isEmpty { messages = fresh }
     }
 
     private var header: some View {

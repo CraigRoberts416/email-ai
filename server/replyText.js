@@ -123,10 +123,56 @@ function newText(payload) {
     .replace(/(https?:\/\/\S+)[ \t]*<\s*(?:https?:\/\/|mailto:)[^>\s]*\s*>/gi, '$1')
     .replace(/[ \t]{2,}/g, ' ');
 
-  return text
+  return unwrap(text)
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]+$/gm, '')
     .trim();
+}
+
+/// Undo the sender's line wrapping.
+///
+/// Plain-text email is hard-wrapped at about 75 columns, which was right when
+/// it was read in a terminal and is wrong in a bubble 272 points wide: the
+/// text wraps once for the phone and again where the sender's client broke it,
+/// so "Please also see the Token 101 / attached that I promised you." splits
+/// mid-sentence for no reason a reader can see.
+///
+/// A long line is a wrapped line. A short one was broken on purpose — a
+/// signature, an address, a list — and joining those would run somebody's name
+/// into their job title. 60 is comfortably under every common wrap width and
+/// above almost every deliberate line.
+const WRAP_WIDTH = 60;
+
+function unwrap(text) {
+  const lines = text.split('\n');
+  const out = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const previous = out[out.length - 1];
+
+    const isContinuation =
+      previous !== undefined &&
+      previous.trim().length >= WRAP_WIDTH &&
+      line.trim().length > 0 &&
+      // A label ending in a colon introduces what follows; it is not a
+      // sentence that ran out of room.
+      !previous.trim().endsWith(':') &&
+      // Bullets, numbers and quotes start their own line by intent.
+      !/^\s*([-*•–]|\d+[.)])\s/.test(line) &&
+      // A line that is only a URL is its own object — the card treatment
+      // downstream depends on it staying that way.
+      !/^\s*(https?:\/\/|www\.)\S*\s*$/i.test(line) &&
+      !/^\s*(https?:\/\/|www\.)\S*\s*$/i.test(previous);
+
+    if (isContinuation) {
+      out[out.length - 1] = previous.replace(/\s+$/, '') + ' ' + line.replace(/^\s+/, '');
+    } else {
+      out.push(line);
+    }
+  }
+
+  return out.join('\n');
 }
 
 module.exports = { newText, stripHtml };

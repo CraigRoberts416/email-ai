@@ -160,6 +160,17 @@ async function runMigrations() {
     console.log(`[db] re-asking ${footnote.rowCount} message(s) with inline link footnotes`);
   }
 
+  // Bodies stored with the sender's own line wrapping still in them. Hard
+  // wraps at ~75 columns were right for a terminal and break mid-sentence in
+  // a bubble 272 points wide.
+  const wrapped = await pool.query(`
+    UPDATE messages SET body_text = NULL
+    WHERE body_text ~ '[^[:space:]]{1}[^\n]{59,}\n[[:alnum:]]'
+  `);
+  if (wrapped.rowCount) {
+    console.log(`[db] re-asking ${wrapped.rowCount} message(s) wrapped at the sender's width`);
+  }
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written
