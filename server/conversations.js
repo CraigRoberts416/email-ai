@@ -70,12 +70,6 @@ function isDraft(labelIds) {
   return (labelIds ?? []).includes('DRAFT');
 }
 
-/// For comparing two copies of the same message. Case and whitespace are the
-/// only things that differ between Gmail's duplicates.
-function normalise(text) {
-  return text.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 400);
-}
-
 /// Primary is the absence of a category label. Gmail applies exactly one of
 /// these to everything it sorts, so no label means it decided this was
 /// correspondence.
@@ -375,8 +369,39 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
   // `participants`, so it matched pass one by address and skipped a guard
   // that only pass two applied. The set has to be shared or the passes
   // disagree about what has already been shown.
-  const seenText = new Set();
-  const fingerprint = row => normalise(row.body_text || row.snippet || '');
+  // Gmail files one message more than once, and the copies are identical in
+  // the only three things that can identify a message: the thread it is in,
+  // who sent it, and when. Not to the second — to the millisecond. Two
+  // genuinely different messages from one person in one thread at the same
+  // millisecond do not happen, so this is exact rather than fuzzy.
+  //
+  // Comparing the text instead was the obvious idea and it did not work: one
+  // copy had a fetched `body_text` and the other had only Gmail's snippet, so
+  // the two fingerprints were drawn from different sources and never matched.
+  // That is also why the duplicate rendered differently — a teaser shown as
+  // if it were the message.
+  const identity = (row, fromEmail) =>
+    `${row.thread_id ?? ''}|${fromEmail}|${row.internal_date}`;
+  const seen = new Map();
+
+  /// Keeps one row per identity, preferring the copy that has a real body.
+  /// Returns false when the row should be skipped.
+  function admit(row, fromEmail, mine) {
+    const key = seen.get(identity(row, fromEmail));
+    if (key === undefined) {
+      seen.set(identity(row, fromEmail), kept.length);
+      kept.push({ row, fromEmail, mine });
+      taken.add(row.message_id);
+      return true;
+    }
+    // Already have this message. Upgrade it if this copy is the fetched one.
+    const held = kept[key];
+    if (!held.row.body_text && row.body_text) {
+      kept[key] = { row, fromEmail, mine };
+      taken.add(row.message_id);
+    }
+    return false;
+  }
 
   // Pass one: the messages that identify this conversation by who is in them.
   for (const row of rows) {
@@ -391,15 +416,8 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
     if (!isPrimary(row.label_ids)) continue;
     if (setKey(Array.from(others)) !== setKey(Array.from(wanted))) continue;
 
-    if (mine) {
-      const print = fingerprint(row);
-      if (print && seenText.has(print)) continue;
-      if (print) seenText.add(print);
-    }
-
-    kept.push({ row, fromEmail, mine });
-    taken.add(row.message_id);
     if (row.thread_id) threads.add(row.thread_id);
+    admit(row, fromEmail, mine);
   }
 
   // Pass two: your own replies in those same threads.
@@ -426,14 +444,7 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
     if (fromEmail !== me) continue;
     if (!row.thread_id || !threads.has(row.thread_id)) continue;
 
-    // Same words, same sender, same thread: one message however many rows
-    // Gmail kept. Normalised because the copies differ only in whitespace.
-    const print = fingerprint(row);
-    if (print && seenText.has(print)) continue;
-    if (print) seenText.add(print);
-
-    kept.push({ row, fromEmail, mine: true });
-    taken.add(row.message_id);
+    admit(row, fromEmail, true);
   }
 
   // Both passes walked the same date-ordered rows, so the second one's
