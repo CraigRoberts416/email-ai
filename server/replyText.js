@@ -109,6 +109,20 @@ function newText(payload) {
   // brackets and nothing else has still sent something.
   if (kept.join('').trim()) text = kept.join('\n');
 
+  // The same footnote, wedged mid-sentence — but only when it repeats the
+  // link directly before it.
+  //
+  // `https://calendly.com/vikram-1980 <https://znsrc.com/c/jfkcfhhxlt>` is a
+  // tracker's rewrite of the URL it follows, and cutting it loses nothing.
+  // A bare `<https://example.com/spec>` with no URL before it is somebody
+  // citing a source in the RFC style, and cutting that leaves "See for
+  // details." — deleting what a person sent, which is the error this file
+  // exists to avoid. Same rule as everywhere else: remove copies, keep
+  // originals.
+  text = text
+    .replace(/(https?:\/\/\S+)[ \t]*<\s*(?:https?:\/\/|mailto:)[^>\s]*\s*>/gi, '$1')
+    .replace(/[ \t]{2,}/g, ' ');
+
   return text
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]+$/gm, '')

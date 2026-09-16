@@ -262,13 +262,14 @@ struct MessageGroup: View {
             }
 
             ForEach(group.messages) { message in
-                // The files first, each its own object. An attachment is not a
+                // Files first, each its own object. An attachment is not a
                 // strip glued to the top of a sentence — it is a discrete
                 // thing with a boundary and a name, which is exactly the test
                 // this system uses to decide what gets a container.
                 ForEach(message.attachments) { attachment in
                     AttachmentBubble(
                         attachment: attachment,
+                        onDark: group.mine,
                         isOpening: opener?.state == .loading(attachment.id)
                     ) {
                         Task { await opener?.open(attachment, authorization: nil) }
@@ -276,13 +277,24 @@ struct MessageGroup: View {
                     .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
                 }
 
-                if !message.body.isEmpty {
-                    MessageBubble(message: message)
+                let split = MessageBubble.split(message.body)
+
+                if !split.text.isEmpty {
+                    MessageBubble(message: message, body: split.text)
+                        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+                }
+
+                // A link on its own line is a thing somebody sent, not a word
+                // in a sentence — so it gets the same treatment as a file.
+                // Messages does exactly this, which is why a 90-character
+                // tracking URL never appears as text there.
+                ForEach(split.links, id: \.absoluteString) { url in
+                    LinkCard(url: url, onDark: group.mine)
                         .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
                 }
             }
 
-            Text(stamp)
+            Text(group.last.receivedAt.clockStamp.uppercased())
                 .typeStyle(Style.monoMicro)
                 .foregroundStyle(Ink.tertiary)
                 .padding(.horizontal, Space.xs + 2)
@@ -290,25 +302,27 @@ struct MessageGroup: View {
         }
         .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
     }
-
-    private var stamp: String {
-        group.last.receivedAt.clockStamp.uppercased()
-    }
 }
 
 /// One message, in a bubble.
 ///
-/// Bubbles are the second containerised thing in this product, after an
-/// attachment, and they earn it on the system's own test: an utterance is a
-/// discrete object with a boundary and an author.
+/// Bubbles are one of the few containerised things in this product, and they
+/// earn it on the system's own test: an utterance is a discrete object with a
+/// boundary and an author.
 ///
 /// The subject line used to sit above every one of these. It came off: no chat
 /// app labels each turn, and on a calendar invite it rendered as
 /// `UPDATED INVITATION: TFH CHAT WITH NADIA (CRAIG ROBERTS) @…` over a bubble
-/// that already said the same thing. Email has a field chat does not, and the
-/// honest place for it is the card in the feed, not once per line here.
+/// that already said the same thing.
 struct MessageBubble: View {
     let message: ConversationMessage
+    /// The words, with any standalone links already lifted out into cards.
+    var body_: String
+
+    init(message: ConversationMessage, body: String? = nil) {
+        self.message = message
+        self.body_ = body ?? message.body
+    }
 
     /// Capped, never stretched to the gutter: a line of text running the full
     /// width of a phone is not a message, it is a paragraph. Below the cap the
@@ -316,9 +330,10 @@ struct MessageBubble: View {
     private let maxBubbleWidth: CGFloat = 272
 
     var body: some View {
-        Text(Self.linked(message.body))
+        Text(linked)
             .typeStyle(Style.body)
             .foregroundStyle(message.mine ? Ink.surface : Ink.primary)
+            .tint(message.mine ? Ink.surface : Ink.primary)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, Space.lg - 2)
             .padding(.vertical, Space.md - 2)
@@ -329,77 +344,138 @@ struct MessageBubble: View {
             .frame(maxWidth: maxBubbleWidth, alignment: message.mine ? .trailing : .leading)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(
-                "\(message.mine ? "You" : message.sender.displayName): \(message.body)"
+                "\(message.mine ? "You" : message.sender.displayName): \(body_)"
             )
     }
 
-    /// The body with its URLs marked up, so they are tappable.
+    /// The remaining inline links, marked up.
     ///
-    /// `NSDataDetector` and not a regular expression: it is the same detector
-    /// Mail and Messages use, so what counts as a link here is what counts as
-    /// one everywhere else on the phone, including the trailing-punctuation
-    /// cases a hand-written pattern always gets wrong.
+    /// The colour is set on the run and not left to `foregroundStyle`, which
+    /// does not reach link runs: in the sent bubble the links rendered in the
+    /// default tint on a black fill and were, in practice, invisible.
     ///
     /// Underlined rather than coloured. Every other state in this product is
     /// carried by weight, fill, rule or shape, and a link is not the place to
     /// introduce the only hue in the app.
-    static func linked(_ body: String) -> AttributedString {
-        var text = AttributedString(body)
-        guard let detector = try? NSDataDetector(
-            types: NSTextCheckingResult.CheckingType.link.rawValue
-        ) else { return text }
-
-        let ns = body as NSString
-        let matches = detector.matches(in: body, range: NSRange(location: 0, length: ns.length))
-        for match in matches {
-            guard let url = match.url,
-                  let range = Range(match.range, in: body),
-                  let lower = AttributedString.Index(range.lowerBound, within: text),
+    private var linked: AttributedString {
+        var text = AttributedString(body_)
+        let ink: Color = message.mine ? Ink.surface : Ink.primary
+        for (range, url) in Self.detect(in: body_) {
+            guard let lower = AttributedString.Index(range.lowerBound, within: text),
                   let upper = AttributedString.Index(range.upperBound, within: text)
             else { continue }
             text[lower..<upper].link = url
             text[lower..<upper].underlineStyle = .single
+            text[lower..<upper].foregroundColor = ink
         }
         return text
     }
+
+    /// Words and links, separated.
+    ///
+    /// A link alone on its line is something sent; a link inside a sentence is
+    /// part of the sentence, and lifting it out would leave a hole in what
+    /// somebody wrote. So only the standalone ones become cards.
+    static func split(_ body: String) -> (text: String, links: [URL]) {
+        var kept: [String] = []
+        var links: [URL] = []
+        for line in body.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let matches = detect(in: trimmed)
+            if matches.count == 1,
+               let (range, url) = matches.first,
+               trimmed[range] == trimmed[trimmed.startIndex...].prefix(trimmed.count),
+               url.scheme == "http" || url.scheme == "https" {
+                if !links.contains(url) { links.append(url) }
+            } else {
+                kept.append(line)
+            }
+        }
+        let text = kept.joined(separator: "\n")
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text, links)
+    }
+
+    /// `NSDataDetector` and not a regular expression: it is the same detector
+    /// Mail and Messages use, so what counts as a link here is what counts as
+    /// one everywhere else on the phone, including the trailing-punctuation
+    /// cases a hand-written pattern always gets wrong.
+    static func detect(in body: String) -> [(Range<String.Index>, URL)] {
+        guard !body.isEmpty, let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue
+        ) else { return [] }
+        let ns = body as NSString
+        return detector
+            .matches(in: body, range: NSRange(location: 0, length: ns.length))
+            .compactMap { match in
+                guard let url = match.url, let range = Range(match.range, in: body)
+                else { return nil }
+                return (range, url)
+            }
+    }
 }
 
-/// A file, as its own bubble.
+/// A file, as its own bubble — or, when it is a picture, as the picture.
 ///
-/// Fiverr, Grok and Quo all give an attachment its own boundary rather than
-/// nesting it in the text bubble. Outlined instead of filled, so a file never
-/// reads as something a person typed.
+/// Messages does not put a photo in a chip with a filename on it; the photo is
+/// the message. A document does get the chip, because there is nothing to show
+/// and a drawn page would be a picture of a file rather than the file.
 struct AttachmentBubble: View {
     let attachment: Attachment
+    var onDark = false
     var isOpening = false
     var onOpen: () -> Void = {}
 
     var body: some View {
-        Button(action: onOpen) { tile }
-            .buttonStyle(.plain)
-            .disabled(attachment.fileURL == nil)
+        Button(action: onOpen) {
+            if case .image(let url) = attachment.preview {
+                photo(url)
+            } else {
+                tile
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func photo(_ url: URL) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            case .failure:
+                tile
+            default:
+                Rectangle().fill(Ink.surfaceTertiary)
+            }
+        }
+        .frame(maxWidth: 240, maxHeight: 280)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .opacity(isOpening ? 0.55 : 1)
+        .accessibilityLabel("Photo, \(attachment.filename)")
+        .accessibilityHint("Opens the image")
     }
 
     private var tile: some View {
         HStack(spacing: Space.sm + 2) {
             Text(isOpening ? "\u{2026}" : kind)
                 .typeStyle(Style.monoMicro)
-                .foregroundStyle(Ink.secondary)
+                .foregroundStyle(onDark ? Ink.surface.opacity(0.75) : Ink.secondary)
                 .frame(width: 38, height: 38)
                 .background(
-                    Ink.surfaceTertiary,
+                    onDark ? Ink.surface.opacity(0.14) : Ink.surfaceTertiary,
                     in: RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
                 )
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.filename)
                     .typeStyle(Style.monoCaption)
-                    .foregroundStyle(Ink.primary)
+                    .foregroundStyle(onDark ? Ink.surface : Ink.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(attachment.sizeLabel.uppercased())
                     .typeStyle(Style.monoMicro)
-                    .foregroundStyle(Ink.tertiary)
+                    .foregroundStyle(onDark ? Ink.surface.opacity(0.7) : Ink.tertiary)
             }
         }
         .padding(.leading, Space.sm + 2)
@@ -407,10 +483,11 @@ struct AttachmentBubble: View {
         .padding(.vertical, Space.sm + 2)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Ink.surface)
+                .fill(onDark ? Ink.surface.opacity(0.10) : Ink.surface)
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(Ink.border, lineWidth: Metric.hairline)
+                        .strokeBorder(onDark ? Ink.surface.opacity(0.18) : Ink.border,
+                                      lineWidth: Metric.hairline)
                 )
         )
         .frame(maxWidth: 272, alignment: .leading)

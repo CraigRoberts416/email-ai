@@ -151,6 +151,15 @@ async function runMigrations() {
     console.log(`[db] re-asking ${markup.rowCount} message(s) whose body was markup`);
   }
 
+  // Bodies holding a tracker's angle-bracket rewrite of the URL before it.
+  const footnote = await pool.query(`
+    UPDATE messages SET body_text = NULL
+    WHERE body_text ~ 'https?://[^[:space:]]+[[:space:]]*<[[:space:]]*(https?://|mailto:)'
+  `);
+  if (footnote.rowCount) {
+    console.log(`[db] re-asking ${footnote.rowCount} message(s) with inline link footnotes`);
+  }
+
   // Every "no picture here" verdict reached before candidates could fall
   // through is worth re-asking. Extraction used to commit to a single image,
   // so an email whose first candidate measured as a masthead strip was written
