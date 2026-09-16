@@ -203,13 +203,24 @@ struct FeedView: View {
             // and could not be reached from the feed at all. Search had this
             // destination; the feed never did.
             .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
-            .navigationDestination(item: $open) { message in
+            // An actual sheet, not a push dressed as one.
+            //
+            // The corners, the drag-to-dismiss, the feed scaling back behind
+            // it and the rubber-banding all come from the system here. Drawn
+            // by hand on a pushed view they were a costume: the shape of a
+            // sheet with none of the behaviour, which is exactly what reads as
+            // wrong even when the radius is right.
+            .sheet(item: $open) { message in
                 ThreadView(message: message)
-                    // Delivers the post lifting and expanding into the dark
-                    // sheet, interactive drag-down dismissal for free — which
-                    // is what finally makes the thread's grabber honest — and
-                    // the system's own fallback when the source row has been
-                    // recycled out of the LazyVStack.
+                    .presentationDetents([.large])
+                    // No grabber. The gesture exists either way, and the
+                    // handle is the system's way of advertising a *resize*
+                    // between detents — there is only one detent here.
+                    .presentationDragIndicator(.hidden)
+                    .presentationBackground(.clear)
+                    // Delivers the post lifting and expanding into the sheet,
+                    // and the system's own fallback when the source row has
+                    // been recycled out of the LazyVStack.
                     .navigationTransition(.zoom(sourceID: message.id, in: feedZoom))
             }
             // Agent progress and receipts stack at the bottom, above the tab

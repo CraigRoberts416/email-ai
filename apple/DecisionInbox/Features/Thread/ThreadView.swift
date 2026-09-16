@@ -53,11 +53,6 @@ struct ThreadView: View {
         // every messaging app on the phone.
         .safeAreaInset(edge: .bottom, spacing: 0) { askBar }
         .background(sheetColor)
-        // The corners iOS gives a sheet. It reads as a card lifted over the
-        // feed rather than a screen that replaced it, which is what the zoom
-        // transition is already saying — the square top edge was the one part
-        // still insisting this was a push.
-        .clipShape(.rect(topLeadingRadius: 38, topTrailingRadius: 38, style: .continuous))
         .ignoresSafeArea(edges: .bottom)
         .overlay(alignment: .top) { floatingControls }
         // Both bars, and owned here rather than by whoever pushed this view.

@@ -60,7 +60,14 @@ struct SearchView: View {
             .background(Ink.surface)
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Find an email")
-            .navigationDestination(item: $open) { ThreadView(message: $0) }
+            // A sheet everywhere, so a thread opened from here is the same
+        // object as one opened from the feed.
+        .sheet(item: $open) {
+            ThreadView(message: $0)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
+                .presentationBackground(.clear)
+        }
             .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
         }
     }

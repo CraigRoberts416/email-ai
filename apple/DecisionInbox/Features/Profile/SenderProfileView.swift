@@ -119,7 +119,14 @@ struct SenderProfileView: View {
             .padding(.top, Space.sm)
             .accessibilityLabel("Back")
         }
-        .navigationDestination(item: $open) { ThreadView(message: $0) }
+        // A sheet everywhere, so a thread opened from here is the same
+        // object as one opened from the feed.
+        .sheet(item: $open) {
+            ThreadView(message: $0)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
+                .presentationBackground(.clear)
+        }
     }
 
     // MARK: Header
