@@ -93,7 +93,7 @@ struct SenderProfileView: View {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(banner == nil ? Ink.primary : Ink.onSheet)
+                    .foregroundStyle(banner == nil ? Ink.primary : GlassInk.onScrim)
                     .frame(width: 40, height: 40)
                     // Glass over the banner, for the same reason as the
                     // thread: the image underneath is different for every

@@ -325,7 +325,9 @@ struct ThreadView: View {
         // which is the only thing that holds across every sender.
         Image(systemName: symbol)
             .font(.system(size: 15, weight: .medium))
-            .foregroundStyle(Ink.onSheet)
+            // Not white. Glass lifts whatever is behind it, so white on it is
+            // unreadable over any hero; the scrim fallback still wants white.
+            .foregroundStyle(GlassInk.onScrim)
             .frame(width: 40, height: 40)
             .glassControl(fallback: Ink.scrim, in: Circle())
             // Glass draws but does not hit-test, so the tappable area was the

@@ -157,15 +157,39 @@ function avatarFor(email, resolve) {
   return resolve({ sender: { domain } });
 }
 
-async function listConversations(userId, ownEmail, { limit = 60, resolveAvatar } = {}) {
+async function listConversations(userId, ownEmail, { limit = 200, resolveAvatar } = {}) {
+  // The whole archive, not just what arrived after onboarding.
+  //
+  // This carried `post_cutoff = TRUE`, inherited from the feed, where it is
+  // correct: a feed is what has happened since you got here. People is not a
+  // feed. It answers "who do you talk to", which is a question about history,
+  // and the history is the part that actually knows the answer.
+  //
+  // The cost was not marginal. On a real mailbox of 127,000 messages, 125,950
+  // of them are pre-cutoff — so this filter was building an address book from
+  // 0.8% of the evidence. Measured against Gmail's own Primary classification:
+  // 8,821 qualifying messages from 794 senders in the archive, of which the
+  // filter admitted 111 messages from 27 senders. Somebody with twenty years
+  // of correspondence was being shown the handful of people who happened to
+  // write in the days since they installed the app.
+  //
+  // Primary is applied in SQL rather than in the loop below so the row budget
+  // is spent on candidates instead of on newsletters — it takes 127,000 rows
+  // down to about 9,000, which is the whole qualifying set rather than a
+  // recent slice of it. The JS `isPrimary` check stays as the guard it always
+  // was; this is the same rule, pushed down.
   const { rows } = await query(`
     SELECT message_id, thread_id, subject, from_name, from_email, snippet,
            internal_date, participants, unsubscribe_url, label_ids, quote, summary,
            body_text
     FROM messages
-    WHERE user_id = $1 AND post_cutoff = TRUE
+    WHERE user_id = $1
+      AND NOT EXISTS (
+            SELECT 1 FROM unnest(label_ids) l
+            WHERE l LIKE 'CATEGORY_%' AND l <> 'CATEGORY_PERSONAL'
+          )
     ORDER BY internal_date DESC
-    LIMIT 2000
+    LIMIT 20000
   `, [userId]);
 
   const me = (ownEmail ?? '').toLowerCase();

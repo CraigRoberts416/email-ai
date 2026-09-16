@@ -93,6 +93,25 @@ private struct ScrollEdges: ViewModifier {
     }
 }
 
+/// What colour a glyph must be to be legible on `glassControl`.
+///
+/// Liquid Glass is a *light* material. It takes some of its value from what is
+/// behind it, but it lifts it — a dark photograph under `.regular` glass comes
+/// out pale — so a white glyph on glass is the one combination that reliably
+/// cannot be read. Both back buttons in the app were exactly that, and
+/// invisible because of it.
+///
+/// They were not wrong when they were written: they sat on `Ink.scrim`, a 40%
+/// black wash, which genuinely does want white on it. When the background
+/// became glass the foreground did not follow. This exists so the two can
+/// never disagree again — whoever picks the surface gets the ink with it.
+enum GlassInk {
+    /// For a control whose fallback is a dark scrim.
+    static var onScrim: Color {
+        if #available(iOS 26.0, *) { Ink.primary } else { Ink.onInverse }
+    }
+}
+
 private struct GlassControl<S: Shape>: ViewModifier {
     let interactive: Bool
     let fallback: Color
