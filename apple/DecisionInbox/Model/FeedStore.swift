@@ -244,7 +244,9 @@ final class FeedStore {
     func messages(in conversation: Conversation) async -> [ConversationMessage] {
         guard let account = auth.accounts.first else { return [] }
         do {
+            print("[conv] asking for id=\(conversation.id)")
             let wire = try await client(account.id).conversationMessages(conversation.id)
+            print("[conv] got \(wire.count) messages")
             return wire.map { m in
                 let subject = (m.subject ?? "").trimmingCharacters(in: .whitespaces)
                 // A bare reply prefix is not a subject, it is punctuation left

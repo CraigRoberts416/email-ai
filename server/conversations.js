@@ -223,14 +223,31 @@ async function listConversations(userId, ownEmail, { limit = 60, resolveAvatar }
 /// a conversation is read in, which is the opposite of a feed.
 async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}) {
   const wanted = new Set(id.split('|').filter(Boolean));
+  const addresses = Array.from(wanted);
+
+  // Filtered in SQL, by address.
+  //
+  // This used to select everything and sift in JavaScript under
+  // `ORDER BY internal_date ASC LIMIT 4000` — which, against 126,000
+  // messages, is the OLDEST four thousand. Every conversation worth opening is
+  // recent, so the rows were all from 2023 and every thread rendered empty
+  // while the endpoint returned 200.
   const { rows } = await query(`
     SELECT message_id, thread_id, subject, from_name, from_email, snippet,
            internal_date, participants, label_ids, quote, summary, attachments
     FROM messages
     WHERE user_id = $1
+      AND (
+        lower(from_email) = ANY($2::text[])
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(COALESCE(participants, '[]'::jsonb)) AS p
+          WHERE lower(p->>'email') = ANY($2::text[])
+        )
+      )
     ORDER BY internal_date ASC
-    LIMIT 4000
-  `, [userId]);
+    LIMIT 500
+  `, [userId, addresses]);
 
   const me = (ownEmail ?? '').toLowerCase();
   const out = [];
