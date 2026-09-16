@@ -132,17 +132,20 @@ struct DirectThreadView: View {
         return out
     }
 
-    /// Only when the day changes, or after a gap long enough to be worth
-    /// saying. A stamp between every pair is noise; one after four hours of
-    /// silence is the fact that the silence happened.
+    /// Only when the day actually changes.
+    ///
+    /// This also fired on any four-hour gap, which put YESTERDAY between two
+    /// messages sent the same afternoon — a separator saying the wrong thing
+    /// about a silence the clock stamps already describe. Now that every group
+    /// carries its own time, the separator has exactly one job.
     private func daySeparator(before index: Int) -> String? {
         guard index < groups.count else { return nil }
         let group = groups[index]
         guard index > 0 else { return group.first.receivedAt.threadDayStamp.uppercased() }
         let previous = groups[index - 1].last.receivedAt
-        let sameDay = Calendar.current.isDate(previous, inSameDayAs: group.first.receivedAt)
-        let gap = group.first.receivedAt.timeIntervalSince(previous)
-        guard !sameDay || gap > 4 * 60 * 60 else { return nil }
+        guard !Calendar.current.isDate(previous, inSameDayAs: group.first.receivedAt) else {
+            return nil
+        }
         return group.first.receivedAt.threadDayStamp.uppercased()
     }
 }

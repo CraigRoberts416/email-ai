@@ -55,6 +55,12 @@ const TRADE_WORDS = new Set([
   'airline', 'railway', 'transit', 'telecom', 'wireless', 'mobile', 'cable',
   'delivery', 'logistics', 'shipping', 'post', 'mail', 'support', 'team',
   'club', 'society', 'association', 'foundation', 'institute', 'council',
+  // Things a report is, which no parent names a child. "Mailsuite Daily
+  // Report" is three plausible words and an address whose local part is
+  // `daily-report` — it reached the People list as a person.
+  'report', 'reports', 'daily', 'weekly', 'monthly', 'digest', 'bulletin',
+  'summary', 'roundup', 'recap', 'alerts', 'notification', 'notifications',
+  'reminder', 'reminders', 'invoice', 'receipt', 'statement', 'newsletter',
 ]);
 
 /// Primary is the absence of a category label. Gmail applies exactly one of
@@ -111,9 +117,17 @@ function setKey(addresses) {
 }
 
 /// A body collapsed to one line, for a list row that shows one line.
+///
+/// Leading URLs are skipped. A retailer's mail often opens with a tracking
+/// link before any words, and a row reading
+/// `https://click.sfemail.signetjewelers.com/…` tells the reader nothing about
+/// who wrote or what they said. The first line that is actually language wins;
+/// if there is none, the URL is better than a blank.
 function firstLine(body) {
   if (!body) return '';
-  return body.replace(/\s+/g, ' ').trim();
+  const lines = body.split('\n').map(l => l.trim()).filter(Boolean);
+  const words = lines.find(l => !/^(https?:\/\/|www\.)\S*$/i.test(l));
+  return (words ?? lines[0] ?? '').replace(/\s+/g, ' ').trim();
 }
 
 /**
