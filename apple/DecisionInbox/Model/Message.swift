@@ -68,6 +68,12 @@ struct Attachment: Identifiable, Hashable {
     var filename: String
     var byteCount: Int
     var preview: Preview
+    /// Where the file itself lives, signed. Distinct from the preview: a
+    /// thumbnail is a picture of an attachment, this is the attachment.
+    var fileURL: URL?
+    /// What the sender said it is. Used only to recover a file extension when
+    /// the filename has none — QuickLook chooses its renderer by extension.
+    var mimeType: String?
 
     var sizeLabel: String {
         ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)

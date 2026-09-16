@@ -102,6 +102,9 @@ struct APIClient {
         let isImage: Bool?
         let pages: Int?
         let previewUrl: String?
+        /// The original bytes, under the sender's own content type. The
+        /// preview URL is a resized image and cannot stand in for a PDF.
+        let fileUrl: String?
     }
 
     // MARK: Conversations
@@ -394,7 +397,9 @@ extension APIClient.Card {
                     preview: (wire.isImage == true)
                         ? (wire.previewUrl.flatMap(URL.init(string:)).map(Attachment.Preview.image)
                             ?? .document(pages: 0))
-                        : .document(pages: wire.pages ?? 0)
+                        : .document(pages: wire.pages ?? 0),
+                    fileURL: wire.fileUrl.flatMap(URL.init(string:)),
+                    mimeType: wire.mimeType
                 )
             },
             isRead: !(labelIds ?? []).contains("UNREAD"),

@@ -310,7 +310,9 @@ final class FeedStore {
                     preview: (wire.isImage == true)
                         ? (wire.previewUrl.flatMap(URL.init(string:)).map(Attachment.Preview.image)
                             ?? .document(pages: 0))
-                        : .document(pages: wire.pages ?? 0)
+                        : .document(pages: wire.pages ?? 0),
+                    fileURL: wire.fileUrl.flatMap(URL.init(string:)),
+                    mimeType: wire.mimeType
                 )
             }
         )

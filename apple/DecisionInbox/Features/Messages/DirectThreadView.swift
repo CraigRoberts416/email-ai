@@ -20,6 +20,8 @@ struct DirectThreadView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var messages: [ConversationMessage] = []
     @State private var seeded = false
+    @State private var opener = AttachmentOpener()
+    @State private var link: LinkTarget?
 
     var body: some View {
         ScrollView {
@@ -36,7 +38,7 @@ struct DirectThreadView: View {
                             .padding(.bottom, Space.md)
                     }
 
-                    MessageGroup(group: group, showsSender: conversation.isGroup)
+                    MessageGroup(group: group, showsSender: conversation.isGroup, opener: opener)
                         .padding(.top, index == 0 ? 0 : Space.md)
                 }
             }
@@ -78,6 +80,30 @@ struct DirectThreadView: View {
             // thread the reader is looking at is worse than showing it a
             // minute stale.
             if !fresh.isEmpty { messages = fresh }
+        }
+        // A link in a message is part of reading the message. Following one
+        // should not throw the reader out of the app and lose their place in
+        // the thread.
+        .environment(\.openURL, OpenURLAction { url in
+            link = LinkTarget(url: url)
+            return .handled
+        })
+        .sheet(item: $link) { SafariView(url: $0.url).ignoresSafeArea() }
+        .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
+        .overlay(alignment: .bottom) {
+            if case .failed(let why) = opener.state {
+                Text(why)
+                    .typeStyle(Style.monoCaption)
+                    .foregroundStyle(Ink.surface)
+                    .padding(.horizontal, Space.lg)
+                    .padding(.vertical, Space.md)
+                    .background(Ink.primary, in: Capsule())
+                    .padding(.bottom, Space.xxl)
+                    .task {
+                        try? await Task.sleep(for: .seconds(3))
+                        opener.state = .idle
+                    }
+            }
         }
     }
 
@@ -221,6 +247,7 @@ struct MessageGroup: View {
 
     let group: Model
     var showsSender = false
+    var opener: AttachmentOpener?
 
     var body: some View {
         VStack(alignment: group.mine ? .trailing : .leading, spacing: 3) {
@@ -240,8 +267,13 @@ struct MessageGroup: View {
                 // thing with a boundary and a name, which is exactly the test
                 // this system uses to decide what gets a container.
                 ForEach(message.attachments) { attachment in
-                    AttachmentBubble(attachment: attachment)
-                        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+                    AttachmentBubble(
+                        attachment: attachment,
+                        isOpening: opener?.state == .loading(attachment.id)
+                    ) {
+                        Task { await opener?.open(attachment, authorization: nil) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
                 }
 
                 if !message.body.isEmpty {
@@ -284,7 +316,7 @@ struct MessageBubble: View {
     private let maxBubbleWidth: CGFloat = 272
 
     var body: some View {
-        Text(message.body)
+        Text(Self.linked(message.body))
             .typeStyle(Style.body)
             .foregroundStyle(message.mine ? Ink.surface : Ink.primary)
             .fixedSize(horizontal: false, vertical: true)
@@ -300,6 +332,36 @@ struct MessageBubble: View {
                 "\(message.mine ? "You" : message.sender.displayName): \(message.body)"
             )
     }
+
+    /// The body with its URLs marked up, so they are tappable.
+    ///
+    /// `NSDataDetector` and not a regular expression: it is the same detector
+    /// Mail and Messages use, so what counts as a link here is what counts as
+    /// one everywhere else on the phone, including the trailing-punctuation
+    /// cases a hand-written pattern always gets wrong.
+    ///
+    /// Underlined rather than coloured. Every other state in this product is
+    /// carried by weight, fill, rule or shape, and a link is not the place to
+    /// introduce the only hue in the app.
+    static func linked(_ body: String) -> AttributedString {
+        var text = AttributedString(body)
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue
+        ) else { return text }
+
+        let ns = body as NSString
+        let matches = detector.matches(in: body, range: NSRange(location: 0, length: ns.length))
+        for match in matches {
+            guard let url = match.url,
+                  let range = Range(match.range, in: body),
+                  let lower = AttributedString.Index(range.lowerBound, within: text),
+                  let upper = AttributedString.Index(range.upperBound, within: text)
+            else { continue }
+            text[lower..<upper].link = url
+            text[lower..<upper].underlineStyle = .single
+        }
+        return text
+    }
 }
 
 /// A file, as its own bubble.
@@ -309,10 +371,18 @@ struct MessageBubble: View {
 /// reads as something a person typed.
 struct AttachmentBubble: View {
     let attachment: Attachment
+    var isOpening = false
+    var onOpen: () -> Void = {}
 
     var body: some View {
+        Button(action: onOpen) { tile }
+            .buttonStyle(.plain)
+            .disabled(attachment.fileURL == nil)
+    }
+
+    private var tile: some View {
         HStack(spacing: Space.sm + 2) {
-            Text(kind)
+            Text(isOpening ? "\u{2026}" : kind)
                 .typeStyle(Style.monoMicro)
                 .foregroundStyle(Ink.secondary)
                 .frame(width: 38, height: 38)
@@ -344,8 +414,11 @@ struct AttachmentBubble: View {
                 )
         )
         .frame(maxWidth: 272, alignment: .leading)
+        .contentShape(.rect)
+        .opacity(isOpening ? 0.55 : 1)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Attachment, \(attachment.filename), \(attachment.sizeLabel)")
+        .accessibilityHint("Opens the file")
     }
 
     private var kind: String {

@@ -860,14 +860,18 @@ app.get('/feed', async (req, res) => {
         // Metadata only. An image attachment gets a signed thumbnail URL; a
         // document gets none, because there is nothing to show and the tile
         // states its type instead of drawing a fake page.
-        attachments:        (m.attachments ?? []).map(a => ({
-          ...a,
-          previewUrl: a.isImage
-            ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
-              + `/attachments/${encodeURIComponent(a.id)}`
-              + `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`
-            : null,
-        })),
+        attachments:        (m.attachments ?? []).map(a => {
+          const base = `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
+            + `/attachments/${encodeURIComponent(a.id)}`;
+          const t = `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`;
+          return {
+            ...a,
+            // A thumbnail only for pictures; the file itself for everything,
+            // because every attachment should open.
+            previewUrl: a.isImage ? base + t : null,
+            fileUrl: base + '/file' + t,
+          };
+        }),
       };
     });
 
@@ -1075,6 +1079,64 @@ app.get('/messages/:messageId/attachments/:attachmentId', async (req, res) => {
   }
 });
 
+/// The attachment itself, as it was sent.
+///
+/// The route above is a thumbnail: it resizes everything through sharp and
+/// labels the result an image, which is right for a preview tile and wrong for
+/// every file that is not a picture. A PDF came back as `image/jpeg` and could
+/// not be opened. This one streams the original bytes under the type the
+/// sender gave them, so the phone can do what it already knows how to do with
+/// a PDF, an audio file or a video.
+///
+/// Same signature as the thumbnail, so one token opens both.
+app.get('/messages/:messageId/attachments/:attachmentId/file', async (req, res) => {
+  const { messageId, attachmentId } = req.params;
+  const token = typeof req.query.t === 'string' ? req.query.t : '';
+
+  try {
+    let userId = await resolveUserId(req);
+    if (!userId && token) {
+      const owners = await messageStore.getMessageOwners(messageId);
+      userId = owners.find(id => {
+        const expected = emailImage.signImage(id, `${messageId}:${attachmentId}`);
+        return expected.length === token.length &&
+          crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(token));
+      }) ?? null;
+    }
+    if (!userId) return res.status(401).end();
+
+    // The type and name come from what we recorded when the message was read,
+    // not from the wire — Gmail's attachment endpoint returns bytes and
+    // nothing else.
+    const record = await messageStore.getMessage(userId, messageId);
+    const meta = (record?.attachments ?? []).find(a => a.id === attachmentId);
+
+    const accessToken = await userStore.getValidAccessToken(userId);
+    const upstream = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}`
+        + `/attachments/${encodeURIComponent(attachmentId)}`,
+      { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(30000) }
+    );
+    if (!upstream.ok) return res.status(404).end();
+
+    const { data } = await upstream.json();
+    if (!data) return res.status(404).end();
+    const bytes = Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+
+    const filename = (meta?.filename ?? 'attachment').replace(/["\\\r\n]/g, '');
+    res.setHeader('Content-Type', meta?.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', bytes.length);
+    // `inline`: the phone previews it rather than dropping it in Files. The
+    // reader asked to look at the thing, not to file it somewhere.
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    res.send(bytes);
+  } catch (err) {
+    console.warn('[attachment-file] error:', err.message);
+    res.status(404).end();
+  }
+});
+
 // ─── Conversations ────────────────────────────────────────────────────────
 //
 // Mail from people, grouped by participant set. See conversations.js for why
@@ -1104,14 +1166,12 @@ app.get('/conversations/:id/messages', async (req, res) => {
     // in a thread was a grey tile with a filename on it.
     const withPreviews = messages.map(m => ({
       ...m,
-      attachments: (m.attachments ?? []).map(a => ({
-        ...a,
-        previewUrl: a.isImage
-          ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
-            + `/attachments/${encodeURIComponent(a.id)}`
-            + `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`
-          : null,
-      })),
+      attachments: (m.attachments ?? []).map(a => {
+        const base = `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
+          + `/attachments/${encodeURIComponent(a.id)}`;
+        const t = `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`;
+        return { ...a, previewUrl: a.isImage ? base + t : null, fileUrl: base + '/file' + t };
+      }),
     }));
     res.json(stripLoneSurrogates({ messages: withPreviews }));
   } catch (err) {
@@ -1260,14 +1320,18 @@ app.get('/all-mail', async (req, res) => {
         // Metadata only. An image attachment gets a signed thumbnail URL; a
         // document gets none, because there is nothing to show and the tile
         // states its type instead of drawing a fake page.
-        attachments:        (m.attachments ?? []).map(a => ({
-          ...a,
-          previewUrl: a.isImage
-            ? `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
-              + `/attachments/${encodeURIComponent(a.id)}`
-              + `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`
-            : null,
-        })),
+        attachments:        (m.attachments ?? []).map(a => {
+          const base = `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
+            + `/attachments/${encodeURIComponent(a.id)}`;
+          const t = `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`;
+          return {
+            ...a,
+            // A thumbnail only for pictures; the file itself for everything,
+            // because every attachment should open.
+            previewUrl: a.isImage ? base + t : null,
+            fileUrl: base + '/file' + t,
+          };
+        }),
       };
     });
 
