@@ -293,7 +293,40 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
   // is inverted inside and put back outside. A DESC-limited subquery reversed
   // to ASC gives the most recent 500 in reading order; ASC on the outside
   // alone would silently be the same bug in a narrower scope.
+  // Threads, not just addresses — because a message YOU sent names nobody
+  // this query can match on.
+  //
+  // A sent message has `from_email` = you, which is never in the wanted set,
+  // and its recipient lives in `participants` — a column that is NULL on every
+  // one of the 934 sent messages in the real archive, because the backfill
+  // never wrote it. So your own half of every old conversation matched neither
+  // arm of the filter and silently vanished. The thread rendered as the other
+  // person talking into space.
+  //
+  // Gmail already solved this: a reply carries the `thread_id` of what it
+  // replies to, and that column IS populated on all 934. So the addresses find
+  // the conversation, and the threads they belong to then pull in everything
+  // else said in them — which is exactly the set the user remembers sending.
   const { rows } = await query(`
+    WITH anchors AS (
+      SELECT thread_id
+      FROM messages
+      WHERE user_id = $1
+        AND (
+          lower(from_email) = ANY($2::text[])
+          OR EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(COALESCE(participants, '[]'::jsonb)) AS p
+            WHERE lower(p->>'email') = ANY($2::text[])
+          )
+        )
+      ORDER BY internal_date DESC
+      LIMIT 500
+    ),
+    threads AS (
+      SELECT DISTINCT thread_id FROM anchors
+      WHERE thread_id IS NOT NULL AND thread_id <> ''
+    )
     SELECT * FROM (
       SELECT message_id, thread_id, subject, from_name, from_email, snippet,
              internal_date, participants, label_ids, quote, summary, attachments,
@@ -307,16 +340,20 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
             FROM jsonb_array_elements(COALESCE(participants, '[]'::jsonb)) AS p
             WHERE lower(p->>'email') = ANY($2::text[])
           )
+          OR thread_id IN (SELECT thread_id FROM threads)
         )
       ORDER BY internal_date DESC
-      LIMIT 500
+      LIMIT 1000
     ) recent
     ORDER BY internal_date ASC
   `, [userId, addresses]);
 
   const me = (ownEmail ?? '').toLowerCase();
   const kept = [];
+  const taken = new Set();
+  const threads = new Set();
 
+  // Pass one: the messages that identify this conversation by who is in them.
   for (const row of rows) {
     const fromEmail = (row.from_email ?? '').toLowerCase();
     const mine = fromEmail === me;
@@ -328,7 +365,34 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
     if (!isPrimary(row.label_ids)) continue;
     if (setKey(Array.from(others)) !== setKey(Array.from(wanted))) continue;
     kept.push({ row, fromEmail, mine });
+    taken.add(row.message_id);
+    if (row.thread_id) threads.add(row.thread_id);
   }
+
+  // Pass two: your own replies in those same threads.
+  //
+  // Only messages you sent, and only into a thread pass one already accepted
+  // as this conversation — so this can add your side of a thread and nothing
+  // else. It cannot pull in a third party, because it never admits a message
+  // that is not from you.
+  //
+  // `isPrimary` is deliberately not applied here. It is a test of how Gmail
+  // sorted incoming mail, and it has no meaning for something you wrote; a
+  // reply you sent into a thread belongs in that thread whatever category
+  // label the thread happens to carry.
+  for (const row of rows) {
+    if (taken.has(row.message_id)) continue;
+    const fromEmail = (row.from_email ?? '').toLowerCase();
+    if (fromEmail !== me) continue;
+    if (!row.thread_id || !threads.has(row.thread_id)) continue;
+    kept.push({ row, fromEmail, mine: true });
+    taken.add(row.message_id);
+  }
+
+  // Both passes walked the same date-ordered rows, so the second one's
+  // additions land after the first one's. Reading order has to be restored or
+  // every message you sent appears in a block at the bottom.
+  kept.sort((a, b) => Number(a.row.internal_date) - Number(b.row.internal_date));
 
   // The message, not a preview of it.
   //
