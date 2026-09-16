@@ -1085,7 +1085,7 @@ app.get('/conversations', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
   try {
     const user = await userStore.getUser(userId);
-    const list = await conversations.listConversations(userId, user?.email);
+    const list = await conversations.listConversations(userId, user?.email, { resolveAvatar: resolveAvatarUri });
     res.json(stripLoneSurrogates({ conversations: list }));
   } catch (err) {
     console.error('[conversations] error:', err.message);
@@ -1098,7 +1098,7 @@ app.get('/conversations/:id/messages', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
   try {
     const user = await userStore.getUser(userId);
-    const messages = await conversations.conversationMessages(userId, user?.email, req.params.id);
+    const messages = await conversations.conversationMessages(userId, user?.email, req.params.id, { resolveAvatar: resolveAvatarUri });
     res.json(stripLoneSurrogates({ messages }));
   } catch (err) {
     console.error('[conversation-messages] error:', err.message);

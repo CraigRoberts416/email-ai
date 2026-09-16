@@ -113,7 +113,24 @@ function setKey(addresses) {
  * is keyed on them alone — otherwise every conversation would carry the
  * account's own address and two-person chats would look like groups.
  */
-async function listConversations(userId, ownEmail, { limit = 60 } = {}) {
+/// Their organisation's mark, standing in for a photograph.
+///
+/// There is no photo of a person available here: Gmail does not hand one over
+/// without a contacts scope, and a Gravatar lookup would send a hash of every
+/// address in someone's mailbox to a third party in exchange for a picture
+/// most of them do not have. The company mark is recognisable, costs nothing,
+/// and is already what the feed shows for the same sender — the alternative
+/// was a grid of identical grey monograms.
+///
+/// Free mail gets none. A gmail.com address would otherwise wear Google's
+/// logo, which says nothing about who wrote to you.
+function avatarFor(email, resolve) {
+  const domain = (email ?? '').split('@')[1]?.toLowerCase();
+  if (!domain) return null;
+  return resolve({ sender: { domain } });
+}
+
+async function listConversations(userId, ownEmail, { limit = 60, resolveAvatar } = {}) {
   const { rows } = await query(`
     SELECT message_id, thread_id, subject, from_name, from_email, snippet,
            internal_date, participants, unsubscribe_url, label_ids, quote, summary
@@ -175,7 +192,11 @@ async function listConversations(userId, ownEmail, { limit = 60 } = {}) {
     for (const p of others) {
       if (c.seen.has(p.email)) continue;
       c.seen.add(p.email);
-      c.participants.push({ name: p.name || p.email.split('@')[0], email: p.email });
+      c.participants.push({
+        name: p.name || p.email.split('@')[0],
+        email: p.email,
+        avatarUri: resolveAvatar ? avatarFor(p.email, resolveAvatar) : null,
+      });
     }
     c.messageCount++;
     if ((row.label_ids ?? []).includes('UNREAD') && !mine) c.unread = true;
@@ -200,7 +221,7 @@ async function listConversations(userId, ownEmail, { limit = 60 } = {}) {
 
 /// Every message exchanged with one participant set, oldest first — the order
 /// a conversation is read in, which is the opposite of a feed.
-async function conversationMessages(userId, ownEmail, id) {
+async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}) {
   const wanted = new Set(id.split('|').filter(Boolean));
   const { rows } = await query(`
     SELECT message_id, thread_id, subject, from_name, from_email, snippet,
@@ -231,6 +252,7 @@ async function conversationMessages(userId, ownEmail, id) {
       subject: row.subject,
       fromName: row.from_name,
       fromEmail,
+      avatarUri: resolveAvatar ? avatarFor(fromEmail, resolveAvatar) : null,
       mine,
       body: row.quote || row.snippet || '',
       summary: row.summary ?? null,

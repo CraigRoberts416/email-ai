@@ -260,7 +260,7 @@ final class FeedStore {
                         name: m.fromName ?? "",
                         address: m.fromEmail ?? "",
                         kind: .person,
-                        logoURL: nil
+                        logoURL: m.avatarUri.flatMap(URL.init(string:))
                     ),
                     mine: m.mine,
                     body: m.body ?? "",

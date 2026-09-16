@@ -107,7 +107,14 @@ struct APIClient {
     // MARK: Conversations
 
     struct ConversationWire: Decodable {
-        struct Participant: Decodable { let name: String?; let email: String }
+        struct Participant: Decodable {
+            let name: String?
+            let email: String
+            /// Their organisation's mark, not a photograph of them. See the
+            /// server note — a person at a company is recognisable by it, and
+            /// nothing here reaches a third party with their address.
+            let avatarUri: String?
+        }
         let id: String
         let participants: [Participant]
         let preview: String?
@@ -122,6 +129,7 @@ struct APIClient {
         let subject: String?
         let fromName: String?
         let fromEmail: String?
+        let avatarUri: String?
         let mine: Bool
         let body: String?
         let internalDate: Double
@@ -136,8 +144,11 @@ struct APIClient {
 
     func conversationMessages(_ id: String) async throws -> [ConversationMessageWire] {
         struct Wrapper: Decodable { let messages: [ConversationMessageWire] }
-        let path = "/conversations/\(id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id)/messages"
-        let wrapper: Wrapper = try await get(path)
+        // NOT percent-encoded here. `URL.appending(path:)` escapes what it is
+        // given, so a pre-encoded id arrived double-escaped: `%2E` became
+        // `%252E`, the server decoded it once back to `%2E`, and the
+        // participant set never matched anything. Every thread opened empty.
+        let wrapper: Wrapper = try await get("/conversations/\(id)/messages")
         return wrapper.messages
     }
 
