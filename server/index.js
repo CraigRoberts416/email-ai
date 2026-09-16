@@ -1813,6 +1813,14 @@ async function runImageBackfill(userId) {
 /// interval, and Gmail's history API returns nothing when nothing changed.
 const SYNC_INTERVAL_MS = 4 * 60 * 1000;
 
+/// The sweep costs a list call per user and metadata only for what it finds,
+/// so it does not need to run as often as the diff — but it does need to run
+/// on its own schedule rather than only after a failure, because the failures
+/// it repairs are the ones that never announced themselves. Every fourth pass
+/// is roughly a quarter hour.
+const RECONCILE_EVERY = 4;
+let syncPass = 0;
+
 async function syncEveryone() {
   let users;
   try {
@@ -1822,17 +1830,32 @@ async function syncEveryone() {
     return;
   }
 
+  const sweeping = syncPass % RECONCILE_EVERY === 0;
+  syncPass++;
+
   for (const user of users) {
     try {
       const { newUnreadIds } = await gmailSync.incrementalSync(user.user_id);
-      if (!newUnreadIds.length) continue;
 
-      console.log(`[poll] ${newUnreadIds.length} new for ${user.user_id.slice(0, 8)}…`);
+      // The diff stream says what changed; the sweep says what is missing.
+      // Both, because the first is fast and the second is the only one that
+      // can find what the first never mentioned.
+      const swept = sweeping
+        ? await gmailSync.reconcileRecent(user.user_id).catch(err => {
+            console.warn(`[reconcile] ${user.user_id.slice(0, 8)}…: ${err.message}`);
+            return { newUnreadIds: [] };
+          })
+        : { newUnreadIds: [] };
+
+      const announce = Array.from(new Set([...newUnreadIds, ...(swept.newUnreadIds ?? [])]));
+      if (!announce.length) continue;
+
+      console.log(`[poll] ${announce.length} new for ${user.user_id.slice(0, 8)}…`);
       processingWorker.wakeWorker(user.user_id);
 
       // Announce them the same way the push path would, so a feed that is
       // already open fills in rather than waiting for the next cold start.
-      for (const messageId of newUnreadIds) {
+      for (const messageId of announce) {
         const record = await messageStore.getMessage(user.user_id, messageId);
         if (!record) continue;
         emitSSE(user.user_id, {
@@ -1866,6 +1889,11 @@ watchManager.startWatchRenewalCron();
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+
+  // A sweep on the way up, before the first interval. A restart is one of the
+  // ways mail goes missing in the first place, so the moment after one is
+  // exactly when the archive is most likely to have a hole in it.
+  syncEveryone().catch(err => console.error('[poll] error:', err.message));
 
   setInterval(() => {
     syncEveryone().catch(err => console.error('[poll] error:', err.message));

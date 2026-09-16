@@ -284,8 +284,32 @@ async function getMessageIdsNeedingUnsubscribeBackfill(userId) {
   return rows.map(r => r.message_id);
 }
 
+/**
+ * Which of these Gmail ids this mailbox cannot answer for.
+ *
+ * Two kinds, and the caller treats them the same because the remedy is the
+ * same — fetch the metadata and upsert:
+ *
+ *   - never stored, because the history stream missed it
+ *   - stored before `participants` existed, so nothing knows who else was on
+ *     it. 126,000 rows are in that state, and a sent message with no
+ *     recipients recorded cannot be placed in any conversation at all.
+ */
+async function unreconciled(userId, messageIds) {
+  if (!messageIds.length) return [];
+  const { rows } = await query(`
+    SELECT id FROM unnest($2::text[]) AS id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM messages m
+      WHERE m.user_id = $1 AND m.message_id = id
+        AND m.participants IS NOT NULL
+    )
+  `, [userId, messageIds]);
+  return rows.map(r => r.id);
+}
+
 module.exports = {
-  upsertMessages, getMessage, getUnread, getAll,
+  upsertMessages, getMessage, getUnread, getAll, unreconciled,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, setImageUrl, setAttachments, getMessageIdsNeedingUnsubscribeBackfill,
   getMessageIdsNeedingImageBackfill, getMessageOwners,

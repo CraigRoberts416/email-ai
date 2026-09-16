@@ -244,6 +244,58 @@ async function incrementalSync(userId) {
 }
 
 /**
+ * What the history stream missed.
+ *
+ * Incremental sync is a diff keyed on a stored historyId, and every way that
+ * can go wrong loses mail in silence. The id expires after about a week and
+ * the recovery path above jumps it straight to the present, skipping whatever
+ * arrived in between. A restart can land between advancing the id and writing
+ * the messages. A failed fetch leaves the id already moved on. Nothing
+ * anywhere notices, because a diff stream has no way to report what it did not
+ * mention.
+ *
+ * On 15 September this mailbox had an eight-hour hole in it — 14:54 to 22:52 —
+ * and the message that fell in was the one the reader actually cared about.
+ *
+ * So stop reasoning about causes: ask Gmail for the most recent ids and store
+ * the ones this database cannot answer for. It does not matter why one was
+ * missed; the next pass closes the gap. One list call, then metadata only for
+ * the ids that came back unaccounted for, which on a healthy mailbox is none.
+ */
+async function reconcileRecent(userId, { window = 250 } = {}) {
+  const accessToken = await userStore.getValidAccessToken(userId);
+  const { messageIds } = await listMessagesPage(accessToken, { maxResults: window });
+  if (!messageIds.length) return { recovered: 0 };
+
+  const missing = await messageStore.unreconciled(userId, messageIds);
+  if (!missing.length) return { recovered: 0 };
+
+  const user = await userStore.getUser(userId);
+  // When they connected. Mail older than that was already in the mailbox and
+  // belongs to the archive; mail newer arrived while we were watching and
+  // belongs in the feed, whether or not we managed to notice it at the time.
+  const connectedAt = user?.created_at ? new Date(user.created_at).getTime() : Infinity;
+
+  const msgs    = await fetchMetadataBatch(missing, accessToken);
+  const records = msgs.map(m => {
+    const record = metadataToRecord(m, false);
+    record.postCutoff = record.internalDate >= connectedAt;
+    return record;
+  });
+  await messageStore.upsertMessages(userId, records);
+
+  const fresh = records.filter(r => r.postCutoff);
+  console.log(`[reconcile] ${records.length} unaccounted for, ${fresh.length} post-cutoff`);
+
+  return {
+    recovered: records.length,
+    newUnreadIds: fresh
+      .filter(r => r.labelIds.includes('UNREAD'))
+      .map(r => r.messageId),
+  };
+}
+
+/**
  * Fetch full message content for AI processing.
  */
 async function fetchFullMessage(userId, messageId) {
@@ -256,4 +308,4 @@ async function fetchFullMessage(userId, messageId) {
   return res.json();
 }
 
-module.exports = { initialSync, incrementalSync, fetchFullMessage };
+module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage };
