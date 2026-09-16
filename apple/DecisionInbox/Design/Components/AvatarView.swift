@@ -36,22 +36,23 @@ struct AvatarView: View {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
-                        // Contained, never filled — for every sender class.
+                        // Filled, for every sender class.
                         //
-                        // Every image this view can receive is a domain mark
-                        // from logo.dev, including the ones on people: a person
-                        // at a company gets their company's logo, because the
-                        // product has no source for anybody's actual face. So
-                        // "a face fills its circle" had no faces to apply to,
-                        // and cropping a wordmark to fill was the failure mode
-                        // it was written to avoid.
+                        // Checked against the source rather than assumed:
+                        // every image logo.dev returns is 128 × 128, square,
+                        // and fully opaque — a favicon-style mark on its own
+                        // solid ground, never a transparent wordmark. Fitting
+                        // one inside a circle therefore draws the only thing it
+                        // can, which is a square sitting in a circle with the
+                        // ground showing at the corners.
                         //
-                        // When real profile photos exist this splits again —
-                        // on whether the image is a photo, which is the real
-                        // question, rather than on what the sender is.
-                        image.resizable()
-                            .scaledToFit()
-                            .padding(size * 0.16)
+                        // Filled, the mark's own background becomes the circle
+                        // and the crop takes nothing but the corners of it.
+                        // The "contain a wordmark" case this briefly assumed
+                        // does not exist here; if a source that has one is ever
+                        // added, this splits on the image's aspect ratio, which
+                        // is the real question — not on what the sender is.
+                        image.resizable().scaledToFill()
                     default:
                         monogram
                     }
