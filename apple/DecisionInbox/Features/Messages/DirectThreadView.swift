@@ -17,8 +17,7 @@ struct DirectThreadView: View {
     @State private var loaded = false
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
+        ScrollView {
                 LazyVStack(alignment: .leading, spacing: Space.sm + 2) {
                     if messages.isEmpty && loaded {
                         Text("NOTHING YET")
@@ -52,14 +51,16 @@ struct DirectThreadView: View {
                 .padding(.horizontal, Metric.gutter)
                 .padding(.vertical, Space.xl)
             }
-            .scrollIndicators(.hidden)
-            .onChange(of: messages.count) { _, _ in
-                // A conversation opens at the end, where a feed opens at the
-                // start. The newest thing said is the thing you came for.
-                guard let last = messages.last else { return }
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
-        }
+        .scrollIndicators(.hidden)
+        // A conversation opens at the end, where a feed opens at the start:
+        // the newest thing said is what you came for.
+        //
+        // `defaultScrollAnchor` and not a `scrollTo` on appear. Asking a proxy
+        // to scroll the last message to `.bottom` does exactly that even when
+        // the whole conversation is shorter than the screen — two short
+        // bubbles were pushed up out of view and the thread looked empty while
+        // the data was sitting right there.
+        .defaultScrollAnchor(.bottom)
         .background(Ink.surface)
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .toolbar(.hidden, for: .navigationBar)
