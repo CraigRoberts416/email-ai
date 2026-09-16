@@ -255,48 +255,65 @@ final class FeedStore {
         )
     }
 
+    /// What this thread said last time, straight off disk.
+    ///
+    /// Synchronous and on purpose: it is read before the view's first frame, so
+    /// a thread you have opened before is simply already there. Removing the
+    /// Gmail fetch made the request fast, which is not the same as there being
+    /// nothing to wait for — the round trip was still a cold wait on every
+    /// single open, and on a sleeping instance a long one.
+    func cachedMessages(in conversation: Conversation) -> [ConversationMessage] {
+        guard let account = auth.accounts.first,
+              let wire = FeedCache.loadMessages(account: account.id, conversation: conversation.id)
+        else { return [] }
+        return wire.map(Self.message(from:))
+    }
+
     func messages(in conversation: Conversation) async -> [ConversationMessage] {
         guard let account = auth.accounts.first else { return [] }
         do {
             let wire = try await client(account.id).conversationMessages(conversation.id)
-            return wire.map { m in
-                let subject = (m.subject ?? "").trimmingCharacters(in: .whitespaces)
-                // A bare reply prefix is not a subject, it is punctuation left
-                // over from a mail client. Showing "RE:" above a bubble would
-                // add a line that says nothing.
-                let meaningful = subject
-                    .replacingOccurrences(of: #"^((re|fwd|fw)\s*:\s*)+"#, with: "",
-                                          options: [.regularExpression, .caseInsensitive])
-                    .trimmingCharacters(in: .whitespaces)
-                return ConversationMessage(
-                    id: m.messageId,
-                    sender: Sender(
-                        name: m.fromName ?? "",
-                        address: m.fromEmail ?? "",
-                        kind: .person,
-                        logoURL: m.avatarUri.flatMap(URL.init(string:))
-                    ),
-                    mine: m.mine,
-                    body: m.body ?? "",
-                    subject: meaningful.isEmpty ? nil : meaningful,
-                    receivedAt: Date(timeIntervalSince1970: m.internalDate / 1000),
-                    attachments: (m.attachments ?? []).map { wire in
-                        Attachment(
-                            id: wire.id,
-                            filename: wire.filename,
-                            byteCount: wire.byteCount ?? 0,
-                            preview: (wire.isImage == true)
-                                ? (wire.previewUrl.flatMap(URL.init(string:)).map(Attachment.Preview.image)
-                                    ?? .document(pages: 0))
-                                : .document(pages: wire.pages ?? 0)
-                        )
-                    }
-                )
-            }
+            FeedCache.saveMessages(wire, account: account.id, conversation: conversation.id)
+            return wire.map(Self.message(from:))
         } catch {
             print("[conversations] messages failed: \(error)")
             return []
         }
+    }
+
+    private static func message(from m: APIClient.ConversationMessageWire) -> ConversationMessage {
+        let subject = (m.subject ?? "").trimmingCharacters(in: .whitespaces)
+        // A bare reply prefix is not a subject, it is punctuation left over
+        // from a mail client. Showing "RE:" above a bubble would add a line
+        // that says nothing.
+        let meaningful = subject
+            .replacingOccurrences(of: #"^((re|fwd|fw)\s*:\s*)+"#, with: "",
+                                  options: [.regularExpression, .caseInsensitive])
+            .trimmingCharacters(in: .whitespaces)
+        return ConversationMessage(
+            id: m.messageId,
+            sender: Sender(
+                name: m.fromName ?? "",
+                address: m.fromEmail ?? "",
+                kind: .person,
+                logoURL: m.avatarUri.flatMap(URL.init(string:))
+            ),
+            mine: m.mine,
+            body: m.body ?? "",
+            subject: meaningful.isEmpty ? nil : meaningful,
+            receivedAt: Date(timeIntervalSince1970: m.internalDate / 1000),
+            attachments: (m.attachments ?? []).map { wire in
+                Attachment(
+                    id: wire.id,
+                    filename: wire.filename,
+                    byteCount: wire.byteCount ?? 0,
+                    preview: (wire.isImage == true)
+                        ? (wire.previewUrl.flatMap(URL.init(string:)).map(Attachment.Preview.image)
+                            ?? .document(pages: 0))
+                        : .document(pages: wire.pages ?? 0)
+                )
+            }
+        )
     }
 
     func refresh() async {

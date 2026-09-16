@@ -126,7 +126,8 @@ struct APIClient {
         let messageCount: Int?
     }
 
-    struct ConversationMessageWire: Decodable {
+    // Codable so a thread can be cached and render before the network answers.
+    struct ConversationMessageWire: Codable {
         let messageId: String
         let subject: String?
         let fromName: String?

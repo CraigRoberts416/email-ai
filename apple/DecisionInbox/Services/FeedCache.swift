@@ -131,6 +131,47 @@ enum FeedCache {
         return try? JSONDecoder().decode(Envelope.self, from: data)
     }
 
+    // MARK: - Threads
+    //
+    // One file per conversation. Opening a thread was a cold network wait every
+    // single time — the server got fast, which is not the same as there being
+    // nothing to wait for. What somebody said an hour ago has not changed.
+
+    private static func threadFile(account: String, conversation: String) -> URL? {
+        let digest = SHA256.hash(data: Data("\(account.lowercased())|\(conversation.lowercased())".utf8))
+        let name = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
+        return directory?.appending(path: "thread-\(name).json")
+    }
+
+    private struct ThreadEnvelope: Codable {
+        let messages: [APIClient.ConversationMessageWire]
+        let savedAt: Date
+    }
+
+    static func saveMessages(
+        _ messages: [APIClient.ConversationMessageWire],
+        account: String, conversation: String
+    ) {
+        guard let file = threadFile(account: account, conversation: conversation) else { return }
+        let envelope = ThreadEnvelope(messages: Array(messages.suffix(120)), savedAt: .now)
+        guard let data = try? JSONEncoder().encode(envelope) else { return }
+        try? data.write(to: file, options: [.atomic])
+    }
+
+    static func loadMessages(
+        account: String, conversation: String
+    ) -> [APIClient.ConversationMessageWire]? {
+        guard let file = threadFile(account: account, conversation: conversation),
+              let data = try? Data(contentsOf: file),
+              let envelope = try? JSONDecoder().decode(ThreadEnvelope.self, from: data)
+        else { return nil }
+        guard Date.now.timeIntervalSince(envelope.savedAt) < maximumAge else {
+            try? FileManager.default.removeItem(at: file)
+            return nil
+        }
+        return envelope.messages.isEmpty ? nil : envelope.messages
+    }
+
     static func clear(for accountID: String) {
         guard let file = file(for: accountID) else { return }
         try? FileManager.default.removeItem(at: file)

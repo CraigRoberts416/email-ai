@@ -19,6 +19,7 @@ struct DirectThreadView: View {
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var messages: [ConversationMessage] = []
+    @State private var seeded = false
 
     var body: some View {
         ScrollView {
@@ -57,11 +58,27 @@ struct DirectThreadView: View {
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        // No loading state. Opening a conversation is a read, and the server
-        // no longer fetches bodies while the reader waits — they are already
-        // in the database by the time anyone taps in. A spinner here was a
-        // symptom of the read doing somebody else's network work.
-        .task { messages = await store.messages(in: conversation) }
+        // No loading state, because there is nothing to load. What was said
+        // last time is read off disk before the first frame, so a thread you
+        // have opened before is simply already there; the network then refills
+        // it in place.
+        //
+        // Both halves were needed. The server used to fetch every body from
+        // Gmail while the reader watched — that is gone — but a fast request
+        // is still a request, and on a sleeping instance still seconds of
+        // empty screen.
+        .onAppear {
+            guard !seeded else { return }
+            seeded = true
+            messages = store.cachedMessages(in: conversation)
+        }
+        .task {
+            let fresh = await store.messages(in: conversation)
+            // An empty result is how a failed request looks too, and wiping a
+            // thread the reader is looking at is worse than showing it a
+            // minute stale.
+            if !fresh.isEmpty { messages = fresh }
+        }
     }
 
     private var header: some View {
