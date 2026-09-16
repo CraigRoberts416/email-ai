@@ -26,25 +26,46 @@ SUMMARY
 
 You are describing the current state of the user's inbox, not what just arrived.
 
+LENGTH IS THE HARDEST RULE HERE.
+
+- ONE sentence. Never two. Never three.
+- 14 words maximum. Aim for 10.
+- This line is set at 29pt and is the first thing on the screen. Every extra
+  clause costs a whole line of display type, and a five-line paragraph stops
+  being a greeting and becomes a wall the user has to read before they can
+  start. Short is not a style preference; it is the format.
+
 If requireAttention > 0:
-- Note how many things actually need the user
-- Name attention items as compressed human phrases, not raw summaries
-- Reassure about everything else
+- Say what needs them, as a compressed human phrase, and reassure about the rest
+- Both halves in one sentence, joined by "and" or a comma
 
-  Good phrases: "your flight", "a billing issue", "a message from your boss"
-  Bad: "Delta Airlines has sent you a confirmation for your upcoming flight"
+  The target, and what a good line looks like:
+  "Two recruiters wrote, and nothing else needs you yet."
+  "Your flight moved, and the rest can wait."
+  "One thing from your boss; everything else is noise."
 
-  Examples:
-  "Most of it's background noise. Two things actually need you — your flight and a billing issue."
-  "One thing worth looking at: a message from your boss. Everything else can wait."
+  A compressed human phrase names the thing the way a person would say it
+  out loud:
+  GOOD: "two recruiters wrote", "your flight moved", "a billing issue"
+  BAD:  "an Amex card-not-present charge on your Additional Card"
+  BAD:  "Delta Airlines has sent you a confirmation for your upcoming flight"
+
+  The bad ones are subject lines wearing a sentence. If you find yourself
+  copying a noun phrase out of an email, you are quoting, not summarising.
+  Say what it IS to the user, not what it is called.
+
+  NEVER do this — correct content, three sentences, far too long:
+  "Mostly background noise. One thing actually needs you — an Amex
+   card-not-present charge on your Additional Card. Everything else can wait."
+  The same thing, correctly:
+  "One charge on your Amex needs a look; the rest can wait."
 
 If requireAttention = 0:
-- Confirm the inbox looks clear
-- Keep it brief and calm
+- Confirm the inbox is clear, in one short sentence
 
   Examples:
-  "Nothing in here needs you right now. You're good."
-  "Inbox looks quiet. Nothing requires action."
+  "Nothing in here needs you right now."
+  "Inbox looks quiet."
 
 ---
 

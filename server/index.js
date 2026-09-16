@@ -1889,7 +1889,19 @@ async function runImageBackfill(userId) {
 /// repairing — but freshness should not depend on a delivery path that can
 /// fail silently and invisibly. A poll is cheap: one history call per user per
 /// interval, and Gmail's history API returns nothing when nothing changed.
-const SYNC_INTERVAL_MS = 4 * 60 * 1000;
+// 60s, down from 4 minutes.
+//
+// This is the FALLBACK. Gmail push (watch → Pub/Sub → /webhooks/gmail) is
+// meant to make it irrelevant, and when push is healthy it costs one cheap
+// history call per user per minute. It is short because push has been silently
+// dead in production — the watch registers and renews fine, Gmail accepts it,
+// and not one request has ever reached /webhooks/gmail — which meant every
+// message in the app arrived on this timer. Four minutes of that is the whole
+// reason the app lost a race against every other mail client on the phone.
+//
+// If push is ever confirmed healthy this can go back up; until then the poll
+// is the real delivery path and should be priced like one.
+const SYNC_INTERVAL_MS = 60 * 1000;
 
 /// The sweep costs a list call per user and metadata only for what it finds,
 /// so it does not need to run as often as the diff — but it does need to run

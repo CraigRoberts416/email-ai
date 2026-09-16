@@ -4,6 +4,7 @@ import SwiftUI
 /// user lands in the tabbed feed. The single full-screen block in the whole
 /// product is "no mailbox connected" — everything else degrades quietly.
 struct RootView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var auth = AuthService()
     @State private var store: FeedStore?
     @State private var push: PushService
@@ -39,6 +40,13 @@ struct RootView: View {
                 // the one gesture every feed on the phone shares.
                 .onChange(of: tab) { previous, current in
                     if previous == 0 && current == 0 { scrollTop += 1 }
+                }
+                // Coming back to the app is the single most common moment
+                // somebody wants to know what arrived, and until now it was
+                // the one moment nothing was fetched.
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active else { return }
+                    Task { await store.resume() }
                 }
                 .environment(store)
                 .task(id: auth.accounts.count) {

@@ -328,6 +328,42 @@ final class FeedStore {
         await loadRecap()
     }
 
+    /// The app came back to the foreground.
+    ///
+    /// Nothing called this before, and the cost was the whole reason this app
+    /// felt slower than every other mail client on the phone. Two things go
+    /// wrong while the app is off screen and neither fixes itself:
+    ///
+    /// 1. iOS suspends the event stream's connection. A suspended stream does
+    ///    not report itself as dead — it just stops delivering. The feed then
+    ///    sits open, looking live, showing mail from whenever the app was last
+    ///    in front.
+    /// 2. `start()` is idempotent by account, so re-entering the app ran no
+    ///    fetch at all. The only way to see new mail was to pull to refresh.
+    ///
+    /// So the stream is torn down and rebuilt rather than trusted, and the
+    /// feed is re-fetched from the server, which is authoritative.
+    func resume() async {
+        guard !loaded.isEmpty else { return await start() }
+
+        await withTaskGroup(of: Void.self) { group in
+            for accountID in loaded {
+                group.addTask { await self.reopen(accountID) }
+            }
+        }
+        await refresh()
+    }
+
+    /// Replaces one mailbox's event stream with a live one.
+    private func reopen(_ accountID: String) async {
+        await streams[accountID]?.disconnect()
+        let stream = SSEClient(baseURL: client(accountID).baseURL, auth: auth, accountID: accountID)
+        streams[accountID] = stream
+        await stream.connect { [weak self] event in
+            await self?.apply(event, from: accountID)
+        }
+    }
+
     /// Pulls one mailbox's feed and merges it in place, keeping every other
     /// mailbox's posts untouched.
     private func load(_ accountID: String, admitDirectly: Bool) async {
