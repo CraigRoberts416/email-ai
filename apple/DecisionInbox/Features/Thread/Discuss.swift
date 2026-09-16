@@ -124,14 +124,17 @@ struct DiscussInput: View {
         // The field separates from the blurred strip behind it. Two materials
         // of similar weight stacked on each other read as one surface, and it
         // vanished into the blur it was meant to be sitting on.
+        // Liquid Glass. Not `.interactive()` — the field and the send button
+        // own their own touches, and interactive glass eats them. That is the
+        // bug that killed every back button in this app once.
+        .glassControl(fallback: sheetColor.opacity(0.9), in: Capsule())
+        // A tint under the glass, because the message behind it can be a white
+        // retail template and clear glass on white is not a control. The
+        // composer is the screen's chrome, so it wears the sheet's colour.
         .background(
             Capsule()
-                .fill(.regularMaterial)
-                // The sheet's colour, so the field is legible over a white
-                // email body and a dark one alike, and reads as belonging to
-                // the app rather than to the message it is sitting on.
-                .overlay(Capsule().fill(sheetColor.opacity(0.82)))
-                .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.18),
+                .fill(sheetColor.opacity(0.55))
+                .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.16),
                                                 lineWidth: Metric.hairline))
         )
     }

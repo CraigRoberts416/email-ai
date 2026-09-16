@@ -189,8 +189,16 @@ struct FeedView: View {
 
                 // Both live on the top edge, so they stack rather than
                 // overlapping when a pull happens during a degraded state.
+                //
+                // Hidden while a refresh is running. The strip tracks the
+                // finger, which is right during a pull and wrong afterwards:
+                // once released it kept drawing at the top of the ZStack and
+                // "READING YOUR MAILBOX…" landed directly on top of the
+                // greeting. The masthead says it is reading — the count holds
+                // an em dash and the kicker reads READING — so the strip has
+                // nothing left to add.
                 VStack(spacing: 0) {
-                    pullStrip
+                    if !refreshing { pullStrip }
                     condition
                 }
 
@@ -512,15 +520,30 @@ struct Masthead: View {
     var isReading = false
 
     var body: some View {
-        // Inverted from what shipped. The greeting was 28pt sans — the face
-        // this product reserves for what a human wrote — and the counts, which
-        // are the only actionable thing here, were a 12pt afterthought. The
-        // counts are instrumentation, so they are mono, and they lead.
+        // The greeting leads, at display size, in the human face.
+        //
+        // It had been demoted to a 12pt grey label with the counts at 24pt,
+        // on the reasoning that counts are the actionable thing. That reads as
+        // a dashboard, and the spec's own risk section says the failure mode
+        // of this product is that the feed model leaves people DISORIENTED —
+        // which a number cannot fix. Asana, Withings, Fiverr and Future Pro
+        // all open the same way: date, then a greeting large enough to be a
+        // greeting, then the state of things. The counts still lead the state;
+        // they just no longer lead the screen.
         VStack(alignment: .leading, spacing: Space.sm) {
-            Text(recap?.greeting?.uppercased() ?? fallbackGreeting.uppercased())
+            // Where you are, before anything else. Pure orientation, and the
+            // one line here that is never written by a model.
+            Text(Date.now.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+                    .uppercased())
                 .typeStyle(Style.sectionHeader)
                 .foregroundStyle(Ink.tertiary)
+
+            Text(recap?.greeting ?? fallbackGreeting)
+                .typeStyle(Style.display)
+                .foregroundStyle(Ink.primary)
+                .fixedSize(horizontal: false, vertical: true)
                 .contentTransition(.opacity)
+                .padding(.bottom, Space.xs)
 
             HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                 // A zero here is an assertion about someone's mailbox, and
@@ -545,12 +568,15 @@ struct Masthead: View {
             }
 
             if let summary = recap?.summary {
+                // Uncapped, for the same reason the card's summary is: this
+                // sentence is what orients somebody who has just opened a feed
+                // of their own mail, and two lines put an ellipsis in it.
                 Text(summary)
                     .typeStyle(Style.gloss)
                     .foregroundStyle(Ink.secondary)
-                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                     .contentTransition(.opacity)
+                    .padding(.top, Space.xs)
             }
         }
         .padding(.horizontal, Metric.gutter)

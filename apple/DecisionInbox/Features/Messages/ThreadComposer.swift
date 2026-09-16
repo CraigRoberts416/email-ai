@@ -59,12 +59,12 @@ struct ThreadComposer: View {
             .padding(.bottom, Space.xs + 2)
             .accessibilityLabel("Send")
         }
+        // Liquid Glass, non-interactive: the field and the send button take
+        // their own touches and interactive glass would swallow them.
+        .glassControl(fallback: Ink.surface, in: Capsule(style: .continuous))
         .background(
             Capsule(style: .continuous)
-                .fill(.regularMaterial)
-                .overlay(Capsule(style: .continuous).fill(Ink.surface.opacity(0.55)))
-                .overlay(Capsule(style: .continuous)
-                    .strokeBorder(Ink.border, lineWidth: Metric.hairline))
+                .strokeBorder(Ink.border, lineWidth: Metric.hairline)
         )
         .padding(.horizontal, Metric.gutter)
         .padding(.top, Space.sm)
