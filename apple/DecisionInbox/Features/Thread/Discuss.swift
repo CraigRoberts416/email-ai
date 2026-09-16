@@ -93,8 +93,16 @@ struct DiscussInput: View {
                 .focused($focused)
                 .padding(.horizontal, Space.lg)
                 .padding(.vertical, 9)
+                // Opaque enough to sit on top of something. At 10% the
+                // email's own headline read straight through the field, which
+                // is the one place a control must not look like part of the
+                // page behind it.
                 .background(
-                    Capsule().fill(Ink.onSheet.opacity(0.10))
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                        .overlay(Capsule().fill(Ink.onSheet.opacity(0.08)))
+                        .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.14),
+                                                        lineWidth: Metric.hairline))
                 )
                 .onSubmit(send)
 

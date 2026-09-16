@@ -823,7 +823,11 @@ struct SummaryBlock: View {
         Text(text)
             .typeStyle(Style.gloss)
             .foregroundStyle(emphasised ? Ink.primary : Ink.secondary)
-            .lineLimit(emphasised ? nil : 2)
+            // Uncapped. Two lines put an ellipsis through the one sentence
+            // the product exists to write — "Kyoku rebuilt their shake—30g
+            // protein, 5g creatine, gentler fiber, plus a new reco…" is the
+            // summary failing at exactly the job it was for.
+            .lineLimit(nil)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, Space.md)

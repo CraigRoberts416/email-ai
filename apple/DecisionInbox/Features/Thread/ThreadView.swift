@@ -41,7 +41,6 @@ struct ThreadView: View {
             }
         }
         .scrollIndicators(.hidden)
-        .ignoresSafeArea(edges: .top)
         .feedEdges()
         // A real inset, not an overlay in a ZStack.
         //
@@ -53,7 +52,13 @@ struct ThreadView: View {
         // field rides the keyboard up on its own, which is the behaviour of
         // every messaging app on the phone.
         .safeAreaInset(edge: .bottom, spacing: 0) { askBar }
-        .background(sheetColor.ignoresSafeArea())
+        .background(sheetColor)
+        // The corners iOS gives a sheet. It reads as a card lifted over the
+        // feed rather than a screen that replaced it, which is what the zoom
+        // transition is already saying — the square top edge was the one part
+        // still insisting this was a push.
+        .clipShape(.rect(topLeadingRadius: 38, topTrailingRadius: 38, style: .continuous))
+        .ignoresSafeArea(edges: .bottom)
         .overlay(alignment: .top) { floatingControls }
         // Both bars, and owned here rather than by whoever pushed this view.
         // The feed's destination hid the tab bar and search's did not, so the
@@ -147,33 +152,36 @@ struct ThreadView: View {
     /// it crosses the seam; the fade was always the right idea and was simply
     /// starting in the wrong place.
     private var hero: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: .bottom) {
             if let url = message.heroImageURL {
                 AsyncImage(url: url, transaction: Transaction(animation: Move.crossfade)) { phase in
                     if case .success(let image) = phase {
-                        image.resizable().scaledToFill()
+                        // Fit, not fill, and no fixed height. A 320pt box with
+                        // `scaledToFill` crops every picture to the same
+                        // letterbox regardless of what it is — a product shot
+                        // lost its own packaging that way. The sender chose
+                        // the proportions; this shows them.
+                        image.resizable().aspectRatio(contentMode: .fit)
                     } else {
                         // Never a spinner. A picture that has not arrived is
                         // the sender's own colour, which is already theirs.
-                        sheetColor
+                        sheetColor.frame(height: heroHeight)
                     }
                 }
-                .frame(height: heroHeight)
-                .clipped()
+                .frame(maxWidth: .infinity)
             } else {
                 sheetColor.frame(height: heroHeight)
             }
 
-            VStack(spacing: 0) {
-                Color.clear.frame(height: heroClear)
-                LinearGradient(
-                    colors: [sheetColor.opacity(0), sheetColor.opacity(0.85), sheetColor],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .frame(height: heroHeight - heroClear)
-            }
+            // The fade rides the bottom of whatever height the picture turned
+            // out to be, rather than a slot measured from a height nothing
+            // guarantees any more.
+            LinearGradient(
+                colors: [sheetColor.opacity(0), sheetColor.opacity(0.85), sheetColor],
+                startPoint: .top, endPoint: .bottom
+            )
+            .frame(height: heroHeight - heroClear)
         }
-        .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
     }
 
@@ -281,10 +289,10 @@ struct ThreadView: View {
 
     private var floatingControls: some View {
         VStack(spacing: Space.md) {
-            Capsule()
-                .fill(Ink.border)
-                .frame(width: 56, height: 4)
-
+            // No grabber. The zoom transition already gives drag-down
+            // dismissal, and a drawn handle on a pushed view is a control that
+            // does not exist — the corners say "sheet" without claiming a
+            // gesture nothing is listening for.
             HStack {
                 circleButton("chevron.left") { dismiss() }
                 Spacer()
@@ -334,21 +342,27 @@ struct ThreadView: View {
     private var askBar: some View {
         DiscussInput(message: message, model: discuss)
             .padding(.horizontal, Space.lg)
-            .padding(.top, Space.sm)
-            .padding(.bottom, Space.sm)
+            // Room above and below, so the pill floats rather than sitting on
+            // the edge of the screen.
+            .padding(.top, Space.lg)
+            .padding(.bottom, Space.md)
             // The sheet's own colour behind it, carried to the screen edge.
             // Without this the bar sat on whatever happened to scroll under it
             // and its contrast changed as you moved — and this sheet's colour
             // is extracted from a photograph, so "whatever is behind it" is
             // not a value anything can be checked against.
+            // A fade, not a panel. The hairline-and-fill version read as a
+            // separate strip bolted to the bottom and made the sheet look
+            // truncated behind it; ChatGPT, iMessage and Instagram all let the
+            // content run under a floating pill instead, which says the thread
+            // continues and this is sitting on top of it.
             .background {
-                sheetColor
-                    .overlay(alignment: .top) {
-                        Rectangle()
-                            .fill(Ink.onSheet.opacity(0.12))
-                            .frame(height: Metric.hairline)
-                    }
-                    .ignoresSafeArea(edges: .bottom)
+                LinearGradient(
+                    colors: [sheetColor.opacity(0), sheetColor.opacity(0.92), sheetColor],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
             }
     }
 
