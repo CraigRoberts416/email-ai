@@ -366,8 +366,21 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
   const taken = new Set();
   const threads = new Set();
 
+  // Drafts are excluded everywhere, and duplicates of your own messages are
+  // collapsed across BOTH passes.
+  //
+  // Scoping either of these to pass two was not enough, and the real thread
+  // showed exactly why: Gmail had filed one reply three times — a DRAFT and
+  // two SENT copies — and one of the SENT rows happened to carry
+  // `participants`, so it matched pass one by address and skipped a guard
+  // that only pass two applied. The set has to be shared or the passes
+  // disagree about what has already been shown.
+  const seenText = new Set();
+  const fingerprint = row => normalise(row.body_text || row.snippet || '');
+
   // Pass one: the messages that identify this conversation by who is in them.
   for (const row of rows) {
+    if (isDraft(row.label_ids)) continue;
     const fromEmail = (row.from_email ?? '').toLowerCase();
     const mine = fromEmail === me;
     const others = new Set();
@@ -377,6 +390,13 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
     }
     if (!isPrimary(row.label_ids)) continue;
     if (setKey(Array.from(others)) !== setKey(Array.from(wanted))) continue;
+
+    if (mine) {
+      const print = fingerprint(row);
+      if (print && seenText.has(print)) continue;
+      if (print) seenText.add(print);
+    }
+
     kept.push({ row, fromEmail, mine });
     taken.add(row.message_id);
     if (row.thread_id) threads.add(row.thread_id);
@@ -399,19 +419,18 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
   // the thread beside the message it became, and files the sent copy more
   // than once when a thread carries several labels — so one reply arrived as
   // three rows and drew three identical bubbles.
-  const seenText = new Set();
   for (const row of rows) {
     if (taken.has(row.message_id)) continue;
+    if (isDraft(row.label_ids)) continue;
     const fromEmail = (row.from_email ?? '').toLowerCase();
     if (fromEmail !== me) continue;
     if (!row.thread_id || !threads.has(row.thread_id)) continue;
-    if (isDraft(row.label_ids)) continue;
 
     // Same words, same sender, same thread: one message however many rows
     // Gmail kept. Normalised because the copies differ only in whitespace.
-    const fingerprint = normalise(row.body_text || row.snippet || '');
-    if (fingerprint && seenText.has(fingerprint)) continue;
-    if (fingerprint) seenText.add(fingerprint);
+    const print = fingerprint(row);
+    if (print && seenText.has(print)) continue;
+    if (print) seenText.add(print);
 
     kept.push({ row, fromEmail, mine: true });
     taken.add(row.message_id);
