@@ -78,6 +78,11 @@ struct DiscussSection: View {
 struct DiscussInput: View {
     let message: Message
     let model: DiscussModel
+    /// The sheet's own colour. The composer is this screen's chrome, not the
+    /// email's content — and the email below it can be any colour at all, so a
+    /// field tinted to sit on "whatever is behind" disappeared the moment the
+    /// message turned out to be a white retail template.
+    var sheetColor: Color = Ink.sheet
 
     @Environment(FeedStore.self) private var store
     @State private var text = ""
@@ -122,8 +127,11 @@ struct DiscussInput: View {
         .background(
             Capsule()
                 .fill(.regularMaterial)
-                .overlay(Capsule().fill(Ink.onSheet.opacity(0.14)))
-                .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.22),
+                // The sheet's colour, so the field is legible over a white
+                // email body and a dark one alike, and reads as belonging to
+                // the app rather than to the message it is sitting on.
+                .overlay(Capsule().fill(sheetColor.opacity(0.82)))
+                .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.18),
                                                 lineWidth: Metric.hairline))
         )
     }

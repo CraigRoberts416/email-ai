@@ -334,7 +334,7 @@ struct ThreadView: View {
     }
 
     private var askBar: some View {
-        DiscussInput(message: message, model: discuss)
+        DiscussInput(message: message, model: discuss, sheetColor: sheetColor)
             .padding(.horizontal, Space.lg)
             // Room above and below. It was landing in the home-indicator
             // strip, which is why it read as jammed against the bezel.
@@ -358,6 +358,7 @@ struct ThreadView: View {
             .background {
                 Rectangle()
                     .fill(.ultraThinMaterial)
+                    .overlay(sheetColor.opacity(0.55))
                     .mask(
                         LinearGradient(
                             colors: [.clear, .black.opacity(0.85), .black],
