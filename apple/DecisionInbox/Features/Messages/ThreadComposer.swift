@@ -61,22 +61,28 @@ struct ThreadComposer: View {
         }
         .background(
             Capsule(style: .continuous)
-                .fill(Ink.surface)
-                .overlay(Capsule(style: .continuous).strokeBorder(Ink.border, lineWidth: Metric.hairline))
+                .fill(.regularMaterial)
+                .overlay(Capsule(style: .continuous).fill(Ink.surface.opacity(0.55)))
+                .overlay(Capsule(style: .continuous)
+                    .strokeBorder(Ink.border, lineWidth: Metric.hairline))
         )
         .padding(.horizontal, Metric.gutter)
         .padding(.top, Space.sm)
         .padding(.bottom, Space.sm)
         .background {
-            // The thread fades out behind the pill rather than stopping at a
-            // line. Transparent at the top so nothing is clipped, opaque by
-            // the bottom so the pill never sits on moving text.
-            LinearGradient(
-                colors: [Ink.surface.opacity(0), Ink.surface.opacity(0.92), Ink.surface],
-                startPoint: .top, endPoint: .bottom
-            )
-            .ignoresSafeArea(edges: .bottom)
-            .allowsHitTesting(false)
+            // The system blur, masked to fade in — not a colour gradient
+            // painted over the thread. Same treatment as the email sheet's
+            // field, because they are the same control in two places.
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask(
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.85), .black],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
         }
     }
 

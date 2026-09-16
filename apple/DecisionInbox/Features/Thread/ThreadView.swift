@@ -53,7 +53,6 @@ struct ThreadView: View {
         // every messaging app on the phone.
         .safeAreaInset(edge: .bottom, spacing: 0) { askBar }
         .background(sheetColor)
-        .ignoresSafeArea(edges: .bottom)
         .overlay(alignment: .top) { floatingControls }
         // Both bars, and owned here rather than by whoever pushed this view.
         // The feed's destination hid the tab bar and search's did not, so the
@@ -337,27 +336,36 @@ struct ThreadView: View {
     private var askBar: some View {
         DiscussInput(message: message, model: discuss)
             .padding(.horizontal, Space.lg)
-            // Room above and below, so the pill floats rather than sitting on
-            // the edge of the screen.
+            // Room above and below. It was landing in the home-indicator
+            // strip, which is why it read as jammed against the bezel.
             .padding(.top, Space.lg)
-            .padding(.bottom, Space.md)
+            // Clear of the home indicator, not resting on it.
+            .padding(.bottom, Space.lg)
             // The sheet's own colour behind it, carried to the screen edge.
             // Without this the bar sat on whatever happened to scroll under it
             // and its contrast changed as you moved — and this sheet's colour
             // is extracted from a photograph, so "whatever is behind it" is
             // not a value anything can be checked against.
-            // A fade, not a panel. The hairline-and-fill version read as a
-            // separate strip bolted to the bottom and made the sheet look
-            // truncated behind it; ChatGPT, iMessage and Instagram all let the
-            // content run under a floating pill instead, which says the thread
-            // continues and this is sitting on top of it.
+            // A real blur, masked to fade in.
+            //
+            // A colour gradient is not what ChatGPT does and does not look
+            // like it: a gradient paints *over* the content in one flat
+            // colour, so on this sheet — whose colour is extracted from the
+            // sender's photograph — it read as a dark smear. `.ultraThinMaterial`
+            // is the system blur, it samples whatever is actually behind it,
+            // and masking it with a gradient makes the blur itself fade in
+            // rather than starting at a hard line.
             .background {
-                LinearGradient(
-                    colors: [sheetColor.opacity(0), sheetColor.opacity(0.92), sheetColor],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .ignoresSafeArea(edges: .bottom)
-                .allowsHitTesting(false)
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                    .mask(
+                        LinearGradient(
+                            colors: [.clear, .black.opacity(0.85), .black],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    .ignoresSafeArea(edges: .bottom)
+                    .allowsHitTesting(false)
             }
     }
 

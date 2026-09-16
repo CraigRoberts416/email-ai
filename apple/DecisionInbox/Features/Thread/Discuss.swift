@@ -84,44 +84,55 @@ struct DiscussInput: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(spacing: Space.md) {
+        // One pill holding both, the way ChatGPT, iMessage and Instagram all
+        // build it. The send button used to sit outside the capsule as a bare
+        // glyph on the blur, which read as a loose arrow floating at the edge
+        // of the screen rather than a control belonging to the field.
+        HStack(alignment: .bottom, spacing: Space.sm) {
             TextField("", text: $text, prompt: placeholder, axis: .vertical)
                 .typeStyle(Style.body)
                 .foregroundStyle(Ink.onSheet)
                 .tint(Ink.onSheet)
-                .lineLimit(1...4)
+                .lineLimit(1...5)
                 .focused($focused)
-                .padding(.horizontal, Space.lg)
-                .padding(.vertical, 9)
-                // Opaque enough to sit on top of something. At 10% the
-                // email's own headline read straight through the field, which
-                // is the one place a control must not look like part of the
-                // page behind it.
-                .background(
-                    Capsule()
-                        .fill(.ultraThinMaterial)
-                        .overlay(Capsule().fill(Ink.onSheet.opacity(0.08)))
-                        .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.14),
-                                                        lineWidth: Metric.hairline))
-                )
+                .padding(.leading, Space.lg)
+                .padding(.vertical, Space.sm + 4)
                 .onSubmit(send)
 
             Button(action: send) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(canSend ? Ink.primary : Ink.onSheetSecondary)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(canSend ? Ink.onSheet : Ink.onSheet.opacity(0.10)))
+                    .foregroundStyle(canSend ? Ink.sheet : Ink.onSheetSecondary)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        Circle().fill(canSend ? Ink.onSheet : Ink.onSheet.opacity(0.12))
+                    )
+                    .contentShape(.circle)
             }
             .buttonStyle(.plain)
             .disabled(!canSend)
             .animation(Move.crisp, value: canSend)
+            .padding(.trailing, Space.xs + 2)
+            .padding(.bottom, Space.xs + 2)
+            .accessibilityLabel("Send")
         }
+        // The field separates from the blurred strip behind it. Two materials
+        // of similar weight stacked on each other read as one surface, and it
+        // vanished into the blur it was meant to be sitting on.
+        .background(
+            Capsule()
+                .fill(.regularMaterial)
+                .overlay(Capsule().fill(Ink.onSheet.opacity(0.14)))
+                .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.22),
+                                                lineWidth: Metric.hairline))
+        )
     }
 
     private var placeholder: Text {
+        // The field is a light material now, so the placeholder has to read
+        // against that rather than against the dark sheet it used to sit on.
         Text("Ask about the thread")
-            .foregroundColor(Ink.onSheetSecondary)
+            .foregroundColor(Ink.onSheet.opacity(0.55))
     }
 
     private var canSend: Bool {
