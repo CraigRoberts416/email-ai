@@ -96,8 +96,8 @@ struct DiscussInput: View {
         HStack(alignment: .bottom, spacing: Space.sm) {
             TextField("", text: $text, prompt: placeholder, axis: .vertical)
                 .typeStyle(Style.body)
-                .foregroundStyle(Ink.onSheet)
-                .tint(Ink.onSheet)
+                .foregroundStyle(Ink.primary)
+                .tint(Ink.primary)
                 .lineLimit(1...5)
                 .focused($focused)
                 .padding(.leading, Space.lg)
@@ -107,10 +107,10 @@ struct DiscussInput: View {
             Button(action: send) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(canSend ? Ink.sheet : Ink.onSheetSecondary)
+                    .foregroundStyle(canSend ? Ink.surface : Ink.tertiary)
                     .frame(width: 32, height: 32)
                     .background(
-                        Circle().fill(canSend ? Ink.onSheet : Ink.onSheet.opacity(0.12))
+                        Circle().fill(canSend ? Ink.primary : Ink.surfaceTertiary)
                     )
                     .contentShape(.circle)
             }
@@ -124,26 +124,31 @@ struct DiscussInput: View {
         // The field separates from the blurred strip behind it. Two materials
         // of similar weight stacked on each other read as one surface, and it
         // vanished into the blur it was meant to be sitting on.
-        // Liquid Glass. Not `.interactive()` — the field and the send button
-        // own their own touches, and interactive glass eats them. That is the
-        // bug that killed every back button in this app once.
-        .glassControl(fallback: sheetColor.opacity(0.9), in: Capsule())
-        // A tint under the glass, because the message behind it can be a white
-        // retail template and clear glass on white is not a control. The
-        // composer is the screen's chrome, so it wears the sheet's colour.
+        // Liquid Glass, light, with black text on it.
+        //
+        // Not `.interactive()` — the field and the send button own their own
+        // touches, and interactive glass eats them. That is the bug that
+        // killed every back button in this app once.
+        //
+        // Light rather than tinted to the sheet: this is a text field, and a
+        // text field is where somebody writes. iOS makes these light glass
+        // with dark text everywhere it ships one — Settings' search, Spotlight
+        // — because what you type has to be the most legible thing on screen,
+        // and the sheet's colour is whatever was extracted from a photograph.
+        .glassControl(fallback: Ink.surface, in: Capsule())
         .background(
             Capsule()
-                .fill(sheetColor.opacity(0.55))
-                .overlay(Capsule().strokeBorder(Ink.onSheet.opacity(0.16),
+                .fill(Ink.surface.opacity(0.72))
+                .overlay(Capsule().strokeBorder(Ink.border.opacity(0.6),
                                                 lineWidth: Metric.hairline))
         )
     }
 
     private var placeholder: Text {
-        // The field is a light material now, so the placeholder has to read
-        // against that rather than against the dark sheet it used to sit on.
+        // Grey on the light field, the way a placeholder reads everywhere
+        // else in the app.
         Text("Ask about the thread")
-            .foregroundColor(Ink.onSheet.opacity(0.55))
+            .foregroundColor(Ink.tertiary)
     }
 
     private var canSend: Bool {
