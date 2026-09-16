@@ -1861,6 +1861,13 @@ async function syncEveryone() {
           })
         : { newUnreadIds: [] };
 
+      // Bodies for mail from people, before anyone opens a thread. A
+      // conversation that has to fetch while you look at it is a conversation
+      // with a spinner in it.
+      const owner = await userStore.getUser(user.user_id);
+      await conversations.hydrateRecentPeople(user.user_id, owner?.email)
+        .catch(err => console.warn(`[bodies] ${user.user_id.slice(0, 8)}…: ${err.message}`));
+
       const announce = Array.from(new Set([...newUnreadIds, ...(swept.newUnreadIds ?? [])]));
       if (!announce.length) continue;
 

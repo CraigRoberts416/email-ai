@@ -2,60 +2,47 @@ import SwiftUI
 
 /// One conversation with one person, or with one set of people.
 ///
-/// Built to `DirectThread`. The participant set is the conversation: adding
+/// Built to `DirectThread v2`. The participant set is the conversation: adding
 /// someone would not change this thread, it would open a different one with
 /// all of you in it — the same model as iMessage and every group text. That
 /// is not a simplification of email either; a reply-all with a new address on
 /// it already forks the thread, and mail clients merely hide the fork and let
 /// both branches wear the same subject line.
+///
+/// Laid out against X, iMessage and Instagram, which agree on more than they
+/// differ: a profile stub before the first message, day separators in the
+/// middle, bubbles that hug what was said, consecutive messages grouped, and
+/// one timestamp per group rather than one per line.
 struct DirectThreadView: View {
     let conversation: Conversation
 
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var messages: [ConversationMessage] = []
-    @State private var loaded = false
 
     var body: some View {
         ScrollView {
-                LazyVStack(alignment: .leading, spacing: Space.sm + 2) {
-                    if messages.isEmpty {
-                        // Two different facts, and they were rendering as the
-                        // same blank screen. The first open of a thread now
-                        // fetches each message's body from Gmail, which takes
-                        // a few seconds — long enough that saying nothing
-                        // reads as "there is nothing here".
-                        Text(loaded ? "NOTHING YET" : "READING\u{2026}")
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ThreadProfileStub(conversation: conversation, count: messages.count)
+
+                ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                    if let stamp = daySeparator(before: index) {
+                        Text(stamp)
                             .typeStyle(Style.monoMicro)
                             .foregroundStyle(Ink.tertiary)
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 160)
+                            .padding(.top, index == 0 ? Space.sm : Space.lg)
+                            .padding(.bottom, Space.md)
                     }
 
-                    ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                        // A stamp when the gap since the last message is long
-                        // enough that the reader has lost the thread of when.
-                        if let stamp = stamp(before: index) {
-                            Text(stamp)
-                                .typeStyle(Style.monoMicro)
-                                .foregroundStyle(Ink.tertiary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, Space.lg)
-                        }
-
-                        MessageBubble(
-                            message: message,
-                            // In a group every bubble names its sender —
-                            // the one thing a one-to-one thread never needs
-                            // and a group always does.
-                            showsSender: conversation.isGroup && !message.mine
-                        )
-                        .id(message.id)
-                    }
+                    MessageGroup(group: group, showsSender: conversation.isGroup)
+                        .padding(.top, index == 0 ? 0 : Space.md)
                 }
-                .padding(.horizontal, Metric.gutter)
-                .padding(.vertical, Space.xl)
             }
+            .padding(.horizontal, Metric.gutter)
+            .padding(.top, Space.lg)
+            .padding(.bottom, Space.xl)
+        }
         .scrollIndicators(.hidden)
         // A conversation opens at the end, where a feed opens at the start:
         // the newest thing said is what you came for.
@@ -70,14 +57,15 @@ struct DirectThreadView: View {
         .safeAreaInset(edge: .top, spacing: 0) { header }
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
-        .task {
-            messages = await store.messages(in: conversation)
-            loaded = true
-        }
+        // No loading state. Opening a conversation is a read, and the server
+        // no longer fetches bodies while the reader waits — they are already
+        // in the database by the time anyone taps in. A spinner here was a
+        // symptom of the read doing somebody else's network work.
+        .task { messages = await store.messages(in: conversation) }
     }
 
     private var header: some View {
-        HStack(spacing: Space.md) {
+        HStack(spacing: Space.sm + 2) {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 17, weight: .medium))
@@ -88,18 +76,30 @@ struct DirectThreadView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Back")
 
-            GroupAvatar(participants: conversation.participants, size: 34)
+            GroupAvatar(participants: conversation.participants, size: 32)
 
-            Text(conversation.title)
-                .typeStyle(Style.body)
-                .foregroundStyle(Ink.primary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            // Name over address. The address is the one thing that tells you
+            // which of two people with the same name this is, and every chat
+            // app puts something in this slot — a handle, "Active 4h ago".
+            // Ours is the only identifier email actually has.
+            VStack(alignment: .leading, spacing: 1) {
+                Text(conversation.title)
+                    .typeStyle(Style.body)
+                    .foregroundStyle(Ink.primary)
+                    .lineLimit(1)
+                if let one = conversation.participants.first, !conversation.isGroup {
+                    Text(one.address)
+                        .typeStyle(Style.monoMicro)
+                        .foregroundStyle(Ink.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.leading, Space.sm)
         .padding(.trailing, Metric.gutter)
-        .padding(.bottom, Space.md)
+        .padding(.bottom, Space.sm + 2)
         .background {
             Ink.surface
                 .overlay(alignment: .bottom) {
@@ -109,104 +109,223 @@ struct DirectThreadView: View {
         }
     }
 
-    /// Only when the gap is long enough to be worth saying. A stamp between
-    /// every pair of messages is noise; one after four hours of silence is
-    /// the fact that the silence happened.
-    private func stamp(before index: Int) -> String? {
-        guard index < messages.count else { return nil }
-        let message = messages[index]
-        guard index > 0 else { return message.receivedAt.spokenStamp.uppercased() }
-        let gap = message.receivedAt.timeIntervalSince(messages[index - 1].receivedAt)
-        guard gap > 4 * 60 * 60 else { return nil }
-        return message.receivedAt.spokenStamp.uppercased()
+    // MARK: - Grouping
+
+    /// Consecutive messages from the same person, close together in time.
+    ///
+    /// The unit a thread reads in is the turn, not the message. Four bubbles
+    /// from one person in one minute are one thing somebody said, and stamping
+    /// each of them separately is the clutter every chat app removed years ago.
+    private var groups: [MessageGroup.Model] {
+        var out: [MessageGroup.Model] = []
+        for message in messages {
+            if var last = out.last,
+               last.mine == message.mine,
+               last.sender.address == message.sender.address,
+               message.receivedAt.timeIntervalSince(last.last.receivedAt) < 5 * 60 {
+                last.messages.append(message)
+                out[out.count - 1] = last
+            } else {
+                out.append(.init(messages: [message]))
+            }
+        }
+        return out
+    }
+
+    /// Only when the day changes, or after a gap long enough to be worth
+    /// saying. A stamp between every pair is noise; one after four hours of
+    /// silence is the fact that the silence happened.
+    private func daySeparator(before index: Int) -> String? {
+        guard index < groups.count else { return nil }
+        let group = groups[index]
+        guard index > 0 else { return group.first.receivedAt.threadDayStamp.uppercased() }
+        let previous = groups[index - 1].last.receivedAt
+        let sameDay = Calendar.current.isDate(previous, inSameDayAs: group.first.receivedAt)
+        let gap = group.first.receivedAt.timeIntervalSince(previous)
+        guard !sameDay || gap > 4 * 60 * 60 else { return nil }
+        return group.first.receivedAt.threadDayStamp.uppercased()
     }
 }
 
-/// One turn, in a bubble.
+/// Who this is, before the first thing they said.
+///
+/// X and Instagram both open a thread with the person rather than the
+/// conversation — avatar, name, handle, when this started. In a mail client
+/// that stub is the only place the address appears at readable size, and it is
+/// what tells you this is the Nadia you met rather than another one.
+struct ThreadProfileStub: View {
+    let conversation: Conversation
+    let count: Int
+
+    var body: some View {
+        VStack(spacing: Space.xs + 2) {
+            GroupAvatar(participants: conversation.participants, size: 64)
+
+            Text(conversation.title)
+                .typeStyle(Style.body)
+                .foregroundStyle(Ink.primary)
+
+            if !conversation.isGroup, let one = conversation.participants.first {
+                Text(one.address)
+                    .typeStyle(Style.monoCaption)
+                    .foregroundStyle(Ink.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            // An em dash until the messages have loaded. A count of zero here
+            // would be an assertion about a correspondence before it has been
+            // read, which is the same rule the mastheads follow.
+            Text(count > 0 ? "\(count) EMAIL\(count == 1 ? "" : "S")" : "\u{2014}")
+                .typeStyle(Style.monoMicro)
+                .foregroundStyle(Ink.tertiary)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, Space.sm)
+        .padding(.bottom, Space.xl)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// One turn: everything somebody said before the other person answered.
+struct MessageGroup: View {
+    struct Model: Identifiable {
+        var messages: [ConversationMessage]
+        var id: String { messages.first?.id ?? UUID().uuidString }
+        var first: ConversationMessage { messages[0] }
+        var last: ConversationMessage { messages[messages.count - 1] }
+        var mine: Bool { first.mine }
+        var sender: Sender { first.sender }
+    }
+
+    let group: Model
+    var showsSender = false
+
+    var body: some View {
+        VStack(alignment: group.mine ? .trailing : .leading, spacing: 3) {
+            // In a group every turn names its sender — the one thing a
+            // one-to-one thread never needs and a group always does.
+            if showsSender && !group.mine {
+                Text(group.sender.displayName.uppercased())
+                    .typeStyle(Style.monoMicro)
+                    .foregroundStyle(Ink.tertiary)
+                    .padding(.leading, Space.xs)
+                    .padding(.bottom, 2)
+            }
+
+            ForEach(group.messages) { message in
+                // The files first, each its own object. An attachment is not a
+                // strip glued to the top of a sentence — it is a discrete
+                // thing with a boundary and a name, which is exactly the test
+                // this system uses to decide what gets a container.
+                ForEach(message.attachments) { attachment in
+                    AttachmentBubble(attachment: attachment)
+                        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+                }
+
+                if !message.body.isEmpty {
+                    MessageBubble(message: message)
+                        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+                }
+            }
+
+            Text(stamp)
+                .typeStyle(Style.monoMicro)
+                .foregroundStyle(Ink.tertiary)
+                .padding(.horizontal, Space.xs + 2)
+                .padding(.top, 3)
+        }
+        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+    }
+
+    private var stamp: String {
+        group.last.receivedAt.clockStamp.uppercased()
+    }
+}
+
+/// One message, in a bubble.
 ///
 /// Bubbles are the second containerised thing in this product, after an
 /// attachment, and they earn it on the system's own test: an utterance is a
 /// discrete object with a boundary and an author.
+///
+/// The subject line used to sit above every one of these. It came off: no chat
+/// app labels each turn, and on a calendar invite it rendered as
+/// `UPDATED INVITATION: TFH CHAT WITH NADIA (CRAIG ROBERTS) @…` over a bubble
+/// that already said the same thing. Email has a field chat does not, and the
+/// honest place for it is the card in the feed, not once per line here.
 struct MessageBubble: View {
     let message: ConversationMessage
-    var showsSender = false
+
+    /// Capped, never stretched to the gutter: a line of text running the full
+    /// width of a phone is not a message, it is a paragraph. Below the cap the
+    /// bubble hugs, which is what keeps "Thank you!!" a pill.
+    private let maxBubbleWidth: CGFloat = 272
 
     var body: some View {
-        VStack(alignment: message.mine ? .trailing : .leading, spacing: Space.xs) {
-            if showsSender {
-                Text(message.sender.displayName.uppercased())
-                    .typeStyle(Style.monoMicro)
-                    .foregroundStyle(Ink.tertiary)
-            }
-
-            // Email has a field chat does not. Dropping it entirely would lose
-            // something real, but it is theirs — so it sits above their words
-            // rather than becoming a header we invented.
-            if let subject = message.subject {
-                Text(subject.uppercased())
-                    .typeStyle(Style.monoMicro)
-                    .foregroundStyle(Ink.tertiary)
-                    .lineLimit(1)
-            }
-
-            VStack(alignment: .leading, spacing: Space.sm) {
-                ForEach(message.attachments) { attachment in
-                    AttachmentChip(attachment: attachment, onDark: message.mine)
-                }
-
-                if !message.body.isEmpty {
-                    Text(message.body)
-                        .typeStyle(Style.body)
-                        .foregroundStyle(message.mine ? Ink.surface : Ink.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+        Text(message.body)
+            .typeStyle(Style.body)
+            .foregroundStyle(message.mine ? Ink.surface : Ink.primary)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, Space.lg - 2)
             .padding(.vertical, Space.md - 2)
             .background(
                 message.mine ? Ink.primary : Ink.surfaceTertiary,
                 in: RoundedRectangle(cornerRadius: 20, style: .continuous)
             )
-            // Capped, never stretched to the gutter: a line of text running
-            // the full width of a phone is not a message, it is a paragraph.
-            .frame(maxWidth: 286, alignment: message.mine ? .trailing : .leading)
-        }
-        .frame(maxWidth: .infinity, alignment: message.mine ? .trailing : .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "\(message.mine ? "You" : message.sender.displayName): \(message.body)"
-        )
+            .frame(maxWidth: maxBubbleWidth, alignment: message.mine ? .trailing : .leading)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                "\(message.mine ? "You" : message.sender.displayName): \(message.body)"
+            )
     }
 }
 
-/// A file inside a bubble, reusing the tile's vocabulary — the same object
-/// should not look like two different things depending on where it appears.
-struct AttachmentChip: View {
+/// A file, as its own bubble.
+///
+/// Fiverr, Grok and Quo all give an attachment its own boundary rather than
+/// nesting it in the text bubble. Outlined instead of filled, so a file never
+/// reads as something a person typed.
+struct AttachmentBubble: View {
     let attachment: Attachment
-    var onDark = false
 
     var body: some View {
         HStack(spacing: Space.sm + 2) {
             Text(kind)
                 .typeStyle(Style.monoMicro)
-                .foregroundStyle(onDark ? Ink.surface.opacity(0.8) : Ink.secondary)
-                .frame(width: 40, height: 40)
+                .foregroundStyle(Ink.secondary)
+                .frame(width: 38, height: 38)
                 .background(
-                    onDark ? Ink.surface.opacity(0.16) : Ink.surfaceTertiary,
+                    Ink.surfaceTertiary,
                     in: RoundedRectangle(cornerRadius: Corner.sm, style: .continuous)
                 )
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.filename)
                     .typeStyle(Style.monoCaption)
-                    .foregroundStyle(onDark ? Ink.surface : Ink.primary)
+                    .foregroundStyle(Ink.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(attachment.sizeLabel.uppercased())
                     .typeStyle(Style.monoMicro)
-                    .foregroundStyle(onDark ? Ink.surface.opacity(0.7) : Ink.tertiary)
+                    .foregroundStyle(Ink.tertiary)
             }
         }
+        .padding(.leading, Space.sm + 2)
+        .padding(.trailing, Space.lg)
+        .padding(.vertical, Space.sm + 2)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Ink.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Ink.border, lineWidth: Metric.hairline)
+                )
+        )
+        .frame(maxWidth: 272, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Attachment, \(attachment.filename), \(attachment.sizeLabel)")
     }
 
     private var kind: String {

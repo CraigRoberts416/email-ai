@@ -295,7 +295,15 @@ async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}
   // `quote` is one sentence the model pulled out for a feed card. Either one in
   // a chat bubble is a truncated message presented as a whole one. The body is
   // fetched once per message and kept.
-  await hydrateBodies(userId, kept.map(m => m.row));
+  //
+  // NOT awaited. Opening a conversation is a read, and a read should never wait
+  // on somebody else's network. Blocking here cost five to seven seconds on a
+  // first open and put a spinner where a thread should have been — the fix for
+  // which is not a nicer spinner, it is not fetching at read time. Sync fills
+  // these in before anyone opens anything; this is the backstop for whatever it
+  // missed, and it lands in the database for the next read.
+  hydrateBodies(userId, kept.map(m => m.row)).catch(err =>
+    console.warn('[conversations] background hydrate:', err.message));
 
   return kept.map(({ row, fromEmail, mine }) => ({
     messageId: row.message_id,
@@ -371,4 +379,54 @@ async function hydrateBodies(userId, rows, { limit = 60, concurrency = 8 } = {})
   await Promise.all(workers);
 }
 
-module.exports = { listConversations, conversationMessages, isPerson, isPrimary, setKey };
+/**
+ * Fetch bodies for recent mail from people, ahead of anyone opening it.
+ *
+ * This is the half that makes a thread open instantly. Reading a conversation
+ * used to fetch every body from Gmail while the reader watched, because the
+ * bodies were not there yet — the fix is to have them already, not to make the
+ * waiting prettier.
+ *
+ * Runs on the sync schedule, bounded per pass. Only Primary mail from people,
+ * because that is the only mail this surface ever shows.
+ */
+async function hydrateRecentPeople(userId, ownEmail, { limit = 40 } = {}) {
+  const { rows } = await query(`
+    SELECT message_id, from_name, from_email, participants, label_ids,
+           unsubscribe_url, body_text, attachments
+    FROM messages
+    WHERE user_id = $1
+      AND post_cutoff = TRUE
+      AND (body_text IS NULL OR attachments IS NULL)
+    ORDER BY internal_date DESC
+    LIMIT 300
+  `, [userId]);
+
+  const me = (ownEmail ?? '').toLowerCase();
+  const wanted = [];
+  for (const row of rows) {
+    if (!isPrimary(row.label_ids)) continue;
+    const fromEmail = (row.from_email ?? '').toLowerCase();
+    const mine = fromEmail === me;
+    const others = [];
+    if (!mine) others.push({ name: row.from_name, email: fromEmail });
+    for (const p of row.participants ?? []) {
+      if (p?.email && p.email.toLowerCase() !== me) others.push(p);
+    }
+    if (!others.length) continue;
+    const hasUnsubscribe = !!row.unsubscribe_url && !mine;
+    if (!others.every(p => isPerson({ ...p, hasUnsubscribe }))) continue;
+    wanted.push(row);
+    if (wanted.length >= limit) break;
+  }
+
+  if (!wanted.length) return { hydrated: 0 };
+  await hydrateBodies(userId, wanted, { limit });
+  console.log(`[bodies] ${wanted.length} message(s) from people`);
+  return { hydrated: wanted.length };
+}
+
+module.exports = {
+  listConversations, conversationMessages, hydrateRecentPeople,
+  isPerson, isPrimary, setKey,
+};

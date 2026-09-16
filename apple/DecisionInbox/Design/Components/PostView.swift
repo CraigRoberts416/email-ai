@@ -865,6 +865,27 @@ extension Date {
         if seconds < 7 * 86_400 { return "\(Int(seconds / 86_400))d" }
         return formatted(.dateTime.month(.abbreviated).day())
     }
+
+    /// The time of day, for a turn in a conversation.
+    ///
+    /// A thread is read in clock time, not elapsed time. "4:32 PM" places a
+    /// message against the rest of your day; "2 hours ago" only places it
+    /// against the moment you happened to open the app, and stops being true
+    /// while you are looking at it.
+    var clockStamp: String {
+        formatted(.dateTime.hour().minute())
+    }
+
+    /// The label that divides one day from the next in a thread.
+    var threadDayStamp: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(self) { return "Today" }
+        if calendar.isDateInYesterday(self) { return "Yesterday" }
+        if Date.now.timeIntervalSince(self) < 7 * 86_400 {
+            return formatted(.dateTime.weekday(.wide))
+        }
+        return formatted(.dateTime.month(.abbreviated).day())
+    }
 }
 
 #Preview {
