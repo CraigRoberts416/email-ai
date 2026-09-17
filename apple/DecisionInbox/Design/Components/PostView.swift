@@ -129,7 +129,7 @@ struct PostView: View {
         .accessibilityActions {
             Button("Open", action: onOpen)
             if message.isPromotion {
-                Button("Unsubscribe", action: filed(onUnsubscribe))
+                Button("Unsubscribe", action: requested(onUnsubscribe))
             } else {
                 Button("Reply", action: onReply)
                 Button("Forward", action: onForward)
@@ -317,7 +317,7 @@ struct PostView: View {
         Divider()
         if message.isPromotion {
             Button("Unsubscribe", systemImage: "xmark",
-                   role: .destructive, action: filed(onUnsubscribe))
+                   role: .destructive, action: requested(onUnsubscribe))
         }
         Button("Archive", systemImage: "archivebox",
                role: .destructive, action: filed(onArchive))
@@ -342,14 +342,25 @@ struct PostView: View {
         .padding(.top, Space.xl + Metric.avatar / 2 - Metric.tapTarget / 2)
     }
 
-    /// Wraps a filing action so it carries its own commit cue. Save, archive
-    /// and unsubscribe all mean "that state now holds", so they share one cue —
-    /// punctuation on a loud visual event, not the news itself.
+    /// Wraps a filing action so it carries its own commit cue. Save and
+    /// archive mean "that state now holds" the instant the finger lifts, so
+    /// they share one cue — punctuation on a loud visual event, not the news.
     ///
-    /// The swipe path deliberately does NOT route through this: the threshold
-    /// cue already reported that decision.
+    /// Unsubscribe used to route through here and must not: it is a network
+    /// operation that opens a tray and can fail minutes later, so a commit cue
+    /// at tap asserts a state that has not been reached. `requested()` marks
+    /// the intent instead, and `needsYou()` reports the failure if it comes.
+    ///
+    /// The swipe path deliberately does NOT route through this either: the
+    /// threshold cue already reported that decision.
     private func filed(_ action: @escaping () -> Void) -> () -> Void {
         { Haptics.commit(); action() }        // H3 / H4
+    }
+
+    /// An asynchronous request leaving the device. No cue — the tray appearing
+    /// is the acknowledgement, and the outcome speaks for itself later.
+    private func requested(_ action: @escaping () -> Void) -> () -> Void {
+        action
     }
 
     // MARK: Content
@@ -661,7 +672,7 @@ struct PostView: View {
             // every other one and put a list-management control among actions
             // that are about the conversation.
             if message.isPromotion {
-                Button(action: filed(onUnsubscribe)) {
+                Button(action: requested(onUnsubscribe)) {
                     Text("Unsubscribe")
                         .typeStyle(Style.chip)
                         .foregroundStyle(Ink.secondary)

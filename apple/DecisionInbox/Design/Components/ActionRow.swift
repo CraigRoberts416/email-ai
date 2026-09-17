@@ -194,7 +194,10 @@ struct ActionRow: View {
                 if picking {
                     close()
                 } else if message.reaction != nil {
-                    Haptics.commit()
+                    // No cue. `FeedStore.react` owns this event, and its rule
+                    // is that clearing is a correction and stays silent. This
+                    // line fired `commit()` anyway, so the view and the store
+                    // disagreed about a decision only one of them owns.
                     onReact(nil)
                 } else {
                     open()
@@ -260,7 +263,9 @@ struct ActionRow: View {
                 // tapped — a press that opened something should not close it
                 // again just because the finger did not travel.
                 guard let drag, let index = hit(drag.location) else { return }
-                Haptics.commit()
+                // The store fires the commit cue. Firing one here too gave a
+                // single reaction two cues from two generators back to back —
+                // `commit()` from this line and `detent()` from the store.
                 onReact(Reaction.all[index].emoji)
                 close()
             }
@@ -287,7 +292,12 @@ struct ActionRow: View {
     private static let liveBand: ClosedRange<CGFloat> = -150...60
 
     private func open() {
-        Haptics.announce()
+        // A long press completing is a threshold crossed under the finger,
+        // which is what `threshold()` means and what the swipe uses for the
+        // identical situation. It fired `announce()`, a cue reserved for the
+        // heaviest visual event in the product — the feed replacing itself —
+        // which a picker opening above one row is not.
+        Haptics.threshold()
         withAnimation(reduceMotion ? nil : Move.crisp) {
             picking = true
             focus = nil
@@ -347,8 +357,13 @@ struct ActionRow: View {
         .animation(Move.resolved(Move.crisp, reduceMotion), value: message.isSaved)
     }
 
+    /// Unsubscribe is deliberately absent. It is a network operation that can
+    /// fail long after the finger lifts, so a commit cue at tap would assert a
+    /// state that does not hold yet — the exact thing the Send silence in
+    /// `Haptics.swift` exists to prevent. Save and Archive are local and true
+    /// on the spot.
     private func filing(_ label: String) -> Bool {
-        label == "Save" || label == "Archive" || label == "Unsubscribe"
+        label == "Save" || label == "Archive"
     }
 
     /// H3 / H4 — save, archive and unsubscribe all mean "that state now

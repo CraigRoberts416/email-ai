@@ -685,7 +685,12 @@ final class FeedStore {
         // A reaction is an accepted value change, so it earns a cue — but only
         // on setting one. Clearing is a correction, and a correction that
         // announces itself as loudly as the decision reads as an error.
-        if emoji != nil { Haptics.detent() }
+        //
+        // `commit()`, not `detent()`. The picker fires a detent for every item
+        // the finger crosses, so committing with the same cue made the chosen
+        // reaction indistinguishable from passing over one more. Landing on a
+        // value and choosing it are different events and need different cues.
+        if emoji != nil { Haptics.commit() }
     }
 
     func toggleSaved(_ message: Message) {
@@ -714,7 +719,7 @@ final class FeedStore {
                     senderName: message.sender.displayName
                 )
             } catch {
-                Haptics.failed()
+                Haptics.needsYou()
                 unsubscribes[message.id] = .init(
                     messageId: message.id,
                     senderName: message.sender.displayName,
@@ -750,7 +755,7 @@ final class FeedStore {
                 // The request never came back. That is not the same as a
                 // refusal — the message may well be in their inbox already,
                 // and saying "didn't send" would send it twice.
-                Haptics.failed()
+                Haptics.needsYou()
                 receipt = Receipt(
                     message: "We couldn\u{2019}t confirm that send.",
                     detail: "CHECK YOUR SENT MAIL BEFORE WRITING IT AGAIN"
@@ -758,7 +763,7 @@ final class FeedStore {
             } catch {
                 // Gmail answered and refused. No retry offered: a duplicate
                 // send is worse than ambiguity.
-                Haptics.failed()
+                Haptics.needsYou()
                 receipt = Receipt(
                     message: "Gmail wouldn\u{2019}t take that one.",
                     detail: error.localizedDescription.uppercased()

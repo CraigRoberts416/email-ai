@@ -174,8 +174,13 @@ struct FeedView: View {
                     guard nowArmed != armed, !refreshing else { return }
                     armed = nowArmed
                     // H2 — identical physical meaning to the swipe threshold,
-                    // so identical cue. Arming is news; disarming is not.
-                    if nowArmed { Haptics.threshold() }
+                    // so identical cue, fired in BOTH directions like the
+                    // swipe. "Arming is news; disarming is not" was this call
+                    // site's own rule and no other site's: the token is
+                    // documented as firing on disarm, the swipe does fire on
+                    // disarm, and a user who pulls back short of the line needs
+                    // the same confirmation that they escaped the commit.
+                    Haptics.threshold()
                 }
                 }
                 .onScrollPhaseChange { old, phase in
@@ -390,7 +395,7 @@ struct FeedView: View {
         // H7 — one of the only two outcomes a user walks away from believing
         // the opposite of. No cue on success: it is the common case and the
         // freshness stamp says so.
-        if failure { Haptics.failed() }
+        if failure { Haptics.needsYou() }
 
         withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
             refreshing = false

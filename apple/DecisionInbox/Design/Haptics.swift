@@ -36,7 +36,16 @@ enum Haptics {
     /// Call on a gesture's FIRST sample, never on view appear — a prepared
     /// generator holds the Taptic Engine warm and costs power. A feed of forty
     /// posts each preparing on appear would hold it warm for the whole session.
-    static func prepare() { rigid.prepare() }
+    ///
+    /// Both generators the swipe can reach, not just the first one. It warmed
+    /// only `rigid`, which is the threshold cue — so the gesture's *second*
+    /// half, the commit, fired from a cold generator every time. Preparing one
+    /// of the two is the failure this function exists to prevent, applied to
+    /// half the gesture.
+    static func prepare() {
+        rigid.prepare()
+        soft.prepare()
+    }
 
     /// "Let go now and the outcome changes." The threshold is under the finger
     /// and therefore invisible; touch is the only honest channel for it.
@@ -65,13 +74,27 @@ enum Haptics {
         light.impactOccurred(intensity: 0.5)
     }
 
-    /// "This did not work and you cannot see that." The ONLY notification-class
-    /// cue in the product, and the only cue allowed to reach a user who has
-    /// navigated away from the thing that failed.
+    /// "An outcome needs looking at, and you may not be looking."
     ///
-    /// Suppressed when the app is not frontmost: a buzz in a pocket reports
-    /// something the user cannot go and look at.
-    static func failed() {
+    /// This was `failed()`, and the name was doing damage at one of its call
+    /// sites. An unconfirmed send is NOT a refusal — the request never came
+    /// back, the mail may well have gone, and `FeedStore` says exactly that in
+    /// its own comment before firing a definitive failure cue. Asserting
+    /// failure about an unknown outcome is the same class of error as
+    /// asserting success about a pending one, which this system already
+    /// forbids everywhere else.
+    ///
+    /// One cue covers refusal and uncertainty on purpose. Both need the same
+    /// thing from the user — come back and read the receipt — and a second
+    /// notification-class cue would have to be discriminable from this one to
+    /// be worth anything, which two error buzzes are not. The receipt carries
+    /// the difference in words, where a hedge can survive.
+    ///
+    /// The ONLY notification-class cue in the product, and the only cue
+    /// allowed to reach a user who has navigated away. Suppressed when the app
+    /// is not frontmost: a buzz in a pocket reports something they cannot go
+    /// and look at.
+    static func needsYou() {
         guard enabled, UIApplication.shared.applicationState == .active else { return }
         notice.notificationOccurred(.error)
     }
@@ -120,6 +143,13 @@ enum Haptics {
 //       happened. This is a truth problem, not a taste problem.
 //   Send succeeding
 //       Expected case; the receipt says so.
+//   Tapping Unsubscribe
+//       Same rule as Send, and it was being broken. Unsubscribe is a network
+//       operation that opens a tray and can fail minutes later; a commit cue
+//       at tap asserts "that state now holds" about work that has not started.
+//       The tray appearing is the acknowledgement, and `needsYou()` fires if
+//       it fails. Save and Archive keep their commit cue because they are
+//       local, immediate and already true when the finger lifts.
 //   Discuss — question sent, answer arrives, answer fails
 //       The user is looking at the screen and the text is the feedback.
 //   Context-menu long press
@@ -145,4 +175,13 @@ enum Haptics {
 //   3. Never queue. If the originating view is gone when an async result
 //      lands, drop the cue. `failed()` is the one exception and carries its own
 //      foreground guard.
-//   4. Generators are prepared on a gesture's first sample, not on view appear.
+//   4. Generators are prepared on a gesture's first sample, not on view appear,
+//      and every generator that gesture can reach is prepared together.
+//   5. ONE owner per event. The layer that owns the state owns the cue. A
+//      reaction fired twice — `commit()` from the picker and `detent()` from
+//      the store — because both layers believed they owned it, and the user
+//      felt two different cues for one decision. A view may not emit a cue for
+//      a state change it delegates to the store.
+//   6. A cue may not out-claim the work. Local and immediate earns `commit()`;
+//      anything that can still fail earns silence at the point of intent and
+//      `needsYou()` if it does fail.
