@@ -92,4 +92,8 @@ struct GroupAvatar: View {
 
 extension Sender {
     static let unknown = Sender(name: "", address: "", kind: .unknown, logoURL: nil)
+    /// The user, where their own message needs an identity beside it. No
+    /// address: the app has several mailboxes and none of them is "you" more
+    /// than the others, and a monogram is all this is ever used for.
+    static let you = Sender(name: "You", address: "", kind: .person, logoURL: nil)
 }

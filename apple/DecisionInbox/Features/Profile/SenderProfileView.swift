@@ -18,6 +18,11 @@ struct SenderProfileView: View {
     @State private var lane: Lane = .emails
     @State private var open: Message?
     @State private var thread: Conversation?
+    /// The conversation's own messages. The lanes below were built when a
+    /// profile could only be reached from the feed, so all three read
+    /// `store.messages(from:)` — and somebody you only ever talk to has none
+    /// of those. Her PDFs were in the thread the whole time.
+    @State private var chatMessages: [ConversationMessage] = []
 
     /// `emails`, not `messages`. This is a mail client — the thing on screen
     /// is an email, and calling it a message borrows a word from chat apps
@@ -43,29 +48,55 @@ struct SenderProfileView: View {
 
     /// Their chat thread, which lives in the archive rather than the feed.
     private var chat: Conversation? { store.conversation(with: sender.address) }
+
+    /// One file they sent, wherever it came from.
+    private struct FileEntry: Identifiable {
+        let id: String
+        let file: Attachment
+        let receivedAt: Date
+        /// What tapping it should open.
+        let email: Message?
+    }
     private var replies: [Message] { all.filter { $0.kicker == .waitingOnThem } }
 
     /// Every picture this sender has sent: the email's own image, plus any
     /// image they attached. Never the generated hero — it is not a photograph
     /// of anything that happened, and a grid is a claim that these are.
     private var media: [URL] {
-        all.flatMap { message -> [URL] in
-            var found: [URL] = []
-            if let picture = message.imageURL { found.append(picture) }
+        var found: [URL] = all.flatMap { message -> [URL] in
+            var urls: [URL] = []
+            if let picture = message.imageURL { urls.append(picture) }
+            for attachment in message.attachments {
+                if case .image(let url) = attachment.preview { urls.append(url) }
+            }
+            return urls
+        }
+        for message in chatMessages {
             for attachment in message.attachments {
                 if case .image(let url) = attachment.preview { found.append(url) }
             }
-            return found
         }
+        return found
     }
 
     /// Everything they attached that is not a picture.
-    private var docs: [(message: Message, file: Attachment)] {
-        all.flatMap { message in
-            message.attachments
-                .filter { if case .document = $0.preview { return true } else { return false } }
-                .map { (message, $0) }
+    private var docs: [FileEntry] {
+        let isDocument: (Attachment) -> Bool = {
+            if case .document = $0.preview { return true } else { return false }
         }
+        let fromFeed = all.flatMap { message in
+            message.attachments.filter(isDocument).map {
+                FileEntry(id: "\(message.id)/\($0.id)", file: $0,
+                          receivedAt: message.receivedAt, email: message)
+            }
+        }
+        let fromChat = chatMessages.flatMap { message in
+            message.attachments.filter(isDocument).map {
+                FileEntry(id: "\(message.id)/\($0.id)", file: $0,
+                          receivedAt: message.receivedAt, email: nil)
+            }
+        }
+        return (fromFeed + fromChat).sorted { $0.receivedAt > $1.receivedAt }
     }
 
     private var banner: URL? { all.compactMap(\.heroImageURL).first }
@@ -89,6 +120,13 @@ struct SenderProfileView: View {
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
         .background(Ink.surface)
+        .task(id: chat?.id) {
+            guard let chat else { return }
+            // Disk first so the lanes are populated before the first frame,
+            // then the network. Same order the thread itself uses.
+            chatMessages = store.cachedMessages(in: chat)
+            chatMessages = await store.messages(in: chat)
+        }
         .toolbar(.hidden, for: .navigationBar)
         // Same reason as the thread: this is a full-bleed screen carrying its
         // own back button over a banner, so the system's bars are its to hide.
@@ -177,8 +215,16 @@ struct SenderProfileView: View {
             VStack(alignment: .leading, spacing: Space.xs) {
                 // Crosses the seam, ringed in the page ground — the one shape
                 // on this screen belonging to both bands.
+                // The white ring separates it from the banner; the hairline
+                // outside that separates it from the page. Only the ring was
+                // there, and it was drawn OVER the avatar's own hairline — so
+                // a mark on a white ground, sitting on a white page, had no
+                // visible edge at all below the seam. Both bands need an edge,
+                // and they are different edges.
                 AvatarView(sender: sender, size: 84)
-                    .overlay(Circle().strokeBorder(Ink.surface, lineWidth: 4))
+                    .padding(4)
+                    .background(Ink.surface, in: Circle())
+                    .overlay(Circle().strokeBorder(Ink.border, lineWidth: 1))
                     .padding(.top, -34)
                     .padding(.bottom, Space.md)
 
@@ -288,11 +334,15 @@ struct SenderProfileView: View {
 
     /// Their mail, in the feed's own card.
     @ViewBuilder private var emailList: some View {
-        if let chat, all.isEmpty {
-            // They are not in the feed but you are talking to them. Saying
-            // "nothing from them" here is simply false, and it was the most
-            // common thing this screen said once every avatar could reach it.
-            conversationRow(chat)
+        if chat != nil, all.isEmpty, !chatMessages.isEmpty {
+            // Their side of the conversation, as cards. This was one summary
+            // row reading "4 messages" — a count of the thing instead of the
+            // thing, on a screen whose whole job is to show you what somebody
+            // sent you.
+            ForEach(chatMessages) { message in
+                chatCard(message)
+                Rule()
+            }
         } else if all.isEmpty {
             EmptyStateView(headline: "Nothing from them.", detail: "NO EMAIL FROM THIS SENDER YET.")
                 .frame(height: 240)
@@ -313,34 +363,57 @@ struct SenderProfileView: View {
         }
     }
 
-    /// The chat thread, as one row that opens it.
+    /// One message from the conversation, in the feed's own grammar.
+    ///
+    /// Identity stacked on the left, the words below it, a hairline between —
+    /// the same shape a post has, minus the parts a chat message does not
+    /// have. Tapping opens the thread, which is where a reply lives.
     ///
     /// Presented as a sheet rather than pushed because this profile is reached
     /// from both a navigation stack and a sheet, and only one of those can
     /// push. The thread carries its own stack so its own destinations work.
-    private func conversationRow(_ chat: Conversation) -> some View {
-        Button { thread = chat } label: {
+    private func chatCard(_ message: ConversationMessage) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Space.md) {
-                GroupAvatar(participants: chat.participants, size: Metric.avatarList)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(chat.messageCount == 1 ? "1 message" : "\(chat.messageCount) messages")
-                        .typeStyle(Style.body)
+                AvatarView(sender: message.mine ? .you : message.sender, size: Metric.avatar)
+                VStack(alignment: .leading, spacing: Space.xxs) {
+                    Text(message.mine ? "You" : message.sender.displayName)
+                        .typeStyle(Style.sender)
                         .foregroundStyle(Ink.primary)
-                    Text(chat.preview)
-                        .typeStyle(Style.monoCaption)
-                        .foregroundStyle(Ink.secondary)
                         .lineLimit(1)
+                    Text(message.receivedAt.feedStamp)
+                        .typeStyle(Style.meta)
+                        .foregroundStyle(Ink.tertiary)
                 }
-                Spacer(minLength: Space.md)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Ink.tertiary)
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, Metric.gutter)
-            .frame(minHeight: Metric.tapTarget)
-            .contentShape(.rect)
+
+            if let subject = message.subject, !subject.isEmpty {
+                Text(subject)
+                    .typeStyle(Style.kicker)
+                    .foregroundStyle(Ink.secondary)
+                    .padding(.horizontal, Metric.gutter)
+                    .padding(.top, Space.lg)
+            }
+
+            Text(message.body)
+                .typeStyle(Style.body)
+                .foregroundStyle(Ink.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(8)
+                .padding(.horizontal, Metric.gutter)
+                .padding(.top, Space.sm)
+
+            if !message.attachments.isEmpty {
+                AttachmentCarousel(attachments: message.attachments)
+                    .padding(.top, Space.lg)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, Space.xl)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
+        .onTapGesture { thread = chat }
     }
 
     /// Every picture they have sent, three across.
@@ -392,8 +465,12 @@ struct SenderProfileView: View {
             EmptyStateView(headline: "No files.", detail: "THIS SENDER HAS NOT ATTACHED ANYTHING.")
                 .frame(height: 240)
         } else {
-            ForEach(Array(docs.enumerated()), id: \.offset) { _, entry in
-                Button { open = entry.message } label: {
+            ForEach(docs) { entry in
+                Button {
+                    // An email opens its thread; a file from the conversation
+                    // opens the conversation.
+                    if let email = entry.email { open = email } else { thread = chat }
+                } label: {
                     HStack(spacing: Space.md) {
                         // The extension, set as type. A generic document glyph
                         // says "file", which the reader already knows; the
@@ -410,7 +487,7 @@ struct SenderProfileView: View {
                                 .foregroundStyle(Ink.primary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Text("\(entry.file.sizeLabel.uppercased()) \u{00B7} \(entry.message.receivedAt.feedStamp)")
+                            Text("\(entry.file.sizeLabel.uppercased()) \u{00B7} \(entry.receivedAt.feedStamp)")
                                 .typeStyle(Style.monoMicro)
                                 .foregroundStyle(Ink.tertiary)
                         }
