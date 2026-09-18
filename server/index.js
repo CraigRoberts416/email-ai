@@ -1889,19 +1889,24 @@ async function runImageBackfill(userId) {
 /// repairing — but freshness should not depend on a delivery path that can
 /// fail silently and invisibly. A poll is cheap: one history call per user per
 /// interval, and Gmail's history API returns nothing when nothing changed.
-// 60s, down from 4 minutes.
+// 120s. Push is the delivery path; this is reconciliation.
 //
-// This is the FALLBACK. Gmail push (watch → Pub/Sub → /webhooks/gmail) is
-// meant to make it irrelevant, and when push is healthy it costs one cheap
-// history call per user per minute. It is short because push has been silently
-// dead in production — the watch registers and renews fine, Gmail accepts it,
-// and not one request has ever reached /webhooks/gmail — which meant every
-// message in the app arrived on this timer. Four minutes of that is the whole
-// reason the app lost a race against every other mail client on the phone.
+// Gmail push (watch → Pub/Sub → /webhooks/gmail) was silently dead in
+// production: the watch registered and renewed, Gmail accepted it and
+// published, and nothing arrived — because the topic's only subscription was
+// a PULL subscription with no push endpoint, so every notification queued in
+// a backlog nobody read. Mail reached the app only on this timer, which is
+// why it lost a race against every other client on the phone. Fixed on
+// 2026-09-18 by attaching the endpoint; VERIFIED by a published message
+// arriving at /webhooks/gmail one second later.
 //
-// If push is ever confirmed healthy this can go back up; until then the poll
-// is the real delivery path and should be priced like one.
-const SYNC_INTERVAL_MS = 60 * 1000;
+// It does not go back to four minutes. That value was never a considered
+// backstop — it was the only delivery path, chosen when push was *believed*
+// to work. What the incident actually showed is that push can fail totally
+// and invisibly, so the poll's job now is to bound how bad that gets: two
+// minutes of staleness instead of silence, for one cheap history call per
+// user per couple of minutes.
+const SYNC_INTERVAL_MS = 120 * 1000;
 
 /// The sweep costs a list call per user and metadata only for what it finds,
 /// so it does not need to run as often as the diff — but it does need to run
