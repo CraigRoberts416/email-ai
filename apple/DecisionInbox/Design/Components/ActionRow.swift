@@ -386,6 +386,8 @@ struct ActionRow: View {
 
 struct QuotedCard: View {
     let quoted: QuotedMessage
+    /// The person being quoted is reachable like any other sender.
+    var onProfile: () -> Void = {}
 
     @Environment(\.colorSchemeContrast) private var contrast
 
@@ -393,6 +395,9 @@ struct QuotedCard: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             HStack(spacing: Space.sm) {
                 AvatarView(sender: quoted.sender, size: 20)
+                    .contentShape(.circle)
+                    .highPriorityGesture(TapGesture().onEnded { onProfile() })
+                    .accessibilityLabel("\(quoted.sender.displayName), open sender")
                 Text(quoted.sender.displayName)
                     .typeStyle(Style.bodySmall)
                     .foregroundStyle(Ink.primary)

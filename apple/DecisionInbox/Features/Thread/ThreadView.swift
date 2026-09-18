@@ -18,6 +18,11 @@ struct ThreadView: View {
     @State private var body_: APIClient.Body?
     @State private var failed = false
     @State private var showRemoteContent = false
+    /// The sender, when their avatar has been tapped. A sheet rather than a
+    /// push because this screen is itself a sheet with no navigation stack —
+    /// `SenderProfileView` draws its own back chevron and calls `dismiss()`,
+    /// which resolves to whichever presentation it actually got.
+    @State private var profile: Sender?
     @State private var compose: ComposeView.Intent?
     @State private var discuss = DiscussModel()
 
@@ -68,6 +73,11 @@ struct ThreadView: View {
             await load()
         }
         .sheet(item: $compose) { ComposeView(intent: $0, message: message) }
+        .sheet(item: $profile) { sender in
+            SenderProfileView(sender: sender)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
+        }
     }
 
     // MARK: Masthead — the sender's image, their name, and the subject
@@ -81,6 +91,9 @@ struct ThreadView: View {
 
             HStack(spacing: Space.sm) {
                 AvatarView(sender: message.sender, size: Metric.avatarCompact)
+                    .contentShape(.circle)
+                    .highPriorityGesture(TapGesture().onEnded { profile = message.sender })
+                    .accessibilityLabel("\(message.sender.displayName), open sender")
                 Text(message.sender.displayName)
                     .typeStyle(Style.body)
                     .foregroundStyle(Ink.onSheet)
@@ -190,6 +203,9 @@ struct ThreadView: View {
             VStack(alignment: .leading, spacing: Space.sm) {
                 HStack(spacing: Space.sm) {
                     AvatarView(sender: message.sender, size: Metric.avatarCompact)
+                        .contentShape(.circle)
+                        .highPriorityGesture(TapGesture().onEnded { profile = message.sender })
+                        .accessibilityLabel("\(message.sender.displayName), open sender")
                     Text(message.sender.displayName)
                         .typeStyle(Style.body)
                         .foregroundStyle(Ink.primary)

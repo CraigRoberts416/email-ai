@@ -12,6 +12,7 @@ import SwiftUI
 struct DirectMessagesView: View {
     @Environment(FeedStore.self) private var store
     @State private var open: Conversation?
+    @State private var profile: Sender?
 
     private var waiting: Int {
         store.conversations.count { $0.unread }
@@ -36,7 +37,8 @@ struct DirectMessagesView: View {
                     } else {
                         ForEach(store.conversations) { conversation in
                             Button { open = conversation } label: {
-                                ConversationRow(conversation: conversation)
+                                ConversationRow(conversation: conversation,
+                                                onProfile: { profile = $0 })
                             }
                             .buttonStyle(.plain)
                             Rule()
@@ -50,6 +52,7 @@ struct DirectMessagesView: View {
             .background(Ink.surface)
             .navigationBarHidden(true)
             .navigationDestination(item: $open) { DirectThreadView(conversation: $0) }
+            .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
             .task { await store.loadConversations() }
             .refreshable { await store.loadConversations() }
         }
@@ -83,10 +86,20 @@ struct DirectMessagesView: View {
 
 struct ConversationRow: View {
     let conversation: Conversation
+    /// The row opens the conversation; the avatar opens the person. An
+    /// ancestor tap beats a descendant one, so this has to be claimed at high
+    /// priority or the row swallows it.
+    var onProfile: (Sender) -> Void = { _ in }
 
     var body: some View {
         HStack(spacing: Space.md) {
             GroupAvatar(participants: conversation.participants, size: 52)
+                .contentShape(.circle)
+                .highPriorityGesture(TapGesture().onEnded {
+                    guard !conversation.isGroup,
+                          let one = conversation.participants.first else { return }
+                    onProfile(one)
+                })
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(conversation.title)

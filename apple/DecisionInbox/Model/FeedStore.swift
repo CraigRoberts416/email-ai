@@ -121,6 +121,21 @@ final class FeedStore {
             .sorted { $0.receivedAt > $1.receivedAt }
     }
 
+    /// The one-to-one conversation with this person, if there is one.
+    ///
+    /// A sender profile reads `messages(from:)`, which is the feed — and the
+    /// feed is what arrived since you got here. Somebody you have a live
+    /// thread with is usually not in it, so their profile said "Nothing from
+    /// them" about a conversation you were in the middle of. Conversations
+    /// come from the archive and have to be asked for separately.
+    func conversation(with address: String) -> Conversation? {
+        conversations.first { conversation in
+            !conversation.isGroup && conversation.participants.contains {
+                $0.address.caseInsensitiveCompare(address) == .orderedSame
+            }
+        }
+    }
+
     /// The tag is shown on a post only when there is more than one mailbox to
     /// tell apart. With one, it is noise on every single row.
     var showsMailboxTags: Bool { mailboxes.count > 1 }

@@ -23,11 +23,23 @@ struct DirectThreadView: View {
     @State private var opener = AttachmentOpener()
     @State private var link: LinkTarget?
     @State private var writeTo: String?
+    /// The participant whose avatar was tapped. Pushed rather than presented:
+    /// this view is itself pushed inside People's navigation stack, so the
+    /// profile joins the same stack and the back chevron means what it says.
+    @State private var profile: Sender?
+
+    /// A group avatar is a stack of faces and names no single account, so
+    /// tapping one has no honest destination. Only a one-to-one conversation
+    /// resolves to a person.
+    private var soleParticipant: Sender? {
+        conversation.isGroup ? nil : conversation.participants.first
+    }
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                ThreadProfileStub(conversation: conversation, count: messages.count)
+                ThreadProfileStub(conversation: conversation, count: messages.count,
+                                  onProfile: { profile = $0 })
 
                 ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                     if let stamp = daySeparator(before: index) {
@@ -113,6 +125,7 @@ struct DirectThreadView: View {
                 .environment(store)
         }
         .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
+        .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
         .overlay(alignment: .bottom) {
             if case .failed(let why) = opener.state {
                 Text(why)
@@ -151,6 +164,12 @@ struct DirectThreadView: View {
             .accessibilityLabel("Back")
 
             GroupAvatar(participants: conversation.participants, size: 32)
+                .contentShape(.circle)
+                .highPriorityGesture(TapGesture().onEnded {
+                    if let one = soleParticipant { profile = one }
+                })
+                .accessibilityLabel(soleParticipant.map { "\($0.displayName), open sender" }
+                                    ?? conversation.title)
 
             // Name over address. The address is the one thing that tells you
             // which of two people with the same name this is, and every chat
@@ -233,10 +252,17 @@ struct DirectThreadView: View {
 struct ThreadProfileStub: View {
     let conversation: Conversation
     let count: Int
+    var onProfile: (Sender) -> Void = { _ in }
 
     var body: some View {
         VStack(spacing: Space.xs + 2) {
             GroupAvatar(participants: conversation.participants, size: 64)
+                .contentShape(.circle)
+                .highPriorityGesture(TapGesture().onEnded {
+                    guard !conversation.isGroup,
+                          let one = conversation.participants.first else { return }
+                    onProfile(one)
+                })
 
             Text(conversation.title)
                 .typeStyle(Style.body)

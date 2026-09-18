@@ -3,6 +3,7 @@ import SwiftUI
 struct SavedView: View {
     @Environment(FeedStore.self) private var store
     @State private var open: Message?
+    @State private var profile: Sender?
 
     var body: some View {
         NavigationStack {
@@ -22,7 +23,8 @@ struct SavedView: View {
                                     onOpen: { open = message },
                                     onSave: { store.toggleSaved(message) },
                                     onArchive: { withAnimation(Move.layout) { store.archive(message) } },
-                                    onUnsubscribe: { store.unsubscribe(from: message) }
+                                    onUnsubscribe: { store.unsubscribe(from: message) },
+                                    onProfile: { profile = message.sender }
                                 )
                             }
                         }
@@ -32,6 +34,7 @@ struct SavedView: View {
             }
             .background(Ink.surface)
             .navigationTitle("Saved")
+            .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
             // A sheet everywhere, so a thread opened from here is the same
         // object as one opened from the feed.
         .sheet(item: $open) {

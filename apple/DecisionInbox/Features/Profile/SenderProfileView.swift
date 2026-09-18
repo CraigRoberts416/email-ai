@@ -17,6 +17,7 @@ struct SenderProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var lane: Lane = .emails
     @State private var open: Message?
+    @State private var thread: Conversation?
 
     /// `emails`, not `messages`. This is a mail client — the thing on screen
     /// is an email, and calling it a message borrows a word from chat apps
@@ -39,6 +40,9 @@ struct SenderProfileView: View {
 
     private var all: [Message] { store.messages(from: sender.address) }
     private var threads: [Message] { all.filter { $0.threadCount > 1 } }
+
+    /// Their chat thread, which lives in the archive rather than the feed.
+    private var chat: Conversation? { store.conversation(with: sender.address) }
     private var replies: [Message] { all.filter { $0.kicker == .waitingOnThem } }
 
     /// Every picture this sender has sent: the email's own image, plus any
@@ -126,6 +130,13 @@ struct SenderProfileView: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(.clear)
+        }
+        // Wrapped in its own stack: the chat thread pushes a profile of its
+        // own, and a sheet supplies no stack to push onto.
+        .sheet(item: $thread) { conversation in
+            NavigationStack { DirectThreadView(conversation: conversation) }
+                .presentationDetents([.large])
+                .presentationDragIndicator(.hidden)
         }
     }
 
@@ -277,7 +288,12 @@ struct SenderProfileView: View {
 
     /// Their mail, in the feed's own card.
     @ViewBuilder private var emailList: some View {
-        if all.isEmpty {
+        if let chat, all.isEmpty {
+            // They are not in the feed but you are talking to them. Saying
+            // "nothing from them" here is simply false, and it was the most
+            // common thing this screen said once every avatar could reach it.
+            conversationRow(chat)
+        } else if all.isEmpty {
             EmptyStateView(headline: "Nothing from them.", detail: "NO EMAIL FROM THIS SENDER YET.")
                 .frame(height: 240)
         } else {
@@ -295,6 +311,36 @@ struct SenderProfileView: View {
                 )
             }
         }
+    }
+
+    /// The chat thread, as one row that opens it.
+    ///
+    /// Presented as a sheet rather than pushed because this profile is reached
+    /// from both a navigation stack and a sheet, and only one of those can
+    /// push. The thread carries its own stack so its own destinations work.
+    private func conversationRow(_ chat: Conversation) -> some View {
+        Button { thread = chat } label: {
+            HStack(spacing: Space.md) {
+                GroupAvatar(participants: chat.participants, size: Metric.avatarList)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(chat.messageCount == 1 ? "1 message" : "\(chat.messageCount) messages")
+                        .typeStyle(Style.body)
+                        .foregroundStyle(Ink.primary)
+                    Text(chat.preview)
+                        .typeStyle(Style.monoCaption)
+                        .foregroundStyle(Ink.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: Space.md)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Ink.tertiary)
+            }
+            .padding(.horizontal, Metric.gutter)
+            .frame(minHeight: Metric.tapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
     }
 
     /// Every picture they have sent, three across.
@@ -392,7 +438,10 @@ struct SenderProfileView: View {
         HStack(spacing: Space.md) {
             stat(all.count, all.count == 1 ? "EMAIL" : "EMAILS")
             Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
-            stat(threads.count, threads.count == 1 ? "THREAD" : "THREADS")
+            // The conversation counts as a thread. Without this the profile
+            // of somebody you are mid-exchange with read "0 THREADS".
+            stat(threads.count + (chat == nil ? 0 : 1),
+                 threads.count + (chat == nil ? 0 : 1) == 1 ? "THREAD" : "THREADS")
             if !replies.isEmpty {
                 Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
                 stat(replies.count, "AWAITING")

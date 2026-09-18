@@ -875,7 +875,7 @@ struct PostView: View {
                     SummaryBlock(text: summary, emphasised: false)
                 }
             }
-            QuotedCard(quoted: quoted)
+            QuotedCard(quoted: quoted, onProfile: onProfile)
         }
         .padding(.horizontal, Metric.gutter)
     }
