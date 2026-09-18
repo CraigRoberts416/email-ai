@@ -23,6 +23,9 @@ struct SenderProfileView: View {
     /// `store.messages(from:)` — and somebody you only ever talk to has none
     /// of those. Her PDFs were in the thread the whole time.
     @State private var chatMessages: [ConversationMessage] = []
+    /// Opens a file from the Docs lane. A paperclip tab that opens the thread
+    /// instead of the document makes the user find the file twice.
+    @State private var opener = AttachmentOpener()
 
     /// `emails`, not `messages`. This is a mail client — the thing on screen
     /// is an email, and calling it a message borrows a word from chat apps
@@ -45,6 +48,9 @@ struct SenderProfileView: View {
 
     private var all: [Message] { store.messages(from: sender.address) }
     private var threads: [Message] { all.filter { $0.threadCount > 1 } }
+
+    /// However many emails the EMAILS lane is showing.
+    private var emailCount: Int { all.isEmpty ? chatMessages.count : all.count }
 
     /// Their chat thread, which lives in the archive rather than the feed.
     private var chat: Conversation? { store.conversation(with: sender.address) }
@@ -120,6 +126,7 @@ struct SenderProfileView: View {
         .scrollIndicators(.hidden)
         .ignoresSafeArea(edges: .top)
         .background(Ink.surface)
+        .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
         .task(id: chat?.id) {
             guard let chat else { return }
             // Disk first so the lanes are populated before the first frame,
@@ -467,9 +474,7 @@ struct SenderProfileView: View {
         } else {
             ForEach(docs) { entry in
                 Button {
-                    // An email opens its thread; a file from the conversation
-                    // opens the conversation.
-                    if let email = entry.email { open = email } else { thread = chat }
+                    Task { await opener.open(entry.file, authorization: nil) }
                 } label: {
                     HStack(spacing: Space.md) {
                         // The extension, set as type. A generic document glyph
@@ -513,7 +518,10 @@ struct SenderProfileView: View {
     /// a fact worth knowing; a follower count would be a fiction.
     private var stats: some View {
         HStack(spacing: Space.md) {
-            stat(all.count, all.count == 1 ? "EMAIL" : "EMAILS")
+            // What the lane below actually shows. It read the feed only, so
+            // a profile listing four emails was headed "0 EMAILS" — a number
+            // contradicting the list directly beneath it.
+            stat(emailCount, emailCount == 1 ? "EMAIL" : "EMAILS")
             Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
             // The conversation counts as a thread. Without this the profile
             // of somebody you are mid-exchange with read "0 THREADS".
