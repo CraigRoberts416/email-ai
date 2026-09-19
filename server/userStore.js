@@ -56,6 +56,14 @@ async function updateWatchExpiry(userId, expiry) {
   await query('UPDATE users SET watch_expiry = $2 WHERE user_id = $1', [userId, new Date(expiry)]);
 }
 
+async function setUnreadSyncState(userId, state) {
+  await query(`
+    UPDATE users SET unread_sync_state = $2,
+      unread_sync_completed_at = CASE WHEN $2 = 'complete' THEN NOW() ELSE unread_sync_completed_at END
+    WHERE user_id = $1
+  `, [userId, state]);
+}
+
 async function getValidAccessToken(userId) {
   const user = await getUser(userId);
   if (!user) throw new Error(`User not found: ${userId}`);
@@ -101,4 +109,4 @@ async function getUsersByPushToken(pushToken) {
   return rows;
 }
 
-module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, getUsersByPushToken, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken };
+module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, getUsersByPushToken, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken, setUnreadSyncState };

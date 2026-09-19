@@ -1,4 +1,5 @@
 const { query } = require('./db');
+const { createFeedStorage } = require('./feedStorage');
 
 function rowToRecord(row) {
   return {
@@ -37,25 +38,28 @@ async function upsertMessages(userId, records) {
     const params = [];
     let p = 1;
     for (const r of slice) {
-      values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},NOW(),$${p+10},$${p+11},$${p+12})`);
+      values.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},$${p+9},NOW(),$${p+10},$${p+11},$${p+12},$${p+13})`);
       params.push(
         userId, r.messageId, r.threadId ?? null, r.labelIds ?? [],
         r.subject ?? '', r.fromName ?? '', r.fromEmail ?? '',
         r.snippet ?? '', r.internalDate ?? 0, r.historyId ?? null,
         r.aiStatus ?? 'none', r.postCutoff ?? false,
         JSON.stringify(r.participants ?? []),
+        r.labelsObservedAt ?? new Date(),
       );
-      p += 13;
+      p += 14;
     }
     await query(`
       INSERT INTO messages (
         user_id, message_id, thread_id, label_ids, subject,
         from_name, from_email, snippet, internal_date, history_id, synced_at,
-        ai_status, post_cutoff, participants
+        ai_status, post_cutoff, participants, labels_updated_at
       ) VALUES ${values.join(',')}
       ON CONFLICT (user_id, message_id) DO UPDATE SET
         thread_id     = EXCLUDED.thread_id,
-        label_ids     = EXCLUDED.label_ids,
+        label_ids     = CASE WHEN EXCLUDED.labels_updated_at >= messages.labels_updated_at
+          THEN EXCLUDED.label_ids ELSE messages.label_ids END,
+        labels_updated_at = GREATEST(messages.labels_updated_at, EXCLUDED.labels_updated_at),
         subject       = EXCLUDED.subject,
         from_name     = EXCLUDED.from_name,
         from_email    = EXCLUDED.from_email,
@@ -78,57 +82,33 @@ async function getMessage(userId, messageId) {
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
-// The feed is finite by design — it ends, and ending is the product. A real
-// mailbox can hold twenty thousand unread messages, which is an archive, not
-// a feed: unbounded, it is megabytes of JSON nobody can read to the end of.
-// All Mail is where the rest lives.
-const FEED_LIMIT = 200;
+const feedStorage = createFeedStorage({ query, toRecord: rowToRecord });
+const getUnreadPage = feedStorage.page;
+async function getUnread(userId, options) { return (await getUnreadPage(userId, options)).records; }
 
-/// Gmail's own category tabs, because the volume in a real mailbox is not
-/// distributed the way attention is.
-///
-/// This mailbox has 207 unread in Primary and 3,677 in Promotions and Updates.
-/// Ordering the feed purely by date gave Primary 25 of its 200 slots: the
-/// person's actual correspondence was 12% of their own feed, and everything
-/// they recognised was buried under retailers. That is the entire "this
-/// doesn't look like my inbox" complaint, and no amount of card design fixes
-/// it — the wrong mail was being selected.
-///
-/// Slots are budgeted per tier and the result is still sorted by date, so the
-/// feed stays chronological. Promotions are not excluded; they simply cannot
-/// crowd out a reply from a human being.
-const TIER_BUDGET = { 0: 130, 1: 45, 2: 35 };
-
-const TIER_SQL = `CASE
-  WHEN 'CATEGORY_PROMOTIONS' = ANY(label_ids)
-    OR 'CATEGORY_SOCIAL' = ANY(label_ids)
-    OR 'CATEGORY_FORUMS' = ANY(label_ids) THEN 2
-  WHEN 'CATEGORY_UPDATES' = ANY(label_ids) THEN 1
-  ELSE 0
-END`;
-
-async function getUnread(userId, { limit = FEED_LIMIT } = {}) {
+async function unreadMetadataNeeded(userId, ids) {
+  if (!ids.length) return [];
   const { rows } = await query(`
-    WITH scoped AS (
-      SELECT *, ${TIER_SQL} AS tier
-      FROM messages
-      WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
-    ),
-    ranked AS (
-      SELECT *, row_number() OVER (
-        PARTITION BY tier
-        ORDER BY post_cutoff DESC, internal_date DESC
-      ) AS rn
-      FROM scoped
+    SELECT id FROM unnest($2::text[]) AS id WHERE NOT EXISTS (
+      SELECT 1 FROM messages WHERE user_id = $1 AND message_id = id AND 'UNREAD' = ANY(label_ids)
     )
-    SELECT * FROM ranked
-    WHERE (tier = 0 AND rn <= $3)
-       OR (tier = 1 AND rn <= $4)
-       OR (tier = 2 AND rn <= $5)
-    ORDER BY post_cutoff DESC, internal_date DESC
-    LIMIT $2
-  `, [userId, limit, TIER_BUDGET[0], TIER_BUDGET[1], TIER_BUDGET[2]]);
-  return rows.map(rowToRecord);
+  `, [userId, ids]);
+  return rows.map(row => row.id);
+}
+
+async function reconcileUnreadLabels(userId, ids, startedAt, excluded = {}) {
+  await query(`
+    UPDATE messages SET
+      label_ids = CASE WHEN message_id = ANY($2::text[]) THEN
+        array_remove(array_remove(array_remove(label_ids, 'UNREAD'), 'SPAM'), 'TRASH')
+        || ARRAY['UNREAD']::text[]
+        || CASE WHEN message_id = ANY($4::text[]) THEN ARRAY['SPAM']::text[] ELSE '{}'::text[] END
+        || CASE WHEN message_id = ANY($5::text[]) THEN ARRAY['TRASH']::text[] ELSE '{}'::text[] END
+        ELSE array_remove(label_ids, 'UNREAD') END,
+      labels_updated_at = $3::timestamptz
+    WHERE user_id = $1 AND labels_updated_at <= $3::timestamptz
+      AND ('UNREAD' = ANY(label_ids) OR message_id = ANY($2::text[]))
+  `, [userId, ids, startedAt, excluded.SPAM ?? [], excluded.TRASH ?? []]);
 }
 
 async function getAll(userId, { limit = 50, cursor } = {}) {
@@ -210,7 +190,7 @@ async function setAiFields(userId, messageId, { quote, summary, action, actionUr
 
 async function updateLabelIds(userId, messageId, labelIds) {
   await query(
-    'UPDATE messages SET label_ids = $3 WHERE user_id = $1 AND message_id = $2',
+    'UPDATE messages SET label_ids = $3, labels_updated_at = NOW() WHERE user_id = $1 AND message_id = $2',
     [userId, messageId, labelIds]
   );
 }
@@ -355,7 +335,8 @@ async function finishNotification(userId, messageId, delivered) {
 }
 
 module.exports = {
-  upsertMessages, getMessage, getUnread, getAll, unreconciled,
+  upsertMessages, getMessage, getUnread, getUnreadPage, getAll, unreconciled,
+  unreadMetadataNeeded, reconcileUnreadLabels,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, setImageUrl, setAttachments, getMessageIdsNeedingUnsubscribeBackfill,
   getMessageIdsNeedingImageBackfill, getMessageOwners,

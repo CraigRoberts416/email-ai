@@ -45,6 +45,15 @@ async function runMigrations() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   `);
   await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS unread_sync_state TEXT NOT NULL DEFAULT 'pending',
+      ADD COLUMN IF NOT EXISTS unread_sync_completed_at TIMESTAMPTZ;
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS first_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      ADD COLUMN IF NOT EXISTS labels_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    CREATE INDEX IF NOT EXISTS idx_messages_unread_cursor
+      ON messages(user_id, internal_date DESC, message_id COLLATE "C" DESC)
+      WHERE 'UNREAD' = ANY(label_ids)
+  `);
+  await pool.query(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS notification_pending BOOLEAN NOT NULL DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS notification_claimed_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS notification_sent_at TIMESTAMPTZ

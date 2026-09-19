@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS users (
   watch_expiry          TIMESTAMPTZ,
   push_token            TEXT,
   notifications_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  unread_sync_state     TEXT NOT NULL DEFAULT 'pending',
+  unread_sync_completed_at TIMESTAMPTZ,
   created_at            TIMESTAMPTZ DEFAULT NOW(),
   updated_at            TIMESTAMPTZ DEFAULT NOW()
 );
@@ -25,6 +27,8 @@ CREATE TABLE IF NOT EXISTS messages (
   internal_date       BIGINT NOT NULL DEFAULT 0,
   history_id          TEXT,
   synced_at           TIMESTAMPTZ DEFAULT NOW(),
+  first_synced_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  labels_updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   ai_status           TEXT NOT NULL DEFAULT 'none',
   post_cutoff         BOOLEAN NOT NULL DEFAULT FALSE,
   quote               TEXT,

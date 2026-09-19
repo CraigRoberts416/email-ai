@@ -1,5 +1,6 @@
 const userStore   = require('./userStore');
 const messageStore = require('./messageStore');
+const { createUnreadBacklog } = require('./unreadBacklog');
 
 function decodeHtmlEntities(text) {
   return text
@@ -44,11 +45,12 @@ function metadataToRecord(msg, postCutoff = false) {
     historyId:    msg.historyId ?? null,
     participants,
     postCutoff,
+    labelsObservedAt: msg.labelsObservedAt,
   };
 }
 
 async function authedFetch(url, accessToken) {
-  return fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  return fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(15000) });
 }
 
 async function fetchMailboxProfile(accessToken) {
@@ -75,9 +77,14 @@ async function getUnreadCount(userId) {
   return messagesUnread;
 }
 
-async function listMessagesPage(accessToken, { pageToken = null, maxResults = 500 } = {}) {
+async function listMessagesPage(accessToken, { pageToken = null, maxResults = 500, unread = false, folder = null } = {}) {
   const params = new URLSearchParams({ maxResults: String(maxResults) });
   if (pageToken) params.set('pageToken', pageToken);
+  if (unread) {
+    params.set('labelIds', 'UNREAD');
+    params.set('includeSpamTrash', 'true');
+    if (folder) params.append('labelIds', folder);
+  }
 
   const res = await authedFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`,
@@ -101,11 +108,14 @@ async function fetchMetadataBatch(messageIds, accessToken) {
   for (let i = 0; i < messageIds.length; i += BATCH) {
     const slice = messageIds.slice(i, i + BATCH);
     const msgs = await Promise.all(slice.map(async (id) => {
+      const labelsObservedAt = new Date();
       const r = await authedFetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata`,
         accessToken
       );
-      return r.json();
+      if (r.status === 404) return {}; // deleted between list and metadata
+      if (!r.ok) throw new Error(`metadata fetch failed: ${r.status}`);
+      return { ...await r.json(), labelsObservedAt };
     }));
     results.push(...msgs.filter(m => m.id));
     if (i + BATCH < messageIds.length) {
@@ -145,7 +155,7 @@ async function initialSync(userId) {
       listPage = await listMessagesPage(accessToken, { pageToken, maxResults: 500 });
     } catch (err) {
       console.error(`[sync] list failed (page ${pageCount}): ${err.message}`);
-      break;
+      throw err;
     }
     const messageIds = listPage.messageIds;
     if (!messageIds.length) break;
@@ -162,6 +172,16 @@ async function initialSync(userId) {
 
   console.log(`[sync] initial sync complete: ${total} messages`);
 }
+
+const unreadBacklog = createUnreadBacklog({
+  userStore, messageStore, toRecord: metadataToRecord,
+  listPage: async (userId, pageToken, folder) => listMessagesPage(await userStore.getValidAccessToken(userId), {
+    pageToken, unread: true, folder,
+  }),
+  metadata: async (userId, ids) => fetchMetadataBatch(ids, await userStore.getValidAccessToken(userId)),
+});
+
+const ensureUnreadSync = unreadBacklog.ensure;
 
 /**
  * Incremental sync using Gmail History API.
@@ -180,6 +200,7 @@ async function incrementalSync(userId) {
   const res = await authedFetch(url, accessToken);
   if (!res.ok) {
     if (res.status === 404) {
+      await userStore.setUnreadSyncState(userId, 'pending');
       console.warn(`[sync] historyId expired for ${userId.slice(0, 8)}…, refreshing mailbox head and resetting historyId`);
       try {
         const profile = await fetchMailboxProfile(accessToken);
@@ -324,4 +345,4 @@ async function fetchFullMessage(userId, messageId) {
   return res.json();
 }
 
-module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage, getUnreadCount };
+module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage, getUnreadCount, ensureUnreadSync };

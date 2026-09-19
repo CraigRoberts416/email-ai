@@ -32,6 +32,8 @@ const unsubscribeCopy  = require('./unsubscribeCopy');
 const { cleanEmailForAI, decodeEntities } = require('./emailCleaner');
 const { createAPNsTransport } = require('./apns');
 const { createMailNotifications } = require('./mailNotifications');
+const { withCompleteness } = require('./feedStorage');
+const { createMarkReadHandler } = require('./messageRead');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -97,16 +99,7 @@ function parseSenderServer(from) {
 // ─── Avatar helpers ───────────────────────────────────────────────────────
 
 const LOGO_DEV_TOKEN = process.env.LOGO_DEV_TOKEN ?? 'pk_bcvjuzCeRt6gzuz5ZoYayg';
-
-const FREE_MAIL_DOMAINS = new Set([
-  'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
-  'icloud.com', 'live.com', 'msn.com', 'ymail.com',
-]);
-
-function rootDomain(domain) {
-  const parts = domain.split('.');
-  return parts.slice(-2).join('.');
-}
+const { avatarURL, registerSenderIdentityRoute } = require('./senderIdentity');
 
 function cleanLinks(links) {
   return links.filter(({ url }) => {
@@ -118,9 +111,7 @@ function cleanLinks(links) {
 }
 
 function resolveAvatarUri(email) {
-  const domain = rootDomain(email.sender.domain?.toLowerCase() ?? '');
-  if (!domain || FREE_MAIL_DOMAINS.has(domain)) return null;
-  return `https://img.logo.dev/${domain}?token=${LOGO_DEV_TOKEN}`;
+  return avatarURL(email.sender.domain, LOGO_DEV_TOKEN);
 }
 
 function resolveAvatarFallbackText(email) {
@@ -810,15 +801,45 @@ app.delete('/auth/push-token', async (req, res) => {
   }
 });
 
-// Mail Feed — unread messages, prioritized
+async function readFeedPage(userId, options) {
+  const [page, unreadCount] = await Promise.all([
+    messageStore.getUnreadPage(userId, options), mailNotifications.unreadCount(userId),
+  ]);
+  const result = withCompleteness(page, unreadCount);
+  if (!result.countsComplete) {
+    gmailSync.ensureUnreadSync(userId, { force: result.syncState === 'complete' })
+      .then(() => processingWorker.wakeWorker(userId))
+      .catch(err => console.warn('[feed] unread reconciliation failed:', err.message));
+  }
+  return result;
+}
+
+// Refresh full section totals without downloading another page of cards.
+app.get('/feed/counts', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { records, nextCursor, ...metadata } = await readFeedPage(userId, {
+      limit: 1, timeZone: req.query.timeZone, sectionDate: req.query.sectionDate,
+      knownMessageIds: req.query.knownMessageIds,
+    });
+    res.json(metadata);
+  } catch (err) {
+    res.status(err.statusCode === 400 ? 400 : 500).json({ error: err.statusCode === 400 ? err.message : 'feed counts failed' });
+  }
+});
+
+// Every unread email is reachable through chronological, stable pages.
 app.get('/feed', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
   try {
-    const [messages, unreadCount] = await Promise.all([
-      messageStore.getUnread(userId), mailNotifications.unreadCount(userId),
-    ]);
+    const { records: messages, ...metadata } = await readFeedPage(userId, {
+      cursor: req.query.cursor, limit: req.query.limit,
+      timeZone: req.query.timeZone, sectionDate: req.query.sectionDate,
+      knownMessageIds: req.query.knownMessageIds,
+    });
 
     // Collect unique sender domains and look up cached hero assets in parallel.
     // Missing ones trigger fire-and-forget generation so the next /feed response
@@ -893,10 +914,10 @@ app.get('/feed', async (req, res) => {
       };
     });
 
-    res.json(stripLoneSurrogates({ cards, unreadCount }));
+    res.json(stripLoneSurrogates({ cards, ...metadata }));
   } catch (err) {
     console.error('[feed] error:', err.message);
-    res.status(500).json({ error: 'feed failed' });
+    res.status(err.statusCode === 400 ? 400 : 500).json({ error: err.statusCode === 400 ? err.message : 'feed failed' });
   }
 });
 
@@ -1208,6 +1229,8 @@ app.get('/conversations/:id/messages', async (req, res) => {
 const heroVariants = new Map();
 const HERO_WIDTH = 900;
 
+registerSenderIdentityRoute(app, { resolveUserId, heroImage, logoToken: LOGO_DEV_TOKEN });
+
 app.get('/hero-image/:domain', async (req, res) => {
   try {
     const { domain } = req.params;
@@ -1361,51 +1384,10 @@ app.get('/all-mail', async (req, res) => {
 });
 
 // Mark message as read — removes UNREAD label via Gmail API + updates DB
-app.patch('/messages/:messageId/read', async (req, res) => {
-  const userId = await resolveUserId(req);
-  if (!userId) return res.status(401).json({ error: 'unauthorized' });
-
-  const { messageId } = req.params;
-
-  try {
-    const accessToken = await userStore.getValidAccessToken(userId);
-
-    // Call Gmail API to remove UNREAD label
-    const gmailRes = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/modify`,
-      {
-        method:  'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ removeLabelIds: ['UNREAD'] }),
-      }
-    );
-
-    if (!gmailRes.ok) {
-      const err = await gmailRes.json().catch(() => ({}));
-      console.error('[read] Gmail modify failed:', JSON.stringify(err));
-      return res.status(502).json({ error: 'Gmail modify failed' });
-    }
-
-    // Update local DB
-    const existing = await messageStore.getMessage(userId, messageId);
-    if (existing) {
-      const newLabels = existing.labelIds.filter(l => l !== 'UNREAD');
-      await messageStore.updateLabelIds(userId, messageId, newLabels);
-    }
-
-    // Notify SSE clients
-    // Clear the card as soon as Gmail and our mirror confirm the write. The
-    // device refreshes its provider totals separately; counting every mailbox
-    // must not delay the scroll action that completed this one message.
-    emitSSE(userId, { type: 'message-read', messageId });
-    res.json({ success: true });
-    mailNotifications.notifyMailbox(userId)
-      .catch(err => console.warn('[push] read badge failed:', err.message));
-  } catch (err) {
-    console.error('[read] error:', err.message);
-    res.status(500).json({ error: 'mark-read failed' });
-  }
-});
+app.patch('/messages/:messageId/read', createMarkReadHandler({
+  resolveUserId, userStore, messageStore, emitSSE,
+  notifyMailbox: userId => mailNotifications.notifyMailbox(userId),
+}));
 
 // Pub/Sub push webhook — receives Gmail push notifications
 app.post('/webhooks/gmail', async (req, res) => {
@@ -1953,6 +1935,9 @@ async function syncEveryone() {
 
   for (const user of users) {
     try {
+      gmailSync.ensureUnreadSync(user.user_id, { force: sweeping })
+        .then(() => processingWorker.wakeWorker(user.user_id))
+        .catch(err => console.warn('[poll] unread backlog failed:', err.message));
       const { newUnreadIds } = await gmailSync.incrementalSync(user.user_id);
 
       // The diff stream says what changed; the sweep says what is missing.

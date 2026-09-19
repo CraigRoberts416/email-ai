@@ -2,20 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const { query } = require('./db');
+const { canonicalDomain: rootDomain, FREE_MAIL_DOMAINS } = require('./senderIdentity');
 
 const DOP_PROMPT = fs.readFileSync(path.join(__dirname, 'prompts', 'hero-dop.txt'), 'utf8');
-
-const FREE_MAIL_DOMAINS = new Set([
-  'gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com',
-  'icloud.com', 'live.com', 'msn.com', 'ymail.com', 'aol.com',
-  'protonmail.com', 'proton.me',
-]);
-
-function rootDomain(domain) {
-  if (!domain) return '';
-  const parts = domain.toLowerCase().split('.');
-  return parts.slice(-2).join('.');
-}
 
 function isGeneratable(domain) {
   const root = rootDomain(domain);
