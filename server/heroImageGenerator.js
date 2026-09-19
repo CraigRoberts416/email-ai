@@ -85,6 +85,29 @@ async function getCachedAsset(domain) {
     : null;
 }
 
+/// Metadata for a page's sender domains in one indexed database request.
+/// Returned keys are the requested domains, so two sender subdomains share
+/// their registrable domain's asset without losing either card's lookup key.
+/// Personal mailbox providers never receive generated company imagery.
+async function getCachedAssets(domains) {
+  const requested = new Map();
+  for (const domain of domains ?? []) {
+    const root = rootDomain(domain);
+    if (isGeneratable(root)) requested.set(domain, root);
+  }
+  const roots = [...new Set(requested.values())];
+  if (!roots.length) return new Map();
+  const { rows } = await query(
+    'SELECT domain, bg_color, description FROM sender_domain_assets WHERE domain = ANY($1::text[])',
+    [roots]
+  );
+  const byRoot = new Map(rows.map(row => [row.domain, {
+    domain: row.domain, bgColor: row.bg_color, description: row.description ?? null,
+  }]));
+  return new Map([...requested].flatMap(([domain, root]) =>
+    byRoot.has(root) ? [[domain, byRoot.get(root)]] : []));
+}
+
 async function getCachedImageBytes(domain) {
   const root = rootDomain(domain);
   if (!root) return null;
@@ -247,6 +270,7 @@ module.exports = {
   rootDomain,
   isGeneratable,
   getCachedAsset,
+  getCachedAssets,
   getCachedImageBytes,
   ensureHeroAsset, getDescription,
   buildHeroImageUrl,

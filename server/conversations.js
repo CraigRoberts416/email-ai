@@ -164,7 +164,8 @@ function avatarFor(email, resolve) {
   return resolve({ sender: { domain } });
 }
 
-async function listConversations(userId, ownEmail, { limit = 200, resolveAvatar } = {}) {
+async function listConversations(userId, ownEmail, { limit = 200, resolveAvatar, query: readQuery = query } = {}) {
+  const startedAt = performance.now();
   // The whole archive, not just what arrived after onboarding.
   //
   // This carried `post_cutoff = TRUE`, inherited from the feed, where it is
@@ -185,10 +186,12 @@ async function listConversations(userId, ownEmail, { limit = 200, resolveAvatar 
   // down to about 9,000, which is the whole qualifying set rather than a
   // recent slice of it. The JS `isPrimary` check stays as the guard it always
   // was; this is the same rule, pushed down.
-  const { rows } = await query(`
-    SELECT message_id, thread_id, subject, from_name, from_email, snippet,
-           internal_date, participants, unsubscribe_url, label_ids, quote, summary,
-           body_text
+  // The candidate scan must stay metadata-only. Pulling the complete body of
+  // every historical candidate transferred megabytes before returning even
+  // one People row. The list needs one short preview per returned conversation.
+  const { rows } = await readQuery(`
+    SELECT message_id, thread_id, subject, from_name, from_email,
+           internal_date, participants, unsubscribe_url, label_ids
     FROM messages
     WHERE user_id = $1
       AND NOT EXISTS (
@@ -198,6 +201,7 @@ async function listConversations(userId, ownEmail, { limit = 200, resolveAvatar 
     ORDER BY internal_date DESC
     LIMIT 20000
   `, [userId]);
+  const metadataFinishedAt = performance.now();
 
   const me = (ownEmail ?? '').toLowerCase();
   const conversations = new Map();
@@ -266,20 +270,44 @@ async function listConversations(userId, ownEmail, { limit = 200, resolveAvatar 
       c.threadId = row.thread_id;
       c.subject = row.subject;
       c.lastFromMe = mine;
-      // The real first line when the body has been fetched, the model's quote
-      // or Gmail's snippet until then. Never the subject: a preview should be
-      // something that was said.
-      //
-      // The list does not fetch. Sixty conversations is sixty Gmail round
-      // trips for one line each, where opening a thread pays for one thread.
-      c.preview = firstLine(row.body_text) || row.quote || row.snippet || '';
     }
   }
 
-  return Array.from(conversations.values())
+  const result = Array.from(conversations.values())
     .map(({ seen, ...rest }) => rest)
     .sort((a, b) => b.lastAt - a.lastAt)
     .slice(0, limit);
+  const groupingFinishedAt = performance.now();
+
+  if (result.length) {
+    // Uses the existing (user_id, message_id) primary key. Never starts Gmail
+    // hydration: this is only the body already stored, then quote/snippet.
+    // A short prefix is enough for a one-line preview, and bounding it in SQL
+    // avoids transferring a huge body merely to truncate it in JavaScript.
+    const { rows: previews } = await readQuery(`
+      SELECT message_id, LEFT(body_text, 4096) AS body_text,
+             LEFT(quote, 4096) AS quote, LEFT(snippet, 4096) AS snippet
+      FROM messages
+      WHERE user_id = $1 AND message_id = ANY($2::text[])
+    `, [userId, result.map(c => c.lastMessageId)]);
+    const byId = new Map(previews.map(row => [row.message_id, row]));
+    for (const conversation of result) {
+      const row = byId.get(conversation.lastMessageId);
+      const text = row ? firstLine(row.body_text) || row.quote || row.snippet || '' : '';
+      // Iterate Unicode code points so a preview cannot end with half an emoji.
+      conversation.preview = Array.from(text).slice(0, 512).join('');
+    }
+  }
+
+  const finishedAt = performance.now();
+  if (finishedAt - startedAt > 1000) {
+    // No addresses, bodies, message IDs or credentials in performance logs.
+    console.info(`[conversations] candidates=${rows.length} returned=${result.length}`
+      + ` metadataMs=${Math.round(metadataFinishedAt - startedAt)}`
+      + ` groupingMs=${Math.round(groupingFinishedAt - metadataFinishedAt)}`
+      + ` previewsMs=${Math.round(finishedAt - groupingFinishedAt)}`);
+  }
+  return result;
 }
 
 /// Every message exchanged with one participant set, oldest first — the order

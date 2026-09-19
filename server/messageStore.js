@@ -84,6 +84,7 @@ async function getMessage(userId, messageId) {
 
 const feedStorage = createFeedStorage({ query, toRecord: rowToRecord });
 const getUnreadPage = feedStorage.page;
+const getUnreadCounts = feedStorage.counts;
 async function getUnread(userId, options) { return (await getUnreadPage(userId, options)).records; }
 
 async function unreadMetadataNeeded(userId, ids) {
@@ -335,7 +336,7 @@ async function finishNotification(userId, messageId, delivered) {
 }
 
 module.exports = {
-  upsertMessages, getMessage, getUnread, getUnreadPage, getAll, unreconciled,
+  upsertMessages, getMessage, getUnread, getUnreadPage, getUnreadCounts, getAll, unreconciled,
   unreadMetadataNeeded, reconcileUnreadLabels,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, setImageUrl, setAttachments, getMessageIdsNeedingUnsubscribeBackfill,

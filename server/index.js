@@ -801,9 +801,10 @@ app.delete('/auth/push-token', async (req, res) => {
   }
 });
 
-async function readFeedPage(userId, options) {
+async function readFeedPage(userId, options, countsOnly = false) {
   const [page, unreadCount] = await Promise.all([
-    messageStore.getUnreadPage(userId, options), mailNotifications.unreadCount(userId),
+    countsOnly ? messageStore.getUnreadCounts(userId, options) : messageStore.getUnreadPage(userId, options),
+    mailNotifications.unreadCount(userId),
   ]);
   const result = withCompleteness(page, unreadCount);
   if (!result.countsComplete) {
@@ -820,9 +821,9 @@ app.get('/feed/counts', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
   try {
     const { records, nextCursor, ...metadata } = await readFeedPage(userId, {
-      limit: 1, timeZone: req.query.timeZone, sectionDate: req.query.sectionDate,
+      timeZone: req.query.timeZone, sectionDate: req.query.sectionDate,
       knownMessageIds: req.query.knownMessageIds,
-    });
+    }, true);
     res.json(metadata);
   } catch (err) {
     res.status(err.statusCode === 400 ? 400 : 500).json({ error: err.statusCode === 400 ? err.message : 'feed counts failed' });
@@ -841,7 +842,7 @@ app.get('/feed', async (req, res) => {
       knownMessageIds: req.query.knownMessageIds,
     });
 
-    // Collect unique sender domains and look up cached hero assets in parallel.
+    // Collect unique sender domains and load cached hero metadata in one query.
     // Missing ones trigger fire-and-forget generation so the next /feed response
     // (or a pull-to-refresh) will return the image once ready.
     const domainToSender = new Map();
@@ -851,23 +852,17 @@ app.get('/feed', async (req, res) => {
       if (!domainToSender.has(domain)) domainToSender.set(domain, m.fromName || domain);
     }
 
-    const heroByDomain = new Map();
-    await Promise.all(Array.from(domainToSender.keys()).map(async domain => {
-      // Decoration must never be load-bearing. A missing image, a cold cache,
-      // or an absent table costs this sender its picture and nothing else —
-      // the mail underneath already exists and is not the AI's to withhold.
-      try {
-        const senderName = domainToSender.get(domain);
-        const cached = await heroImage.getCachedAsset(domain);
-        if (cached) {
-          heroByDomain.set(domain, cached);
-        } else {
-          heroImage.ensureHeroAsset(openai, domain, senderName);
-        }
-      } catch (err) {
-        console.warn(`[hero] skipped ${domain}: ${err.message}`);
+    let heroByDomain = new Map();
+    try {
+      heroByDomain = await heroImage.getCachedAssets(domainToSender.keys());
+      for (const [domain, senderName] of domainToSender) {
+        if (!heroByDomain.has(domain)) heroImage.ensureHeroAsset(openai, domain, senderName);
       }
-    }));
+    } catch (err) {
+      // Art must not hold up existing mail. A failed cache read does not mean
+      // assets are missing, so it must not launch new paid generation either.
+      console.warn(`[hero] batch lookup skipped: ${err.message}`);
+    }
 
     const cards = messages.map(m => {
       const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();

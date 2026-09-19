@@ -50,44 +50,62 @@ function nextCursor(userId, scope, records, limit) {
 }
 
 function createFeedStorage({ query, toRecord }) {
-  async function page(userId, options = {}, now = new Date()) {
+  async function read(userId, options, now, includeCards) {
     const scope = feedOptions(userId, options, now);
     // Counts and cards share one PostgreSQL statement snapshot. Counts cover
-    // the full current unread set; the cursor only limits the card page.
-    const { rows } = await query(`
-      WITH all_unread AS MATERIALIZED (
-        SELECT message_id, internal_date, first_synced_at, label_ids
-        FROM messages WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
-      ), unread AS MATERIALIZED (
-        SELECT * FROM all_unread WHERE NOT ('SPAM' = ANY(label_ids)) AND NOT ('TRASH' = ANY(label_ids))
-      ), page_ids AS (
-        SELECT * FROM unread
-        WHERE first_synced_at <= $2::timestamptz
-          AND ($3::bigint IS NULL OR (internal_date, message_id COLLATE "C") < ($3::bigint, $4::text COLLATE "C"))
-        ORDER BY internal_date DESC, message_id COLLATE "C" DESC LIMIT $5
+    // the full current unread set; the cursor only limits the card page. Keep
+    // the page separate from the aggregate so its chronological index can
+    // stop after limit+1 instead of sorting a materialized unread backlog.
+    // Never select m.*: cached message bodies are large and are not card data.
+    const pageCTE = includeCards ? `, page_ids AS (
+        SELECT message_id, internal_date FROM messages
+        WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
+          AND NOT ('SPAM' = ANY(label_ids)) AND NOT ('TRASH' = ANY(label_ids))
+          AND first_synced_at <= $5::timestamptz
+          AND ($6::bigint IS NULL OR (internal_date, message_id COLLATE "C") < ($6::bigint, $7::text COLLATE "C"))
+        ORDER BY internal_date DESC, message_id COLLATE "C" DESC LIMIT $8
       ), page AS (
-        SELECT m.* FROM page_ids p JOIN messages m ON m.user_id = $1 AND m.message_id = p.message_id
-      ), dated AS (
-        SELECT (to_timestamp(internal_date / 1000.0) AT TIME ZONE $6)::date AS day FROM unread
+        SELECT m.message_id, m.thread_id, m.label_ids, m.subject, m.from_name,
+          m.from_email, m.snippet, m.internal_date, m.history_id, m.synced_at,
+          m.ai_status, m.post_cutoff, m.quote, m.summary, m.action, m.action_url,
+          m.requires_attention, m.unsubscribe_url, m.risk_level, m.risk_evidence,
+          m.image_url, m.participants, m.attachments
+        FROM page_ids p JOIN messages m ON m.user_id = $1 AND m.message_id = p.message_id
+      )` : '';
+    const pageColumn = includeCards
+      ? ", COALESCE((SELECT json_agg(page ORDER BY internal_date DESC, message_id COLLATE \"C\" DESC) FROM page), '[]'::json) AS records"
+      : '';
+    const params = [userId, scope.timeZone, scope.sectionDate, scope.knownIds];
+    if (includeCards) params.push(scope.snapshot, scope.before?.[0] ?? null, scope.before?.[1] ?? null, scope.limit + 1);
+    const { rows } = await query(`
+      WITH boundaries AS MATERIALIZED (
+        SELECT
+          (EXTRACT(EPOCH FROM ((($3::timestamptz AT TIME ZONE $2)::date)::timestamp AT TIME ZONE $2)) * 1000)::bigint AS today,
+          (EXTRACT(EPOCH FROM ((($3::timestamptz AT TIME ZONE $2)::date - 1)::timestamp AT TIME ZONE $2)) * 1000)::bigint AS yesterday
+      ), unread AS (
+        SELECT internal_date,
+          NOT ('SPAM' = ANY(label_ids)) AND NOT ('TRASH' = ANY(label_ids)) AS eligible
+        FROM messages WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
       ), totals AS (
-        SELECT COUNT(*) AS total,
-          COUNT(*) FILTER (WHERE day >= ($7::timestamptz AT TIME ZONE $6)::date) AS today,
-          COUNT(*) FILTER (WHERE day = ($7::timestamptz AT TIME ZONE $6)::date - 1) AS yesterday,
-          COUNT(*) FILTER (WHERE day < ($7::timestamptz AT TIME ZONE $6)::date - 1) AS earlier
-        FROM dated
-      )
-      SELECT totals.*, COALESCE((SELECT json_agg(page ORDER BY internal_date DESC, message_id COLLATE "C" DESC) FROM page), '[]'::json) AS records,
-        (SELECT COUNT(*) FROM all_unread) AS all_unread_total,
+        SELECT COUNT(*) AS all_unread_total,
+          COUNT(*) FILTER (WHERE eligible) AS total,
+          COUNT(*) FILTER (WHERE eligible AND internal_date >= boundaries.today) AS today,
+          COUNT(*) FILTER (WHERE eligible AND internal_date >= boundaries.yesterday AND internal_date < boundaries.today) AS yesterday,
+          COUNT(*) FILTER (WHERE eligible AND internal_date < boundaries.yesterday) AS earlier
+        FROM unread CROSS JOIN boundaries
+      )${pageCTE}
+      SELECT totals.*${pageColumn},
         COALESCE((SELECT json_agg(message_id ORDER BY message_id COLLATE "C") FROM messages
-          WHERE user_id = $1 AND message_id = ANY($8::text[]) AND NOT ('UNREAD' = ANY(label_ids))), '[]'::json) AS known_read_ids,
+          WHERE user_id = $1 AND message_id = ANY($4::text[]) AND NOT ('UNREAD' = ANY(label_ids))), '[]'::json) AS known_read_ids,
         u.unread_sync_state, u.unread_sync_completed_at
       FROM totals LEFT JOIN users u ON u.user_id = $1
-    `, [userId, scope.snapshot, scope.before?.[0] ?? null, scope.before?.[1] ?? null,
-      scope.limit + 1, scope.timeZone, scope.sectionDate, scope.knownIds]);
+    `, params);
     const row = rows[0];
     return {
-      records: row.records.slice(0, scope.limit).map(toRecord),
-      nextCursor: nextCursor(userId, scope, row.records, scope.limit),
+      ...(includeCards ? {
+        records: row.records.slice(0, scope.limit).map(toRecord),
+        nextCursor: nextCursor(userId, scope, row.records, scope.limit),
+      } : {}),
       sections: { today: Number(row.today), yesterday: Number(row.yesterday), earlier: Number(row.earlier) },
       syncedUnreadCount: Number(row.total),
       feedUnreadCount: Number(row.total),
@@ -98,7 +116,10 @@ function createFeedStorage({ query, toRecord }) {
       countsAsOf: scope.now, timeZone: scope.timeZone, sectionDate: scope.sectionDate,
     };
   }
-  return { page };
+  return {
+    page: (userId, options = {}, now = new Date()) => read(userId, options, now, true),
+    counts: (userId, options = {}, now = new Date()) => read(userId, options, now, false),
+  };
 }
 
 function withCompleteness(page, unreadCount) {
