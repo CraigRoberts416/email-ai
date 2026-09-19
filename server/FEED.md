@@ -29,6 +29,9 @@ Responses retain `cards` and provider `unreadCount`, and add:
 - `syncState`: `pending`, `syncing`, `complete`, or `error`.
 - `syncCompletedAt`: last successful reconciliation timestamp, or null.
 - `countsAsOf`: timestamp of this database count snapshot.
+- `providerCountAsOf`, `providerCountAgeMs`, `providerCountState`: age and state
+  (`fresh`, `refreshing`, or `unavailable`) of provider verification. Samples
+  are fresh for 30 seconds and must begin after the last completed import.
 - `timeZone`, `sectionDate`: the section grouping anchor. The cursor retains it
   across midnight. Today includes the anchor's local day and future-dated mail;
   Yesterday is the previous local calendar day, respecting DST.
@@ -37,6 +40,15 @@ Responses retain `cards` and provider `unreadCount`, and add:
 metadata without cards or a cursor. This allows live counts without replacing
 the client's reading-session list. A confirmed local read can update a visible
 counter immediately; use this endpoint to reconcile that counter.
+
+Neither feed endpoint waits for Gmail's count request. A cold, expired, failed,
+or invalidated provider sample returns `unreadCount: null` and
+`countsComplete: false` alongside the cached cards and database sections. One
+shared background request refreshes each account; the next client count poll
+can verify the result. A stale zero never certifies completion. Refresh has a
+15-second overall deadline, including OAuth token refresh, and a five-second
+failure cooldown. Read operations and provider-change reconciliation invalidate
+prior samples; late results from an invalidated request are discarded.
 
 Both endpoints accept optional `knownMessageIds`, a comma-separated list of up
 to 500 IDs from the requesting account. `knownReadMessageIds` contains only IDs

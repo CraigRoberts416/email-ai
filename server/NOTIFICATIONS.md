@@ -36,6 +36,13 @@ it. Provider changes are checked on Gmail webhooks and the existing two-minute
 reconciliation loop. Badge-only requests use Apple's `alert` push type without a
 banner or sound, since the `background` push type does not permit a badge.
 
+Provider count requests are shared with feed verification. Feed responses never
+wait for the provider; notification delivery can await the shared refresh, with
+a 15-second overall deadline. Mailbox changes invalidate prior samples even
+when notifications are disabled. Interpretation completion can reuse a sample
+less than 30 seconds old because it does not itself change unread membership.
+Failed, expired, or invalidated samples never publish a zero or a partial badge.
+
 The database stores pending delivery, a short claim lease, and successful sends.
 Worker completion and reconciliation share this queue, so repeated arrivals do
 not create repeated alerts. Provider failures retain the pending entry for retry.

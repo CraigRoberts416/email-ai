@@ -8,13 +8,14 @@ const record = {
   fromName: 'Sender', fromEmail: 'sender@example.test', subject: 'Actual subject', snippet: 'Private body',
 };
 
-function harness({ counts = { a: 2, b: 3 }, fail = false, configured = true } = {}) {
+function harness({ counts = { a: 2, b: 3 }, fail = false, configured = true, loadCount, countCacheOptions } = {}) {
   const users = new Map(['a', 'b'].map(id => [id, { user_id: id, push_token: token }]));
   const records = new Map([[record.messageId, { ...record }]]);
   const pending = new Set();
   const claimed = new Set();
   const sent = new Set();
   const pushes = [];
+  const countCalls = [];
   let failing = fail;
   const service = createMailNotifications({
     apns: {
@@ -44,13 +45,16 @@ function harness({ counts = { a: 2, b: 3 }, fail = false, configured = true } = 
         if (delivered) sent.add(id);
       },
     },
-    gmailSync: { getUnreadCount: async id => {
+    gmailSync: { getUnreadCount: async (id, options) => {
+      countCalls.push(id);
+      if (loadCount) return loadCount(id, options);
       if (counts[id] instanceof Error) throw counts[id];
       return counts[id];
     } },
+    countCacheOptions,
     logger: { warn() {} },
   });
-  return { service, records, pushes, sent, claimed, users, counts, recover: () => { failing = false; } };
+  return { service, records, pushes, sent, claimed, users, counts, countCalls, recover: () => { failing = false; } };
 }
 
 test('native visible push contains source sender/subject and combined badge, not the email body', async () => {
@@ -136,4 +140,42 @@ test('disconnect subtracts the removed mailbox and final disconnect clears badge
   h.users.get('b').push_token = null;
   await h.service.refreshDetachedToken(token);
   assert.equal(h.pushes.at(-1).aps.badge, 0);
+});
+
+test('mailbox changes invalidate feed verification even without a push token or configured APNs', async () => {
+  for (const configured of [false, true]) {
+    const h = harness({ configured });
+    if (configured) h.users.get('a').push_token = null;
+    assert.equal(await h.service.unreadCount('a'), 2);
+    assert.equal(h.service.unreadCountSnapshot('a').unreadCount, 2);
+    h.counts.a = 1;
+    await h.service.notifyMailbox('a');
+    assert.equal(h.service.unreadCountSnapshot('a').unreadCount, null);
+    assert.equal(await h.service.unreadCount('a'), 1);
+    assert.equal(h.pushes.length, 0);
+  }
+});
+
+test('badge waits for a fresh combined count while feed stays immediate; read invalidation rejects partial old sums', async () => {
+  let resolveB;
+  const b = new Promise(resolve => { resolveB = resolve; });
+  const h = harness({ loadCount: id => id === 'a' ? 2 : b });
+  h.service.unreadCountSnapshot('b');
+  const badge = h.service.badgeCount(token);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.countCalls.sort(), ['a', 'b'], 'Feed and badge share b request');
+  assert.equal(h.service.unreadCountSnapshot('b').unreadCount, null);
+  h.service.invalidateUnreadCount('a');
+  resolveB(3);
+  assert.equal(await badge, null, 'A read during the other account request must invalidate the sum');
+});
+
+test('interpretation completion reuses verified counts instead of repeatedly invalidating mailbox state', async () => {
+  const h = harness();
+  await h.service.notifyMailbox('a');
+  const initialCalls = h.countCalls.length;
+  await h.service.notifyMailbox('a', [], { mailboxChanged: false });
+  await h.service.notifyMailbox('a', [], { mailboxChanged: false });
+  assert.equal(h.countCalls.length, initialCalls);
+  assert.equal(h.service.unreadCountSnapshot('a').providerCountState, 'fresh');
 });

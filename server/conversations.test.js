@@ -196,3 +196,25 @@ test('thread pages cover all history, preserve real same-millisecond message IDs
   assert.ok(hydrated.every(count => count <= 200));
   assert.ok(reads.filter(r => r.sql.includes('attachments, body_text')).every(r => r.rows.length <= 200));
 });
+
+test('production background directory reads bounded metadata and source snippets without loading bodies', async () => {
+  await add('alice', 200, { body: 'x'.repeat(200000), snippet: 'Original source preview' });
+  await add('bob', 100, { name: 'Bob Baker', email: 'bob@gmail.com', body: 'y'.repeat(200000) });
+  const directory = isolated.exports.createConversationDirectory({ query: readQuery, batchSize: 1 });
+  const source = { sourceVersion: 'complete-one', sourceComplete: true, sourceState: 'complete' };
+  let page = directory.page('a','owner@gmail.com',source);
+  assert.equal(page.historyComplete, false);
+  const deadline = Date.now() + 2000;
+  while (!page.historyComplete && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+    page = directory.page('a','owner@gmail.com',source);
+  }
+  assert.equal(page.historyComplete, true);
+  assert.equal(page.totalConversations, 2);
+  assert.equal(page.conversations[0].preview, 'Original source preview');
+  assert.ok(reads.every(read => read.rows.length <= 1));
+  assert.ok(reads.every(read => !/body_text|quote|summary/.test(read.sql)));
+  const count = reads.length;
+  directory.page('a','owner@gmail.com',source);
+  assert.equal(reads.length, count, 'Polling a finished snapshot never rescans the archive');
+});

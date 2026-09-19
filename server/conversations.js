@@ -166,7 +166,7 @@ function avatarFor(email, resolve) {
 
 // Metadata is walked in bounded keyset pages; the end of a query page is never
 // mistaken for the end of someone's correspondence. Bodies are read separately.
-async function* metadataPages(userId, ownEmail, readQuery, { predicate = 'TRUE', values = [], batchSize = 2000 } = {}) {
+async function* metadataPages(userId, ownEmail, readQuery, { predicate = 'TRUE', values = [], batchSize = 2000, includePreview = false } = {}) {
   let before = null;
   do {
     const args = [userId, ownEmail, ...values];
@@ -179,6 +179,7 @@ async function* metadataPages(userId, ownEmail, readQuery, { predicate = 'TRUE',
     const { rows } = await readQuery(`
       SELECT message_id, thread_id, subject, from_name, from_email,
              internal_date, participants, unsubscribe_url, label_ids
+             ${includePreview ? ', LEFT(snippet, 512) AS preview_text' : ''}
       FROM messages WHERE user_id = $1
         AND NOT (COALESCE(label_ids, '{}') && ARRAY['DRAFT', 'SPAM', 'TRASH']::text[])
         AND (lower(from_email) = $2 OR NOT EXISTS (
@@ -229,9 +230,8 @@ function selectPage(items, userId, scope, { cursor, limit } = {}) {
     ? encodeCursor(userId, scope, selected.at(-1)) : null };
 }
 
-async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, resolveAvatar,
-  query: readQuery = query, batchSize = 2000 } = {}) {
-  decodeCursor(cursor, userId, 'people');
+async function aggregateConversations(userId, ownEmail, { resolveAvatar, query: readQuery = query,
+  batchSize = 2000, includePreview = false, onBatch = () => {} } = {}) {
   const me = (ownEmail ?? '').toLowerCase();
   const conversations = new Map();
   const threadKeys = new Map();
@@ -243,7 +243,7 @@ async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, res
       c = { id: key, participants: others.map(p => ({ ...p, name: p.name || p.email.split('@')[0],
         avatarUri: resolveAvatar ? avatarFor(p.email, resolveAvatar) : null })),
       lastMessageId: row.message_id, threadId: row.thread_id, subject: row.subject,
-      preview: null, lastAt: Number(row.internal_date) || 0, lastFromMe: mine,
+      preview: firstLine(row.preview_text), lastAt: Number(row.internal_date) || 0, lastFromMe: mine,
       unread: false, messageCount: 0 };
       conversations.set(key, c);
     }
@@ -252,10 +252,10 @@ async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, res
     const date = Number(row.internal_date) || 0;
     if (date > c.lastAt || (date === c.lastAt && row.message_id > c.lastMessageId)) {
       Object.assign(c, { lastAt: date, lastMessageId: row.message_id,
-        threadId: row.thread_id, subject: row.subject, lastFromMe: mine });
+        threadId: row.thread_id, subject: row.subject, lastFromMe: mine, preview: firstLine(row.preview_text) });
     }
   }
-  for await (const rows of metadataPages(userId, me, readQuery, { batchSize })) {
+  for await (const rows of metadataPages(userId, me, readQuery, { batchSize, includePreview })) {
     for (const row of rows) {
       const mine = (row.from_email ?? '').toLowerCase() === me;
       const others = othersIn(row, me);
@@ -268,6 +268,8 @@ async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, res
         threadKeys.get(row.thread_id).add(key);
       }
     }
+    // Publish copies; later batches must never mutate a page already served.
+    onBatch([...conversations.values()].map(c => ({ ...c })).sort(compareNewest));
   }
   // Older imports lacked recipients on sent mail. A thread can supply the
   // participant set only when that thread has one unambiguous set.
@@ -275,7 +277,13 @@ async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, res
     const keys = threadKeys.get(row.thread_id);
     if (keys?.size === 1) { const key = [...keys][0]; add(row, key, conversations.get(key).participants); }
   }
-  const all = [...conversations.values()].sort(compareNewest);
+  return [...conversations.values()].sort(compareNewest);
+}
+
+async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, resolveAvatar,
+  query: readQuery = query, batchSize = 2000 } = {}) {
+  decodeCursor(cursor, userId, 'people');
+  const all = await aggregateConversations(userId, ownEmail, { resolveAvatar, query: readQuery, batchSize });
   const { selected, nextCursor } = selectPage(all, userId, 'people', { cursor, limit });
   if (selected.length) {
     const { rows } = await readQuery(`SELECT message_id, LEFT(body_text, 4096) AS body_text,
@@ -290,6 +298,98 @@ async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, res
   return { conversations: selected, nextCursor, totalConversations: all.length,
     unreadConversations: all.filter(c => c.unread).length };
 }
+
+/**
+ * A shared directory fills independently of HTTP. Requests only slice an
+ * immutable snapshot, so a large archive or a busy database cannot keep a
+ * phone waiting for the full scan. Bodies never enter this directory.
+ */
+function createConversationDirectory({ query: readQuery = query, now = () => Date.now(),
+  batchSize = 500, ttlMs = 30_000, retentionMs = 15 * 60_000, concurrency = 2,
+  aggregate = aggregateConversations, logger = console } = {}) {
+  const accounts = new Map();
+  const queued = [];
+  let running = 0;
+  let sequence = 0;
+
+  function pump() {
+    while (running < concurrency && queued.length) {
+      const job = queued.shift();
+      running++;
+      job.status = 'indexing';
+      job.work = Promise.resolve().then(async () => {
+        job.items = await aggregate(job.userId, job.ownEmail, {
+          query: readQuery, batchSize, includePreview: true, resolveAvatar: job.resolveAvatar,
+          onBatch: items => { job.items = items; },
+        });
+        job.status = 'complete';
+      }).catch(error => {
+        job.status = 'failed';
+        logger.warn('[conversations] background directory failed:', error.message);
+      }).finally(() => {
+        job.finishedAt = now();
+        running--;
+        pump();
+      });
+    }
+  }
+
+  function start(account, userId, ownEmail, sourceVersion, sourceComplete, resolveAvatar) {
+    const job = { userId, ownEmail, resolveAvatar, sourceVersion, sourceComplete,
+      generation: `${now().toString(36)}-${++sequence}`, items: account.active?.items ?? [], status: 'queued',
+      startedAt: now(), finishedAt: null, work: null };
+    account.active = job;
+    account.snapshots.set(job.generation, job);
+    queued.push(job);
+    pump();
+    return job;
+  }
+
+  function page(userId, ownEmail, { cursor, limit = 50, resolveAvatar,
+    sourceVersion = '', sourceComplete = false, sourceState = 'pending' } = {}) {
+    let boundary = decodeCursor(cursor, userId, 'people');
+    let cursorGeneration = null;
+    if (cursor) cursorGeneration = JSON.parse(Buffer.from(cursor, 'base64url').toString()).generation ?? null;
+    let account = accounts.get(userId);
+    if (!account) { account = { active: null, snapshots: new Map(), lastUsed: now() }; accounts.set(userId, account); }
+    account.lastUsed = now();
+    let active = account.active;
+    const inFlight = active && (active.status === 'queued' || active.status === 'indexing');
+    const expired = active && active.finishedAt !== null && now() - active.finishedAt >= (active.status === 'failed' ? 5000 : ttlMs);
+    if (!active || (!inFlight && (active.sourceVersion !== sourceVersion || (!cursor && expired)))) {
+      active = start(account, userId, ownEmail, sourceVersion, sourceComplete, resolveAvatar);
+    }
+    // A cursor keeps using its completed snapshot while a head refresh builds
+    // the next one. After a process restart its date/id boundary still works.
+    const job = (cursorGeneration && account.snapshots.get(cursorGeneration)) || active;
+    const complete = job.status === 'complete' && job.sourceComplete && sourceComplete
+      && job.sourceVersion === sourceVersion;
+    const available = boundary ? job.items.filter(item => compareNewest(item, boundary) > 0) : job.items;
+    const selected = available.slice(0, pageLimit(limit));
+    const waitingForMore = job.status !== 'complete';
+    const last = selected.at(-1) ?? boundary;
+    const nextCursor = last && (available.length > selected.length || waitingForMore)
+      ? Buffer.from(JSON.stringify({ v: 1, user: userId, scope: 'people', at: last.lastAt,
+          id: last.id, generation: job.generation })).toString('base64url') : null;
+    const state = job.status === 'failed' ? 'failed'
+      : job.status !== 'complete' ? 'indexing'
+      : complete ? 'complete' : sourceState === 'failed' ? 'failed' : 'syncing';
+    // Retain old cursor snapshots briefly, never a second copy forever.
+    for (const [id, snapshot] of account.snapshots) {
+      if (snapshot !== active && snapshot.finishedAt !== null && now() - snapshot.finishedAt > retentionMs) account.snapshots.delete(id);
+    }
+    for (const [id, cached] of accounts) {
+      if (id !== userId && now() - cached.lastUsed > retentionMs
+          && !['queued', 'indexing'].includes(cached.active.status)) accounts.delete(id);
+    }
+    return { conversations: selected, nextCursor,
+      totalConversations: complete ? job.items.length : null,
+      unreadConversations: complete ? job.items.filter(c => c.unread).length : null,
+      historyComplete: complete, historySyncState: state };
+  }
+  return { page };
+}
+const conversationDirectory = createConversationDirectory();
 
 // Legacy array helpers are retained for callers migrating to the page contract.
 async function listConversations(userId, ownEmail, options) {
@@ -455,6 +555,6 @@ async function hydrateRecentPeople(userId, ownEmail, { limit = 40 } = {}) {
 }
 
 module.exports = {
-  listConversations, listConversationsPage, conversationMessages, conversationMessagesPage, hydrateRecentPeople,
+  createConversationDirectory, conversationDirectory, listConversations, listConversationsPage, conversationMessages, conversationMessagesPage, hydrateRecentPeople,
   isPerson, isPrimary, setKey,
 };

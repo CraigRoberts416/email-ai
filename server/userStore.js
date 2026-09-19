@@ -92,8 +92,9 @@ async function setAllMailSyncCursor(userId, cursor) {
   await query('UPDATE users SET all_mail_sync_cursor = $2 WHERE user_id = $1', [userId, cursor]);
 }
 
-async function getValidAccessToken(userId) {
+async function getValidAccessToken(userId, { signal } = {}) {
   const user = await getUser(userId);
+  signal?.throwIfAborted();
   if (!user) throw new Error(`User not found: ${userId}`);
 
   const expiryMs = new Date(user.token_expiry).getTime();
@@ -113,6 +114,7 @@ async function getValidAccessToken(userId) {
     method:  'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body:    body.toString(),
+    signal,
   });
 
   if (!res.ok) {

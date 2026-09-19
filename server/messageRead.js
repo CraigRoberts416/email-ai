@@ -1,8 +1,8 @@
 function createMarkReadHandler({ resolveUserId, userStore, messageStore, emitSSE,
-  notifyMailbox, fetch: providerFetch = fetch, logger = console }) {
+  notifyMailbox, invalidateUnreadCount = () => {}, fetch: providerFetch = fetch, logger = console }) {
   const queues = new Map();
 
-  async function confirm(userId, messageId) {
+  async function confirmState(userId, messageId) {
     const accessToken = await userStore.getValidAccessToken(userId);
     const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}`;
     const headers = { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' };
@@ -29,6 +29,12 @@ function createMarkReadHandler({ resolveUserId, userStore, messageStore, emitSSE
     // decrement of the mailbox's unread count.
     await messageStore.updateLabelIds(userId, messageId, message.labelIds ?? []);
     return { success: true, wasUnread, readChanged: wasUnread };
+  }
+
+  async function confirm(userId, messageId) {
+    invalidateUnreadCount(userId);
+    try { return await confirmState(userId, messageId); }
+    finally { invalidateUnreadCount(userId); }
   }
 
   return async (req, res) => {

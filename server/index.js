@@ -32,7 +32,7 @@ const unsubscribeCopy  = require('./unsubscribeCopy');
 const { cleanEmailForAI, decodeEntities } = require('./emailCleaner');
 const { createAPNsTransport } = require('./apns');
 const { createMailNotifications } = require('./mailNotifications');
-const { withCompleteness, needsUnreadReconciliation } = require('./feedStorage');
+const { createFeedReader } = require('./feedReader');
 const { createMarkReadHandler } = require('./messageRead');
 const { createSenderHistory, registerSenderHistoryRoute } = require('./senderHistory');
 const { createProfileSource } = require('./profileSource');
@@ -693,6 +693,7 @@ app.post('/auth/register', async (req, res) => {
       tokenExpiry: expiresAt ?? (Date.now() + 3600_000),
       onboardingHistoryId,
     });
+    mailNotifications.invalidateUnreadCount(userId);
 
     // Set history_id as incremental sync starting point, only if not already set
     if (onboardingHistoryId) {
@@ -723,6 +724,7 @@ app.post('/auth/register', async (req, res) => {
       } catch (syncErr) {
         console.error('[register] incrementalSync error:', syncErr.message);
       }
+      mailNotifications.invalidateUnreadCount(userId);
 
       if (newUnreadIds.length > 0) {
         const records = await Promise.all(newUnreadIds.map(messageId => messageStore.getMessage(userId, messageId)));
@@ -775,7 +777,7 @@ app.post('/auth/push-token', async (req, res) => {
   try {
     await userStore.updatePushToken(userId, pushToken);
     res.json({ success: true });
-    mailNotifications.notifyMailbox(userId, [], { forceBadge: true })
+    mailNotifications.notifyMailbox(userId, [], { forceBadge: true, mailboxChanged: false })
       .catch(err => console.warn('[push] registration badge failed:', err.message));
   } catch (err) {
     console.error('[push-token] error:', err.message);
@@ -803,19 +805,7 @@ app.delete('/auth/push-token', async (req, res) => {
   }
 });
 
-async function readFeedPage(userId, options, countsOnly = false) {
-  const [page, unreadCount] = await Promise.all([
-    countsOnly ? messageStore.getUnreadCounts(userId, options) : messageStore.getUnreadPage(userId, options),
-    mailNotifications.unreadCount(userId),
-  ]);
-  const result = withCompleteness(page, unreadCount);
-  if (needsUnreadReconciliation(result)) {
-    gmailSync.ensureUnreadSync(userId, { force: result.syncState === 'complete' })
-      .then(() => processingWorker.wakeWorker(userId))
-      .catch(err => console.warn('[feed] unread reconciliation failed:', err.message));
-  }
-  return result;
-}
+const readFeedPage = createFeedReader({ messageStore, mailNotifications, gmailSync, processingWorker });
 
 // Refresh full section totals without downloading another page of cards.
 app.get('/feed/counts', async (req, res) => {
@@ -1205,11 +1195,14 @@ app.get('/conversations', async (req, res) => {
     if (user?.all_mail_sync_state !== 'complete') {
       gmailSync.initialSync(userId).catch(err => console.error('[conversations] archive sync failed:', err.message));
     }
-    const page = await conversations.listConversationsPage(userId, user?.email, {
+    const page = conversations.conversationDirectory.page(userId, user?.email, {
       resolveAvatar: resolveAvatarUri, cursor: req.query.cursor, limit: req.query.limit,
+      sourceComplete: user?.all_mail_sync_state === 'complete',
+      sourceState: user?.all_mail_sync_state ?? 'pending',
+      sourceVersion: [user?.all_mail_sync_generation, user?.all_mail_sync_state,
+        user?.all_mail_sync_completed_at?.toISOString?.() ?? user?.all_mail_sync_completed_at].join('|'),
     });
-    res.json(stripLoneSurrogates({ ...page, historyComplete: user?.all_mail_sync_state === 'complete',
-      historySyncState: user?.all_mail_sync_state ?? 'pending' }));
+    res.json(stripLoneSurrogates(page));
   } catch (err) {
     console.error('[conversations] error:', err.message);
     res.status(err.status === 400 ? 400 : 500).json({ error: 'failed to load conversations' });
@@ -1414,6 +1407,7 @@ app.get('/all-mail', async (req, res) => {
 // Mark message as read — removes UNREAD label via Gmail API + updates DB
 app.patch('/messages/:messageId/read', createMarkReadHandler({
   resolveUserId, userStore, messageStore, emitSSE,
+  invalidateUnreadCount: userId => mailNotifications.invalidateUnreadCount(userId),
   notifyMailbox: userId => mailNotifications.notifyMailbox(userId),
 }));
 
@@ -1458,10 +1452,12 @@ app.post('/webhooks/gmail', async (req, res) => {
     }
 
     const userId = user.user_id;
+    mailNotifications.invalidateUnreadCount(userId);
     console.log(`[webhook] push for user ${userId.slice(0, 8)}… historyId: ${historyId}`);
 
     // Run incremental sync
     const { newUnreadIds } = await gmailSync.incrementalSync(userId);
+    mailNotifications.invalidateUnreadCount(userId);
 
     // Emit SSE for newly arrived messages
     for (const messageId of newUnreadIds) {
@@ -1963,10 +1959,12 @@ async function syncEveryone() {
 
   for (const user of users) {
     try {
+      mailNotifications.invalidateUnreadCount(user.user_id);
       gmailSync.ensureUnreadSync(user.user_id, { force: sweeping })
         .then(() => processingWorker.wakeWorker(user.user_id))
         .catch(err => console.warn('[poll] unread backlog failed:', err.message));
       const { newUnreadIds } = await gmailSync.incrementalSync(user.user_id);
+      mailNotifications.invalidateUnreadCount(user.user_id);
 
       // The diff stream says what changed; the sweep says what is missing.
       // Both, because the first is fast and the second is the only one that
@@ -2024,7 +2022,7 @@ async function syncEveryone() {
 
 processingWorker.init({
   streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE,
-  onMessageReady: userId => mailNotifications.notifyMailbox(userId),
+  onMessageReady: userId => mailNotifications.notifyMailbox(userId, [], { mailboxChanged: false }),
 });
 watchManager.startWatchRenewalCron();
 

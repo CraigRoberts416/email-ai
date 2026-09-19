@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const { isAPNsToken } = require('./apns');
+const { createUnreadCountCache } = require('./unreadCountCache');
 
 function validCount(value) { return Number.isSafeInteger(value) && value >= 0; }
 
@@ -23,27 +24,26 @@ function buildAPNsPayload(userId, badgeCount, message) {
   };
 }
 
-function createMailNotifications({ apns, expo, isExpoPushToken, messageStore, userStore, gmailSync, logger = console }) {
+function createMailNotifications({ apns, expo, isExpoPushToken, messageStore, userStore, gmailSync, logger = console,
+  countCacheOptions = {} }) {
   const lastBadges = new Map();
   const queues = new Map();
   let warnedMissingConfig = false;
+  const counts = createUnreadCountCache({
+    ...countCacheOptions, load: (userId, options) => gmailSync.getUnreadCount(userId, options), logger,
+  });
 
   function validToken(token) { return isAPNsToken(token) || isExpoPushToken(token); }
 
-  async function unreadCount(userId) {
-    try { return await gmailSync.getUnreadCount(userId); }
-    catch (err) {
-      logger.warn('[badge] mailbox count unavailable:', err.message);
-      return null;
-    }
-  }
+  function unreadCount(userId, options = { force: true }) { return counts.refresh(userId, options); }
 
-  async function badgeCount(pushToken) {
+  async function badgeCount(pushToken, options = { force: true }) {
     const users = await userStore.getUsersByPushToken(pushToken);
-    const counts = await Promise.all(users.map(user => unreadCount(user.user_id)));
+    const values = await Promise.all(users.map(user => unreadCount(user.user_id, options)));
     // A partial sum is not an accurate device total. Preserve the last badge
     // if even one connected account is temporarily unavailable.
-    return counts.every(validCount) ? counts.reduce((sum, count) => sum + count, 0) : null;
+    return values.every((count, index) => validCount(count) && counts.isCurrent(users[index].user_id, count))
+      ? values.reduce((sum, count) => sum + count, 0) : null;
   }
 
   async function send(user, count, message = null) {
@@ -101,7 +101,9 @@ function createMailNotifications({ apns, expo, isExpoPushToken, messageStore, us
     return pending.finally(() => { if (queues.get(token) === pending) queues.delete(token); });
   }
 
-  async function notifyMailbox(userId, newUnreadIds = [], { forceBadge = false } = {}) {
+  async function notifyMailbox(userId, newUnreadIds = [], { forceBadge = false, mailboxChanged = true } = {}) {
+    // Feed correctness does not depend on notification permission or a token.
+    if (mailboxChanged) counts.invalidate(userId);
     if (newUnreadIds.length) await messageStore.queueNotifications(userId, [...new Set(newUnreadIds)]);
     const user = await userStore.getUser(userId);
     if (!user?.push_token || !validToken(user.push_token)) return;
@@ -113,7 +115,7 @@ function createMailNotifications({ apns, expo, isExpoPushToken, messageStore, us
       return;
     }
     return serialize(user.push_token, async () => {
-      const count = await badgeCount(user.push_token);
+      const count = await badgeCount(user.push_token, { force: mailboxChanged || forceBadge });
       let alerted = false;
       const pending = await messageStore.getPendingNotifications(userId);
       for (const message of pending) {
@@ -144,7 +146,8 @@ function createMailNotifications({ apns, expo, isExpoPushToken, messageStore, us
     });
   }
 
-  return { unreadCount, badgeCount, notifyMailbox, refreshDetachedToken, validToken };
+  return { unreadCount, unreadCountSnapshot: counts.snapshot, invalidateUnreadCount: counts.invalidate,
+    badgeCount, notifyMailbox, refreshDetachedToken, validToken };
 }
 
 module.exports = { createMailNotifications, buildAPNsPayload, validCount };
