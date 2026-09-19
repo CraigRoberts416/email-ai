@@ -59,18 +59,25 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     /// less urgent because you happen to be looking at a different tab.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
-        Task { @MainActor in await AppDelegate.onMailboxUpdate?() }
-        return [.banner, .sound, .badge, .list]
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        Task { @MainActor in
+            completionHandler([.banner, .sound, .badge, .list])
+            Task { @MainActor in await AppDelegate.onMailboxUpdate?() }
+        }
     }
 
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
         let request = NotificationOpenRequest(userInfo: response.notification.request.content.userInfo)
-        await AppDelegate.notificationTaps.receive(request)
+        Task { @MainActor in
+            AppDelegate.notificationTaps.receive(request)
+            completionHandler()
+        }
     }
 }
 

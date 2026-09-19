@@ -37,3 +37,8 @@ performance. Those require the separate Simulator/device validation.
 The other `*Tests.swift` files are focused executable checks for their named
 production model/cache types; compile each with its corresponding source and
 the fixtures declared in that test file.
+
+Run `./apple/tests/run-notification-delegate-tests.sh` to exercise the production
+notification delegate extension with platform doubles. Both callbacks enter
+from a background queue; checks require main-thread completion, routing before
+tap completion, and immediate foreground presentation before mailbox refresh.
