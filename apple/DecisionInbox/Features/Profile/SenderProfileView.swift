@@ -191,6 +191,7 @@ struct SenderProfileView: View {
             .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
         }
         .scrollIndicators(.hidden)
+        .clearHeroHeader()
         .task(id: sender.address) {
             if history == nil { history = SenderHistoryStore(auth: store.auth, sender: sender, sample: store.isSample, seed: all) }
             await history?.start()

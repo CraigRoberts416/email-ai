@@ -25,6 +25,12 @@ extension View {
         modifier(FeedEdges())
     }
 
+    /// A hero remains visible behind the separate native toolbar controls.
+    /// Their glass supplies contrast without a full-width frosted header.
+    func clearHeroHeader() -> some View {
+        modifier(ClearHeroHeader())
+    }
+
     /// A floating control — a pill, a back button, an ask field — on Liquid
     /// Glass, falling back to the flat fill it used to have.
     ///
@@ -87,6 +93,16 @@ private struct ScrollEdges: ViewModifier {
             content
                 .scrollEdgeEffectStyle(.soft, for: .top)
                 .scrollEdgeEffectStyle(.soft, for: .bottom)
+        } else {
+            content
+        }
+    }
+}
+
+private struct ClearHeroHeader: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.scrollEdgeEffectHidden(true, for: .top)
         } else {
             content
         }

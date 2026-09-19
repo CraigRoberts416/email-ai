@@ -58,7 +58,7 @@ struct ThreadView: View {
         }
         .ignoresSafeArea(edges: .top)
         .scrollIndicators(.hidden)
-        .feedEdges()
+        .clearHeroHeader()
         // A real inset, not an overlay in a ZStack.
         //
         // Stacked, the bar floated over the scroll view: the last line of a
