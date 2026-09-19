@@ -57,6 +57,11 @@ function createUnreadBacklog({ userStore, messageStore, listPage, metadata, toRe
     } catch (error) {
       await userStore.setUnreadSyncState(userId, 'error');
       throw error;
+    } finally {
+      // Large mailboxes can take longer than the cooldown to enumerate. Give
+      // a completed/failed pass a real quiet interval before the next repair,
+      // instead of immediately repeating it because its start was long ago.
+      attempted.set(userId, now());
     }
   }
 

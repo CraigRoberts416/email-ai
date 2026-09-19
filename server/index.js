@@ -32,7 +32,7 @@ const unsubscribeCopy  = require('./unsubscribeCopy');
 const { cleanEmailForAI, decodeEntities } = require('./emailCleaner');
 const { createAPNsTransport } = require('./apns');
 const { createMailNotifications } = require('./mailNotifications');
-const { withCompleteness } = require('./feedStorage');
+const { withCompleteness, needsUnreadReconciliation } = require('./feedStorage');
 const { createMarkReadHandler } = require('./messageRead');
 const { createSenderHistory, registerSenderHistoryRoute } = require('./senderHistory');
 const { createProfileSource } = require('./profileSource');
@@ -809,7 +809,7 @@ async function readFeedPage(userId, options, countsOnly = false) {
     mailNotifications.unreadCount(userId),
   ]);
   const result = withCompleteness(page, unreadCount);
-  if (!result.countsComplete) {
+  if (needsUnreadReconciliation(result)) {
     gmailSync.ensureUnreadSync(userId, { force: result.syncState === 'complete' })
       .then(() => processingWorker.wakeWorker(userId))
       .catch(err => console.warn('[feed] unread reconciliation failed:', err.message));

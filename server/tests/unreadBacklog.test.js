@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createUnreadBacklog } = require('../unreadBacklog');
 
-function fixture({ failPage = false, failFolder = false, repeatedToken = false } = {}) {
+function fixture({ failPage = false, failFolder = false, repeatedToken = false, scanDuration = 0 } = {}) {
   const events = [];
   let state = 'pending';
   let time = new Date('2026-09-19T12:00:00Z');
@@ -28,7 +28,10 @@ function fixture({ failPage = false, failFolder = false, repeatedToken = false }
         ? { messageIds: ['old', 'spam'], nextPageToken: repeatedToken ? 'page2' : null }
         : { messageIds: ['existing', 'new'], nextPageToken: 'page2' };
     },
-    metadata: async (_id, ids) => ids.map(id => ({ id })),
+    metadata: async (_id, ids) => {
+      time = new Date(+time + scanDuration);
+      return ids.map(id => ({ id }));
+    },
     toRecord: (message, postCutoff) => ({ messageId: message.id, postCutoff }),
   });
   return { service, events, state: () => state, advance: () => { time = new Date(+time + 60001); } };
@@ -77,4 +80,25 @@ test('repeated provider page tokens fail visibly instead of looping or declaring
   await assert.rejects(h.service.ensure('a'), /repeated/);
   assert.equal(h.state(), 'error');
   assert.ok(!h.events.some(event => event[0] === 'reconcile'));
+});
+
+test('a long successful reconciliation cannot restart immediately after its start-based cooldown expires', async () => {
+  const h = fixture({ scanDuration: 120000 });
+  await h.service.ensure('a');
+  assert.equal(h.events.filter(event => event[0] === 'reconcile').length, 1);
+  await h.service.ensure('a', { force: true });
+  assert.equal(h.events.filter(event => event[0] === 'reconcile').length, 1);
+  h.advance();
+  await h.service.ensure('a', { force: true });
+  assert.equal(h.events.filter(event => event[0] === 'reconcile').length, 2);
+});
+
+test('a long failed reconciliation also waits before retrying', async () => {
+  const h = fixture({ scanDuration: 120000, failPage: true });
+  await assert.rejects(h.service.ensure('a'), /page unavailable/);
+  const calls = h.events.filter(event => event[0] === 'list').length;
+  await h.service.ensure('a', { force: true });
+  assert.equal(h.events.filter(event => event[0] === 'list').length, calls);
+  h.advance();
+  await assert.rejects(h.service.ensure('a', { force: true }), /page unavailable/);
 });

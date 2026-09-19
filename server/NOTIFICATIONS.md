@@ -26,7 +26,10 @@ Existing mail from before notification registration is excluded. Pending alerts
 older than 24 hours are not replayed as new mail.
 
 The badge is the sum of Gmail's authoritative `UNREAD.messagesUnread` counts for
-every account sharing the device token. It is independent of the bounded feed and
+every account sharing the device token, including accounts excluded from the feed.
+It includes archived unread mail and excludes Spam and Trash. The server uses
+Gmail's counter, rather than raw locally mirrored UNREAD label membership, which
+also contains unread Spam and Trash. It is independent of loaded feed pages and
 the model's attention decision. One unavailable account makes the total unknown;
 the server then preserves the existing badge. A confirmed zero explicitly clears
 it. Provider changes are checked on Gmail webhooks and the existing two-minute

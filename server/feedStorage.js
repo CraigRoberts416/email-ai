@@ -125,12 +125,23 @@ function createFeedStorage({ query, toRecord }) {
 }
 
 function withCompleteness(page, unreadCount) {
+  // Compare the same scope: Gmail's UNREAD counter excludes Spam and Trash.
+  // Keep allSyncedUnreadCount as a diagnostic for the complete label mirror.
   const countsComplete = page.syncState === 'complete' && page.syncCompletedAt !== null
     && Number.isSafeInteger(unreadCount) && unreadCount >= 0
-    && page.allSyncedUnreadCount === unreadCount;
+    && page.feedUnreadCount === unreadCount;
   return {
     ...page, unreadCount, countsComplete, knownStateComplete: countsComplete,
   };
 }
 
-module.exports = { CARD_COLUMNS, createFeedStorage, feedOptions, nextCursor, withCompleteness };
+function needsUnreadReconciliation(result) {
+  if (result.countsComplete) return false;
+  if (result.syncState !== 'complete') return true;
+  // A failed label-count request is unknown, not proof that a completed
+  // mailbox mirror is wrong. Do not add a full enumeration during an outage
+  // or rate limit; the next count request can establish whether repair is due.
+  return Number.isSafeInteger(result.unreadCount) && result.unreadCount >= 0;
+}
+
+module.exports = { CARD_COLUMNS, createFeedStorage, feedOptions, nextCursor, withCompleteness, needsUnreadReconciliation };

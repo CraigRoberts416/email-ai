@@ -24,7 +24,8 @@ Responses retain `cards` and provider `unreadCount`, and add:
 - `feedUnreadCount` and `syncedUnreadCount`: both equal the section-count sum.
 - `allSyncedUnreadCount`: all synced unread messages, including Spam/Trash.
 - `countsComplete`: true only after exhaustive unread reconciliation completed
-  and `allSyncedUnreadCount` equals the available Gmail UNREAD provider total.
+  and `feedUnreadCount` equals the available Gmail UNREAD provider total. Both
+  counters exclude Spam and Trash; raw `allSyncedUnreadCount` is diagnostic only.
 - `syncState`: `pending`, `syncing`, `complete`, or `error`.
 - `syncCompletedAt`: last successful reconciliation timestamp, or null.
 - `countsAsOf`: timestamp of this database count snapshot.
@@ -57,8 +58,9 @@ Completion requires `countsComplete`, zero eligible section totals, no pending
 read failures, and no unread pages/arrivals awaiting the client's review.
 An empty loaded page or `nextCursor: null` alone is not mailbox completion.
 The app-icon badge keeps its existing Gmail total across connected accounts;
-it may remain positive when excluded folders or excluded accounts hold unread
-mail. Unknown or incomplete totals must not be presented as exact mailbox totals.
+it includes archived unread mail and excludes Spam and Trash. It may remain
+positive when an account excluded from the feed holds unread mail. Unknown or
+incomplete totals must not be presented as exact mailbox totals.
 
 ## Reconciliation and verification
 
@@ -67,7 +69,9 @@ It fetches metadata only for missing or locally read IDs. It applies absent-ID
 read reconciliation only after every page succeeds. Per-row label timestamps
 prevent a slow import from undoing a more recent confirmed read. Interrupted
 syncs remain incomplete and retry; active jobs are coalesced per account, with a
-one-minute retry cooldown. The regular periodic sweep also refreshes unread
+one-minute retry cooldown measured from completion or failure. A temporarily
+unavailable provider count does not restart a completed import. The regular
+periodic sweep also refreshes unread
 membership independently of the history stream.
 
 Run `node --test tests/*.test.js` from `server`. Feed tests execute production

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { PGlite } = require('@electric-sql/pglite');
-const { createFeedStorage, feedOptions, withCompleteness } = require('../feedStorage');
+const { createFeedStorage, feedOptions, withCompleteness, needsUnreadReconciliation } = require('../feedStorage');
 
 let db;
 const query = (...args) => db.query(...args);
@@ -73,14 +73,35 @@ test('archived unread is included; Spam, Trash, read mail and other accounts are
   assert.deepEqual(page.records.map(row => row.message_id), ['archived']);
   assert.equal(page.feedUnreadCount, 1);
   assert.equal(page.allSyncedUnreadCount, 3);
-  assert.equal(withCompleteness(page, 3).countsComplete, true);
+  assert.equal(withCompleteness(page, 1).countsComplete, true);
+  assert.equal(withCompleteness(page, 3).countsComplete, false, 'Raw label membership is not the provider counter scope');
   assert.equal(withCompleteness(page, 2).countsComplete, false);
   assert.equal(withCompleteness(page, null).countsComplete, false);
   await db.query("UPDATE messages SET label_ids='{}' WHERE message_id='archived'");
-  const cleared = withCompleteness(await store.page('a', {}, anchor), 2);
+  const cleared = withCompleteness(await store.page('a', {}, anchor), 0);
   assert.equal(cleared.feedUnreadCount, 0);
-  assert.equal(cleared.unreadCount, 2, 'Excluded folders still contribute to the icon badge');
+  assert.equal(cleared.allSyncedUnreadCount, 2, 'Excluded label membership remains available for diagnostics');
+  assert.equal(cleared.unreadCount, 0, 'Spam and Trash are excluded from the provider counter and icon badge');
   assert.equal(cleared.countsComplete, true, 'Excluded folders do not block eligible feed zero');
+});
+
+test('excluded unread mail cannot cause repeated repair after an exhaustive matching import', () => {
+  const page = {
+    syncState: 'complete', syncCompletedAt: anchor,
+    sections: { today: 7, yesterday: 56, earlier: 22309 },
+    feedUnreadCount: 22372, allSyncedUnreadCount: 23146,
+  };
+  const matching = withCompleteness(page, 22372);
+  assert.equal(matching.countsComplete, true);
+  assert.equal(matching.knownStateComplete, true);
+  assert.equal(needsUnreadReconciliation(matching), false);
+  for (const incomplete of [{ ...page, syncState: 'syncing' }, { ...page, syncCompletedAt: null }]) {
+    assert.equal(withCompleteness(incomplete, 22372).countsComplete, false,
+      'Matching eligible totals still require a successfully finished enumeration');
+  }
+  const mismatch = withCompleteness(page, 22371);
+  assert.equal(mismatch.countsComplete, false);
+  assert.equal(needsUnreadReconciliation(mismatch), true);
 });
 
 test('empty pending/error reconciliation never claims completion, even when the provider reports zero', async () => {
@@ -89,6 +110,21 @@ test('empty pending/error reconciliation never claims completion, even when the 
   assert.equal(withCompleteness(await store.page('a', {}, anchor), 0).countsComplete, false);
   await db.query("UPDATE users SET unread_sync_state='complete' WHERE user_id='a'");
   assert.equal(withCompleteness(await store.page('a', {}, anchor), 0).countsComplete, true);
+});
+
+test('an unavailable provider count preserves unknown state without restarting a completed import', () => {
+  const synced = { syncState: 'complete', syncCompletedAt: anchor, feedUnreadCount: 23000, allSyncedUnreadCount: 23774 };
+  for (const unreadCount of [null, undefined, NaN, -1]) {
+    const result = withCompleteness(synced, unreadCount);
+    assert.equal(result.countsComplete, false);
+    assert.equal(needsUnreadReconciliation(result), false, 'Unknown count must not amplify a provider outage');
+  }
+  assert.equal(needsUnreadReconciliation(withCompleteness(synced, 23000)), false);
+  assert.equal(needsUnreadReconciliation(withCompleteness(synced, 22999)), true, 'A known mismatch still schedules repair');
+  for (const syncState of ['pending', 'syncing', 'error']) {
+    assert.equal(needsUnreadReconciliation(withCompleteness({ ...synced, syncState }, null)), true,
+      'An unfinished import still needs to run, even before its count is available');
+  }
 });
 
 test('invalid, cross-account and timezone-switched cursors are rejected before SQL', async () => {
