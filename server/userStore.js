@@ -1,4 +1,5 @@
 const { query } = require('./db');
+const { randomUUID } = require('node:crypto');
 
 async function upsertUser(userId, { email, accessToken, refreshToken, tokenExpiry, onboardingHistoryId, pushToken }) {
   await query(`
@@ -64,6 +65,33 @@ async function setUnreadSyncState(userId, state) {
   `, [userId, state]);
 }
 
+async function setAllMailSyncState(userId, state) {
+  await query(`UPDATE users SET all_mail_sync_state = $2,
+    all_mail_sync_cursor = CASE WHEN $2 IN ('pending', 'complete') THEN NULL ELSE all_mail_sync_cursor END,
+    all_mail_sync_generation = CASE WHEN $2 = 'pending' THEN NULL ELSE all_mail_sync_generation END,
+    all_mail_sync_completed_at = CASE WHEN $2 = 'complete' THEN NOW() ELSE all_mail_sync_completed_at END
+    WHERE user_id = $1`, [userId, state]);
+}
+
+async function beginAllMailSync(userId) {
+  const { rows } = await query(`UPDATE users SET
+    all_mail_sync_generation = CASE WHEN all_mail_sync_state IN ('syncing','failed') AND all_mail_sync_generation IS NOT NULL
+      THEN all_mail_sync_generation ELSE $2 END,
+    all_mail_sync_started_at = CASE WHEN all_mail_sync_state IN ('syncing','failed') AND all_mail_sync_generation IS NOT NULL
+      THEN all_mail_sync_started_at ELSE NOW() END,
+    all_mail_sync_cursor = CASE WHEN all_mail_sync_state IN ('syncing','failed') AND all_mail_sync_generation IS NOT NULL
+      THEN all_mail_sync_cursor ELSE NULL END,
+    all_mail_sync_state = 'syncing'
+    WHERE user_id = $1 RETURNING all_mail_sync_generation AS generation,
+      all_mail_sync_started_at AS "startedAt", all_mail_sync_cursor AS cursor`, [userId, randomUUID()]);
+  if (!rows[0]) throw new Error('Cannot sync an unknown account');
+  return rows[0];
+}
+
+async function setAllMailSyncCursor(userId, cursor) {
+  await query('UPDATE users SET all_mail_sync_cursor = $2 WHERE user_id = $1', [userId, cursor]);
+}
+
 async function getValidAccessToken(userId) {
   const user = await getUser(userId);
   if (!user) throw new Error(`User not found: ${userId}`);
@@ -109,4 +137,4 @@ async function getUsersByPushToken(pushToken) {
   return rows;
 }
 
-module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, getUsersByPushToken, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken, setUnreadSyncState };
+module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, getUsersByPushToken, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken, setUnreadSyncState, setAllMailSyncState, setAllMailSyncCursor, beginAllMailSync };

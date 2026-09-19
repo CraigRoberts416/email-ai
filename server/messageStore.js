@@ -1,5 +1,5 @@
 const { query } = require('./db');
-const { createFeedStorage } = require('./feedStorage');
+const { CARD_COLUMNS, createFeedStorage } = require('./feedStorage');
 
 function rowToRecord(row) {
   return {
@@ -85,6 +85,26 @@ async function getMessage(userId, messageId) {
 const feedStorage = createFeedStorage({ query, toRecord: rowToRecord });
 const getUnreadPage = feedStorage.page;
 const getUnreadCounts = feedStorage.counts;
+async function getMessagesByIds(userId, ids) {
+  if (!ids.length) return [];
+  const { rows } = await query(`SELECT ${CARD_COLUMNS.join(', ')} FROM messages
+    WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, ids]);
+  return rows.map(rowToRecord);
+}
+async function getHistoryPageRecords(userId, ids) {
+  if (!ids.length) return [];
+  const { rows } = await query(`SELECT ${CARD_COLUMNS.join(', ')},
+      (body_text IS NOT NULL AND attachments IS NOT NULL AND image_url IS NOT NULL) AS source_inspected,
+      CASE WHEN ai_status <> 'done' THEN LEFT(body_text, 8000) ELSE NULL END AS original_text
+    FROM messages WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, ids]);
+  return rows.map(row => ({ ...rowToRecord(row), sourceInspected: row.source_inspected, originalText: row.original_text }));
+}
+async function saveProfileSource(userId, messageId, { bodyText, attachments, imageUrl = null }) {
+  await query(`UPDATE messages SET body_text = COALESCE(body_text, $3),
+    attachments = $4::jsonb, image_url = COALESCE($5, image_url)
+    WHERE user_id = $1 AND message_id = $2`,
+  [userId, messageId, bodyText, JSON.stringify(attachments), imageUrl]);
+}
 async function getUnread(userId, options) { return (await getUnreadPage(userId, options)).records; }
 
 async function unreadMetadataNeeded(userId, ids) {
@@ -209,7 +229,20 @@ async function setImageUrl(userId, messageId, url) {
 /// during interpretation; the bytes are never stored.
 async function setAttachments(userId, messageId, attachments) {
   await query(
-    'UPDATE messages SET attachments = $3 WHERE user_id = $1 AND message_id = $2',
+    // Source inspection may have found more files than a bounded card preview.
+    // A later worker/People preview must not discard those immutable Gmail IDs.
+    // Merge in one statement so parallel inspections cannot lose each other's
+    // metadata; fresh metadata wins for an ID present in both arrays.
+    `UPDATE messages m SET attachments = (
+      SELECT COALESCE(jsonb_agg(value ORDER BY source, ordinality), '[]'::jsonb) FROM (
+        SELECT DISTINCT ON (value->>'id') value, source, ordinality FROM (
+          SELECT value, ordinality, 0 AS source FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY
+          UNION ALL
+          SELECT value, ordinality, 1 AS source
+            FROM jsonb_array_elements(COALESCE(m.attachments, '[]'::jsonb)) WITH ORDINALITY
+        ) entries ORDER BY value->>'id', source, ordinality
+      ) merged
+    ) WHERE user_id = $1 AND message_id = $2`,
     [userId, messageId, JSON.stringify(attachments ?? [])]
   );
 }
@@ -336,7 +369,8 @@ async function finishNotification(userId, messageId, delivered) {
 }
 
 module.exports = {
-  upsertMessages, getMessage, getUnread, getUnreadPage, getUnreadCounts, getAll, unreconciled,
+  upsertMessages, getMessage, getMessagesByIds, getHistoryPageRecords, saveProfileSource,
+  getUnread, getUnreadPage, getUnreadCounts, getAll, unreconciled,
   unreadMetadataNeeded, reconcileUnreadLabels,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, setImageUrl, setAttachments, getMessageIdsNeedingUnsubscribeBackfill,
@@ -344,3 +378,29 @@ module.exports = {
   setRiskVerdict,
   queueNotifications, getPendingNotifications, claimNotification, finishNotification,
 };
+
+// Only called for Gmail messageDeleted history events; this removes the local
+// mirror, never the provider message. The account scope is mandatory.
+async function removeMessages(userId, ids) {
+  if (ids.length) await query('DELETE FROM messages WHERE user_id = $1 AND message_id = ANY($2::text[])', [userId, ids]);
+}
+module.exports.removeMessages = removeMessages;
+
+
+async function markAllMailSeen(userId, ids, generation) {
+  if (ids.length) await query(`UPDATE messages SET all_mail_sync_generation = $3
+    WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, ids, generation]);
+}
+
+// Pruning runs only after every provider page has been imported successfully.
+// Gmail's default inventory omits Spam/Trash, so keep those rows for unread
+// accounting. Concurrent arrivals or label changes also survive this snapshot.
+async function reconcileAllMail(userId, generation, startedAt) {
+  await query(`DELETE FROM messages WHERE user_id = $1
+    AND all_mail_sync_generation IS DISTINCT FROM $2
+    AND first_synced_at < $3 AND labels_updated_at < $3
+    AND NOT (COALESCE(label_ids, '{}') && ARRAY['SPAM', 'TRASH']::text[])`,
+  [userId, generation, startedAt]);
+}
+module.exports.markAllMailSeen = markAllMailSeen;
+module.exports.reconcileAllMail = reconcileAllMail;

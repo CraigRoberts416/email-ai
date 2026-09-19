@@ -142,9 +142,27 @@ async function syncMailboxHead(userId, { maxResults = 100 } = {}) {
  * Full paginated sync — fetches all messages, stores with post_cutoff=false.
  * Non-blocking caller: fires and forgets after returning on first page.
  */
-async function initialSync(userId) {
+const initialSyncs = new Map();
+function initialSync(userId) {
+  if (initialSyncs.has(userId)) return initialSyncs.get(userId);
+  const job = runInitialSync(userId).finally(() => initialSyncs.delete(userId));
+  initialSyncs.set(userId, job);
+  return job;
+}
+async function runInitialSync(userId) {
+  const snapshot = await userStore.beginAllMailSync(userId);
+  try {
+    await importAllMail(userId, snapshot);
+    await messageStore.reconcileAllMail(userId, snapshot.generation, snapshot.startedAt);
+    await userStore.setAllMailSyncState(userId, 'complete');
+  } catch (error) {
+    await userStore.setAllMailSyncState(userId, 'failed');
+    throw error;
+  }
+}
+async function importAllMail(userId, snapshot) {
   console.log(`[sync] initial sync started for user ${userId.slice(0, 8)}…`);
-  let pageToken   = null;
+  let pageToken   = snapshot.cursor ?? null;
   let pageCount   = 0;
   let total       = 0;
 
@@ -155,18 +173,25 @@ async function initialSync(userId) {
       listPage = await listMessagesPage(accessToken, { pageToken, maxResults: 500 });
     } catch (err) {
       console.error(`[sync] list failed (page ${pageCount}): ${err.message}`);
+      if (err.message === 'listMessagesPage failed: 400') await userStore.setAllMailSyncState(userId, 'pending');
       throw err;
     }
     const messageIds = listPage.messageIds;
-    if (!messageIds.length) break;
+    if (!messageIds.length) {
+      pageToken = listPage.nextPageToken;
+      await userStore.setAllMailSyncCursor(userId, pageToken);
+      continue;
+    }
 
     const msgs    = await fetchMetadataBatch(messageIds, accessToken);
     const records = msgs.map(m => metadataToRecord(m, false));
     await messageStore.upsertMessages(userId, records);
+    await messageStore.markAllMailSeen(userId, records.map(record => record.messageId), snapshot.generation);
 
     total += records.length;
     pageCount++;
     pageToken = listPage.nextPageToken;
+    await userStore.setAllMailSyncCursor(userId, pageToken);
     console.log(`[sync] page ${pageCount}: ${records.length} messages (running total: ${total})`);
   } while (pageToken);
 
@@ -195,66 +220,50 @@ async function incrementalSync(userId) {
   }
 
   const accessToken = await userStore.getValidAccessToken(userId);
-  const url = `https://gmail.googleapis.com/gmail/v1/users/me/history?startHistoryId=${user.history_id}&historyTypes=messageAdded&historyTypes=labelAdded&historyTypes=labelRemoved`;
-
-  const res = await authedFetch(url, accessToken);
-  if (!res.ok) {
-    if (res.status === 404) {
-      await userStore.setUnreadSyncState(userId, 'pending');
-      console.warn(`[sync] historyId expired for ${userId.slice(0, 8)}…, refreshing mailbox head and resetting historyId`);
-      try {
+  let pageToken = null;
+  let finalHistoryId = null;
+  const newMessageIds = new Set();
+  const deletedMessageIds = new Set();
+  const labelChanges = new Map();
+  do {
+    const params = new URLSearchParams({ startHistoryId: user.history_id });
+    for (const kind of ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved']) params.append('historyTypes', kind);
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await authedFetch(`https://gmail.googleapis.com/gmail/v1/users/me/history?${params}`, accessToken);
+    if (!res.ok) {
+      if (res.status === 404) {
+        await userStore.setUnreadSyncState(userId, 'pending');
+        await userStore.setAllMailSyncState(userId, 'pending');
         const profile = await fetchMailboxProfile(accessToken);
-        if (profile.historyId) {
-          await userStore.updateHistoryId(userId, profile.historyId);
+        if (profile.historyId) await userStore.updateHistoryId(userId, profile.historyId);
+        const headRecords = await syncMailboxHead(userId, { maxResults: 100 });
+        initialSync(userId).catch(err => console.error('[sync] re-sync error:', err.message));
+        return { newUnreadIds: headRecords.filter(record => record.labelIds.includes('UNREAD')).map(record => record.messageId) };
+      }
+      throw new Error(`history list failed: ${res.status}`);
+    }
+    const data = await res.json();
+    for (const event of data.history ?? []) {
+      for (const { message } of event.messagesAdded ?? []) newMessageIds.add(message.id);
+      for (const { message } of event.messagesDeleted ?? []) deletedMessageIds.add(message.id);
+      for (const [field, adding] of [['labelsAdded', true], ['labelsRemoved', false]]) {
+        for (const { message, labelIds } of event[field] ?? []) {
+          const changes = labelChanges.get(message.id) ?? new Map();
+          for (const label of labelIds ?? []) changes.set(label, adding);
+          labelChanges.set(message.id, changes);
         }
-      } catch (profileErr) {
-        console.error('[sync] profile refresh failed:', profileErr.message);
       }
-
-      let headRecords = [];
-      try {
-        headRecords = await syncMailboxHead(userId, { maxResults: 100 });
-      } catch (headErr) {
-        console.error('[sync] mailbox head refresh failed:', headErr.message);
-      }
-      initialSync(userId).catch(err => console.error('[sync] re-sync error:', err.message));
-
-      return {
-        newUnreadIds: headRecords
-          .filter(record => record.labelIds.includes('UNREAD'))
-          .map(record => record.messageId),
-      };
-    } else {
-      console.error(`[sync] history list failed: ${res.status}`);
     }
-    return { newUnreadIds: [] };
-  }
-
-  const data    = await res.json();
-  const history = data.history ?? [];
-
-  const newMessageIds   = [];
-  const labelChanges    = new Map(); // messageId → { added: [], removed: [] }
-
-  for (const event of history) {
-    for (const { message } of event.messagesAdded ?? []) {
-      newMessageIds.push(message.id);
-    }
-    for (const { message, labelIds } of event.labelsAdded ?? []) {
-      const e = labelChanges.get(message.id) ?? { added: [], removed: [] };
-      e.added.push(...(labelIds ?? []));
-      labelChanges.set(message.id, e);
-    }
-    for (const { message, labelIds } of event.labelsRemoved ?? []) {
-      const e = labelChanges.get(message.id) ?? { added: [], removed: [] };
-      e.removed.push(...(labelIds ?? []));
-      labelChanges.set(message.id, e);
-    }
-  }
+    finalHistoryId = data.historyId ?? finalHistoryId;
+    pageToken = data.nextPageToken ?? null;
+  } while (pageToken);
+  // All pages must succeed before any checkpoint advances. Replaying writes
+  // after a partial failure is safe; skipping the next history page is not.
+  for (const id of deletedMessageIds) { newMessageIds.delete(id); labelChanges.delete(id); }
 
   const newUnreadIds = [];
-  if (newMessageIds.length > 0) {
-    const msgs    = await fetchMetadataBatch(newMessageIds, accessToken);
+  if (newMessageIds.size > 0) {
+    const msgs    = await fetchMetadataBatch([...newMessageIds], accessToken);
     const records = msgs.map(m => metadataToRecord(m, true)); // post-cutoff = true
     await messageStore.upsertMessages(userId, records);
     for (const r of records) {
@@ -264,18 +273,16 @@ async function incrementalSync(userId) {
   }
 
   // Apply label changes to existing records
-  for (const [messageId, { added, removed }] of labelChanges) {
+  for (const [messageId, changes] of labelChanges) {
     const existing = await messageStore.getMessage(userId, messageId);
     if (!existing) continue;
     const labelSet = new Set(existing.labelIds);
-    added.forEach(l => labelSet.add(l));
-    removed.forEach(l => labelSet.delete(l));
+    for (const [label, adding] of changes) { if (adding) labelSet.add(label); else labelSet.delete(label); }
     await messageStore.updateLabelIds(userId, messageId, Array.from(labelSet));
   }
 
-  if (data.historyId) {
-    await userStore.updateHistoryId(userId, data.historyId);
-  }
+  if (deletedMessageIds.size) await messageStore.removeMessages(userId, [...deletedMessageIds]);
+  if (finalHistoryId) await userStore.updateHistoryId(userId, finalHistoryId);
 
   return { newUnreadIds };
 }
@@ -345,4 +352,20 @@ async function fetchFullMessage(userId, messageId) {
   return res.json();
 }
 
-module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage, getUnreadCount, ensureUnreadSync };
+async function listSenderMessagesPage(userId, { q, pageToken = null }) {
+  const token = await userStore.getValidAccessToken(userId);
+  const params = new URLSearchParams({ q, maxResults: '500', includeSpamTrash: 'false' });
+  if (pageToken) params.set('pageToken', pageToken);
+  const response = await authedFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`, token);
+  if (!response.ok) throw new Error(`sender history list failed: ${response.status}`);
+  const data = await response.json();
+  return { messageIds: (data.messages ?? []).map(message => message.id), nextPageToken: data.nextPageToken ?? null };
+}
+
+async function fetchSenderRecords(userId, ids) {
+  const token = await userStore.getValidAccessToken(userId);
+  return (await fetchMetadataBatch(ids, token)).map(message => metadataToRecord(message, false));
+}
+
+module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage, getUnreadCount, ensureUnreadSync,
+  listSenderMessagesPage, fetchSenderRecords };

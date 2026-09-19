@@ -36,7 +36,7 @@ function pageCount() {
  * the layout from a picture the sender meant to send you. Gmail does not
  * always set it, so size is the backstop.
  */
-function extractAttachments(payload) {
+function extractAttachments(payload, { limit = 8, minimumBytes = MIN_BYTES, allowGIF = false } = {}) {
   const found = [];
 
   function walk(part) {
@@ -53,7 +53,7 @@ function extractAttachments(payload) {
       const isInline = /^\s*inline/i.test(disposition);
       const mimeType = part.mimeType ?? 'application/octet-stream';
 
-      if (!isInline && size >= MIN_BYTES && !INLINE_TYPES.has(mimeType)) {
+      if (!isInline && size >= minimumBytes && (allowGIF || !INLINE_TYPES.has(mimeType))) {
         found.push({
           id: attachmentId,
           filename,
@@ -73,7 +73,7 @@ function extractAttachments(payload) {
 
   // Eight is already more than a card can show without becoming a file
   // browser, and the thread lists the rest.
-  return found.slice(0, 8);
+  return found.slice(0, limit);
 }
 
 module.exports = { extractAttachments };

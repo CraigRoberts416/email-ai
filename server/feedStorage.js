@@ -1,4 +1,10 @@
 const PAGE_SIZE = 200;
+const CARD_COLUMNS = [
+  'message_id', 'thread_id', 'label_ids', 'subject', 'from_name', 'from_email', 'snippet',
+  'internal_date', 'history_id', 'synced_at', 'ai_status', 'post_cutoff', 'quote', 'summary',
+  'action', 'action_url', 'requires_attention', 'unsubscribe_url', 'risk_level', 'risk_evidence',
+  'image_url', 'participants', 'attachments',
+];
 
 function badRequest(message) {
   return Object.assign(new Error(message), { statusCode: 400 });
@@ -65,11 +71,7 @@ function createFeedStorage({ query, toRecord }) {
           AND ($6::bigint IS NULL OR (internal_date, message_id COLLATE "C") < ($6::bigint, $7::text COLLATE "C"))
         ORDER BY internal_date DESC, message_id COLLATE "C" DESC LIMIT $8
       ), page AS (
-        SELECT m.message_id, m.thread_id, m.label_ids, m.subject, m.from_name,
-          m.from_email, m.snippet, m.internal_date, m.history_id, m.synced_at,
-          m.ai_status, m.post_cutoff, m.quote, m.summary, m.action, m.action_url,
-          m.requires_attention, m.unsubscribe_url, m.risk_level, m.risk_evidence,
-          m.image_url, m.participants, m.attachments
+        SELECT ${CARD_COLUMNS.map(column => `m.${column}`).join(', ')}
         FROM page_ids p JOIN messages m ON m.user_id = $1 AND m.message_id = p.message_id
       )` : '';
     const pageColumn = includeCards
@@ -131,4 +133,4 @@ function withCompleteness(page, unreadCount) {
   };
 }
 
-module.exports = { createFeedStorage, feedOptions, nextCursor, withCompleteness };
+module.exports = { CARD_COLUMNS, createFeedStorage, feedOptions, nextCursor, withCompleteness };

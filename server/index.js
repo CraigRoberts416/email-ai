@@ -34,6 +34,8 @@ const { createAPNsTransport } = require('./apns');
 const { createMailNotifications } = require('./mailNotifications');
 const { withCompleteness } = require('./feedStorage');
 const { createMarkReadHandler } = require('./messageRead');
+const { createSenderHistory, registerSenderHistoryRoute } = require('./senderHistory');
+const { createProfileSource } = require('./profileSource');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -830,6 +832,91 @@ app.get('/feed/counts', async (req, res) => {
   }
 });
 
+async function cardsForMessages(req, userId, messages, { generateHeroes = true } = {}) {
+  // Collect unique sender domains and load cached hero metadata in one query.
+  // Missing ones trigger fire-and-forget generation so the next /feed response
+  // (or a pull-to-refresh) will return the image once ready.
+  const domainToSender = new Map();
+  for (const m of messages) {
+    const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+    if (!domain) continue;
+    if (!domainToSender.has(domain)) domainToSender.set(domain, m.fromName || domain);
+  }
+
+  let heroByDomain = new Map();
+  try {
+    heroByDomain = await heroImage.getCachedAssets(domainToSender.keys());
+    for (const [domain, senderName] of domainToSender) {
+      if (generateHeroes && !heroByDomain.has(domain)) heroImage.ensureHeroAsset(openai, domain, senderName);
+    }
+  } catch (err) {
+    // Art must not hold up existing mail. A failed cache read does not mean
+    // assets are missing, so it must not launch new paid generation either.
+    console.warn(`[hero] batch lookup skipped: ${err.message}`);
+  }
+
+  const cards = messages.map(m => {
+    const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
+    const cached = heroByDomain.get(domain) ?? null;
+    return {
+      ...m,
+      // Decoded on the way out as well as on the way in. The quotes already
+      // stored were written before the entity table was worth the name, and
+      // re-interpreting two hundred messages to fix punctuation would be a
+      // paid model call per card for a string replacement.
+      quote:              m.quote ? decodeEntities(m.quote) : m.quote,
+      summary:            m.summary ? decodeEntities(m.summary) : m.summary,
+      subject:            m.subject ? decodeEntities(m.subject) : m.subject,
+      avatarUri:          resolveAvatarUri({ sender: { domain } }),
+      avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
+      unsubscribeUrl:     m.unsubscribeUrl ?? null,
+      // The card prints the verdict; the explainer screen prints the
+      // evidence. Both travel together so tapping through never has to
+      // wait on a second request to answer "why".
+      riskLevel:          m.riskLevel ?? 'none',
+      riskEvidence:       m.riskEvidence ?? [],
+      heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
+      heroImageBgColor:   cached?.bgColor ?? null,
+      senderDescription:  cached?.description ?? null,
+      // The message's own picture, proxied. Present only when the email
+      // actually carried one worth showing — the card falls back to the
+      // sender's hero rather than inventing something.
+      imageUrl:           m.imageUrl ? emailImage.buildImageUrl(req.get('host'), userId, m.messageId) : null,
+      // Metadata only. An image attachment gets a signed thumbnail URL; a
+      // document gets none, because there is nothing to show and the tile
+      // states its type instead of drawing a fake page.
+      attachments:        (m.attachments ?? []).map(a => {
+        const base = `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
+          + `/attachments/${encodeURIComponent(a.id)}`;
+        const t = `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`;
+        return {
+          ...a,
+          // A thumbnail only for pictures; the file itself for everything,
+          // because every attachment should open.
+          previewUrl: a.isImage ? base + t : null,
+          fileUrl: base + '/file' + t,
+        };
+      }),
+    };
+  });
+  return cards;
+}
+
+const profileSource = createProfileSource({
+  fetchFullMessage: gmailSync.fetchFullMessage, saveSource: messageStore.saveProfileSource, image: emailImage,
+});
+const senderHistory = createSenderHistory({
+  listPage: gmailSync.listSenderMessagesPage,
+  getRecords: messageStore.getMessagesByIds,
+  getPageRecords: messageStore.getHistoryPageRecords,
+  fetchRecords: gmailSync.fetchSenderRecords,
+  saveRecords: messageStore.upsertMessages,
+  hydratePage: profileSource.enqueue,
+});
+registerSenderHistoryRoute(app, {
+  resolveUserId, history: senderHistory, cardsForMessages, sanitize: stripLoneSurrogates,
+});
+
 // Every unread email is reachable through chronological, stable pages.
 app.get('/feed', async (req, res) => {
   const userId = await resolveUserId(req);
@@ -842,73 +929,7 @@ app.get('/feed', async (req, res) => {
       knownMessageIds: req.query.knownMessageIds,
     });
 
-    // Collect unique sender domains and load cached hero metadata in one query.
-    // Missing ones trigger fire-and-forget generation so the next /feed response
-    // (or a pull-to-refresh) will return the image once ready.
-    const domainToSender = new Map();
-    for (const m of messages) {
-      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
-      if (!domain) continue;
-      if (!domainToSender.has(domain)) domainToSender.set(domain, m.fromName || domain);
-    }
-
-    let heroByDomain = new Map();
-    try {
-      heroByDomain = await heroImage.getCachedAssets(domainToSender.keys());
-      for (const [domain, senderName] of domainToSender) {
-        if (!heroByDomain.has(domain)) heroImage.ensureHeroAsset(openai, domain, senderName);
-      }
-    } catch (err) {
-      // Art must not hold up existing mail. A failed cache read does not mean
-      // assets are missing, so it must not launch new paid generation either.
-      console.warn(`[hero] batch lookup skipped: ${err.message}`);
-    }
-
-    const cards = messages.map(m => {
-      const domain = (m.fromEmail.split('@')[1] ?? '').toLowerCase();
-      const cached = heroByDomain.get(domain) ?? null;
-      return {
-        ...m,
-        // Decoded on the way out as well as on the way in. The quotes already
-        // stored were written before the entity table was worth the name, and
-        // re-interpreting two hundred messages to fix punctuation would be a
-        // paid model call per card for a string replacement.
-        quote:              m.quote ? decodeEntities(m.quote) : m.quote,
-        summary:            m.summary ? decodeEntities(m.summary) : m.summary,
-        subject:            m.subject ? decodeEntities(m.subject) : m.subject,
-        avatarUri:          resolveAvatarUri({ sender: { domain } }),
-        avatarFallbackText: (m.fromName || m.fromEmail || '?').charAt(0).toUpperCase(),
-        unsubscribeUrl:     m.unsubscribeUrl ?? null,
-        // The card prints the verdict; the explainer screen prints the
-        // evidence. Both travel together so tapping through never has to
-        // wait on a second request to answer "why".
-        riskLevel:          m.riskLevel ?? 'none',
-        riskEvidence:       m.riskEvidence ?? [],
-        heroImageUrl:       cached ? heroImage.buildHeroImageUrl(req, domain) : null,
-        heroImageBgColor:   cached?.bgColor ?? null,
-        senderDescription:  cached?.description ?? null,
-        // The message's own picture, proxied. Present only when the email
-        // actually carried one worth showing — the card falls back to the
-        // sender's hero rather than inventing something.
-        imageUrl:           m.imageUrl ? emailImage.buildImageUrl(req.get('host'), userId, m.messageId) : null,
-        // Metadata only. An image attachment gets a signed thumbnail URL; a
-        // document gets none, because there is nothing to show and the tile
-        // states its type instead of drawing a fake page.
-        attachments:        (m.attachments ?? []).map(a => {
-          const base = `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
-            + `/attachments/${encodeURIComponent(a.id)}`;
-          const t = `?t=${emailImage.signImage(userId, m.messageId + ':' + a.id)}`;
-          return {
-            ...a,
-            // A thumbnail only for pictures; the file itself for everything,
-            // because every attachment should open.
-            previewUrl: a.isImage ? base + t : null,
-            fileUrl: base + '/file' + t,
-          };
-        }),
-      };
-    });
-
+    const cards = await cardsForMessages(req, userId, messages);
     res.json(stripLoneSurrogates({ cards, ...metadata }));
   } catch (err) {
     console.error('[feed] error:', err.message);
@@ -1181,11 +1202,17 @@ app.get('/conversations', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
   try {
     const user = await userStore.getUser(userId);
-    const list = await conversations.listConversations(userId, user?.email, { resolveAvatar: resolveAvatarUri });
-    res.json(stripLoneSurrogates({ conversations: list }));
+    if (user?.all_mail_sync_state !== 'complete') {
+      gmailSync.initialSync(userId).catch(err => console.error('[conversations] archive sync failed:', err.message));
+    }
+    const page = await conversations.listConversationsPage(userId, user?.email, {
+      resolveAvatar: resolveAvatarUri, cursor: req.query.cursor, limit: req.query.limit,
+    });
+    res.json(stripLoneSurrogates({ ...page, historyComplete: user?.all_mail_sync_state === 'complete',
+      historySyncState: user?.all_mail_sync_state ?? 'pending' }));
   } catch (err) {
     console.error('[conversations] error:', err.message);
-    res.status(500).json({ error: 'failed to load conversations' });
+    res.status(err.status === 400 ? 400 : 500).json({ error: 'failed to load conversations' });
   }
 });
 
@@ -1194,11 +1221,16 @@ app.get('/conversations/:id/messages', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
   try {
     const user = await userStore.getUser(userId);
-    const messages = await conversations.conversationMessages(userId, user?.email, req.params.id, { resolveAvatar: resolveAvatarUri });
+    if (user?.all_mail_sync_state !== 'complete') {
+      gmailSync.initialSync(userId).catch(err => console.error('[conversations] archive sync failed:', err.message));
+    }
+    const page = await conversations.conversationMessagesPage(userId, user?.email, req.params.id, {
+      resolveAvatar: resolveAvatarUri, cursor: req.query.cursor, limit: req.query.limit,
+    });
     // The same signed thumbnail the feed hands out. A file is the same file
     // whichever surface it appears on, and without this an image attachment
     // in a thread was a grey tile with a filename on it.
-    const withPreviews = messages.map(m => ({
+    const withPreviews = page.messages.map(m => ({
       ...m,
       attachments: (m.attachments ?? []).map(a => {
         const base = `https://${req.get('host')}/messages/${encodeURIComponent(m.messageId)}`
@@ -1207,10 +1239,11 @@ app.get('/conversations/:id/messages', async (req, res) => {
         return { ...a, previewUrl: a.isImage ? base + t : null, fileUrl: base + '/file' + t };
       }),
     }));
-    res.json(stripLoneSurrogates({ messages: withPreviews }));
+    res.json(stripLoneSurrogates({ ...page, messages: withPreviews,
+      historyComplete: user?.all_mail_sync_state === 'complete', historySyncState: user?.all_mail_sync_state ?? 'pending' }));
   } catch (err) {
     console.error('[conversation-messages] error:', err.message);
-    res.status(500).json({ error: 'failed to load conversation' });
+    res.status(err.status === 400 ? 400 : 500).json({ error: 'failed to load conversation' });
   }
 });
 

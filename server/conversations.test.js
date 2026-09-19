@@ -14,12 +14,12 @@ isolated.require = name => {
   if (name === './db') return { query: () => { throw Error('Live database forbidden in this test'); } };
   if (name === './gmailSync') return { fetchFullMessage: () => { throw Error('People list must never hydrate Gmail'); } };
   if (name === './messageStore') return {};
-  if (name === './replyText') return {};
+  if (name === './replyText') return { unwrap: text => text };
   if (name === './emailAttachments') return {};
   throw Error(`Unexpected dependency ${name}`);
 };
 isolated._compile(fs.readFileSync(filename, 'utf8'), filename);
-const { listConversations } = isolated.exports;
+const { listConversations, listConversationsPage, conversationMessagesPage } = isolated.exports;
 
 let db;
 let reads;
@@ -36,7 +36,7 @@ before(async () => {
     subject TEXT, from_name TEXT, from_email TEXT, snippet TEXT,
     internal_date BIGINT, participants JSONB, unsubscribe_url TEXT,
     label_ids TEXT[], quote TEXT, summary TEXT, body_text TEXT,
-    post_cutoff BOOLEAN DEFAULT FALSE, PRIMARY KEY(user_id, message_id)
+    attachments JSONB, post_cutoff BOOLEAN DEFAULT FALSE, PRIMARY KEY(user_id, message_id)
   ); CREATE INDEX user_date ON messages(user_id, internal_date DESC);`);
 });
 after(async () => db?.close());
@@ -131,4 +131,68 @@ test('historical body volume no longer scales with the full candidate set', asyn
     `Expected at least 20x lower DB transfer: ${actualTransfer} vs ${original.rows[0].bytes}`);
   assert.ok(Buffer.byteLength(JSON.stringify(list)) < 12_000);
   console.info(`[test conversations] originalBodyBytes=${original.rows[0].bytes} optimizedTransferBytes=${actualTransfer}`);
+});
+
+
+test('People pagination reaches beyond 200 conversations and 20,000 metadata rows with exact totals', async () => {
+  await db.query(`INSERT INTO messages(user_id,message_id,thread_id,subject,from_name,from_email,
+    internal_date,participants,label_ids,body_text)
+    SELECT 'a','message-'||LPAD(n::text,6,'0'),'thread-'||n,'Subject','Person Reader',
+      'person'||(n % 230)||'@gmail.com', n,
+      '[{"name":"Owner Reader","email":"owner@gmail.com"}]'::jsonb, ARRAY['UNREAD'], 'Body'
+    FROM generate_series(1,20125) n`);
+  const seen = new Map();
+  let cursor;
+  do {
+    const page = await listConversationsPage('a', 'owner@gmail.com', { cursor, limit: 50, query: readQuery });
+    assert.equal(page.totalConversations, 230);
+    assert.equal(page.unreadConversations, 230);
+    for (const c of page.conversations) { assert.equal(seen.has(c.id), false); seen.set(c.id, c); }
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.equal(seen.size, 230);
+  assert.equal([...seen.values()].reduce((n, c) => n + c.messageCount, 0), 20125);
+  assert.ok(reads.filter(r => !r.sql.includes('LEFT(body_text')).every(r => r.rows.length <= 2000));
+});
+
+test('stable equal-date pages scope cursors to account and conversation and exclude draft/spam/trash', async () => {
+  await add('a', 100, { labels: ['UNREAD'] });
+  await add('b', 100, { email: 'bob@gmail.com', name: 'Bob Baker' });
+  await add('draft', 200, { labels: ['DRAFT'] });
+  await add('spam', 300, { labels: ['SPAM', 'UNREAD'] });
+  await add('trash', 400, { labels: ['TRASH', 'UNREAD'] });
+  const first = await listConversationsPage('a', 'owner@gmail.com', { limit: 1, query: readQuery, batchSize: 1 });
+  const second = await listConversationsPage('a', 'owner@gmail.com', { limit: 1, cursor: first.nextCursor, query: readQuery, batchSize: 1 });
+  assert.deepEqual([first.conversations[0].id, second.conversations[0].id], ['bob@gmail.com', 'alice@gmail.com']);
+  assert.equal(first.totalConversations, 2);
+  assert.equal(second.nextCursor, null);
+  await assert.rejects(() => listConversationsPage('b', 'owner@gmail.com', { cursor: first.nextCursor, query: readQuery }), /Invalid/);
+  await assert.rejects(() => conversationMessagesPage('a', 'owner@gmail.com', 'alice@gmail.com', { cursor: first.nextCursor, query: readQuery }), /Invalid/);
+});
+
+test('thread pages cover all history, preserve real same-millisecond message IDs, and load bodies only for the page', async () => {
+  await db.query(`INSERT INTO messages(user_id,message_id,thread_id,subject,from_name,from_email,
+    internal_date,participants,label_ids,body_text,attachments)
+    SELECT 'a','message-'||LPAD(n::text,6,'0'),'one-thread','Subject','Alice Adams',
+      'alice@gmail.com', n / 2,
+      '[{"name":"Owner Reader","email":"owner@gmail.com"}]'::jsonb, ARRAY['UNREAD'], REPEAT('Body ',1000), '[]'::jsonb
+    FROM generate_series(1,1105) n`);
+  await add('old-sent', 0, { email: 'owner@gmail.com', name: 'Owner Reader', participants: null, labels: ['SENT'] });
+  await db.query("UPDATE messages SET thread_id='one-thread',attachments='[]'::jsonb WHERE message_id='old-sent'");
+  await add('other-group', 900, { participants: [{ name: 'Bob Baker', email: 'bob@gmail.com' }] });
+  const seen = new Set(); const hydrated = []; let cursor;
+  do {
+    const page = await conversationMessagesPage('a', 'owner@gmail.com', 'alice@gmail.com', {
+      limit: 200, cursor, query: readQuery, batchSize: 300, hydrate: async (u, rows) => hydrated.push(rows.length),
+    });
+    assert.equal(page.totalMessages, 1106);
+    assert.ok(page.messages.every((m, i, a) => i === 0 || a[i-1].internalDate <= m.internalDate));
+    for (const m of page.messages) { assert.equal(seen.has(m.messageId), false); seen.add(m.messageId); }
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.equal(seen.size, 1106);
+  assert.ok(seen.has('old-sent'));
+  assert.equal(seen.has('other-group'), false);
+  assert.ok(hydrated.every(count => count <= 200));
+  assert.ok(reads.filter(r => r.sql.includes('attachments, body_text')).every(r => r.rows.length <= 200));
 });

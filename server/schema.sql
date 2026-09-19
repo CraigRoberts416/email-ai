@@ -11,6 +11,11 @@ CREATE TABLE IF NOT EXISTS users (
   notifications_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   unread_sync_state     TEXT NOT NULL DEFAULT 'pending',
   unread_sync_completed_at TIMESTAMPTZ,
+  all_mail_sync_state TEXT NOT NULL DEFAULT 'pending',
+  all_mail_sync_completed_at TIMESTAMPTZ,
+  all_mail_sync_cursor TEXT,
+  all_mail_sync_generation TEXT,
+  all_mail_sync_started_at TIMESTAMPTZ,
   created_at            TIMESTAMPTZ DEFAULT NOW(),
   updated_at            TIMESTAMPTZ DEFAULT NOW()
 );
@@ -28,6 +33,7 @@ CREATE TABLE IF NOT EXISTS messages (
   history_id          TEXT,
   synced_at           TIMESTAMPTZ DEFAULT NOW(),
   first_synced_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  all_mail_sync_generation TEXT,
   labels_updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   ai_status           TEXT NOT NULL DEFAULT 'none',
   post_cutoff         BOOLEAN NOT NULL DEFAULT FALSE,

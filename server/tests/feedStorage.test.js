@@ -206,3 +206,35 @@ test('23k unread mailbox keeps cached bodies out of page/count database payloads
   assert.ok(nodes(plan).some(node => node['Index Name'] === 'idx_messages_unread_cursor'),
     'Page selection can stop on the chronological unread index');
 });
+
+test('profile source inspection is account-scoped, distinguishes unknown from empty, and never fills AI fields', async () => {
+  const dbPath = require.resolve('../db'), previous = require.cache[dbPath];
+  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { query } };
+  delete require.cache[require.resolve('../messageStore')];
+  const messages = require('../messageStore');
+  if (previous) require.cache[dbPath] = previous; else delete require.cache[dbPath];
+  await add('source', '2020-01-01T00:00:00Z', [], 'a');
+  await add('source', '2020-01-01T00:00:00Z', [], 'b');
+  const initial = (await messages.getHistoryPageRecords('a', ['source']))[0];
+  assert.equal(initial.sourceInspected, false);
+  assert.equal(initial.originalText, null);
+  await messages.saveProfileSource('a', 'source', { bodyText: 'Original text '.repeat(1000), attachments: [] });
+  const partial = (await messages.getHistoryPageRecords('a', ['source']))[0];
+  assert.equal(partial.sourceInspected, false, 'Unknown image state remains unknown');
+  assert.equal(partial.originalText.length, 8000, 'Original text transfer is bounded per visible card');
+  await messages.saveProfileSource('a', 'source', { bodyText: 'Original text', attachments: [], imageUrl: '' });
+  const inspected = (await messages.getHistoryPageRecords('a', ['source']))[0];
+  assert.equal(inspected.sourceInspected, true);
+  assert.deepEqual(inspected.attachments, []);
+  assert.equal(inspected.quote, null);
+  assert.equal(inspected.summary, null);
+  assert.equal((await messages.getHistoryPageRecords('b', ['source']))[0].sourceInspected, false);
+  const metadata = (await messages.getMessagesByIds('a', ['source']))[0];
+  assert.equal(metadata.originalText, undefined, 'Counting candidates does not transfer body excerpts');
+  await messages.saveProfileSource('a', 'source', { bodyText: 'Original text', imageUrl: '',
+    attachments: [{ id: 'one', filename: 'one.pdf' }, { id: 'two', filename: 'two.pdf' }] });
+  await messages.setAttachments('a', 'source', [{ id: 'one', filename: 'updated.pdf' }]);
+  const merged = (await messages.getHistoryPageRecords('a', ['source']))[0].attachments;
+  assert.deepEqual(merged, [{ id: 'one', filename: 'updated.pdf' }, { id: 'two', filename: 'two.pdf' }],
+    'A later bounded worker preview preserves files discovered during complete profile inspection');
+});

@@ -164,362 +164,192 @@ function avatarFor(email, resolve) {
   return resolve({ sender: { domain } });
 }
 
-async function listConversations(userId, ownEmail, { limit = 200, resolveAvatar, query: readQuery = query } = {}) {
-  const startedAt = performance.now();
-  // The whole archive, not just what arrived after onboarding.
-  //
-  // This carried `post_cutoff = TRUE`, inherited from the feed, where it is
-  // correct: a feed is what has happened since you got here. People is not a
-  // feed. It answers "who do you talk to", which is a question about history,
-  // and the history is the part that actually knows the answer.
-  //
-  // The cost was not marginal. On a real mailbox of 127,000 messages, 125,950
-  // of them are pre-cutoff — so this filter was building an address book from
-  // 0.8% of the evidence. Measured against Gmail's own Primary classification:
-  // 8,821 qualifying messages from 794 senders in the archive, of which the
-  // filter admitted 111 messages from 27 senders. Somebody with twenty years
-  // of correspondence was being shown the handful of people who happened to
-  // write in the days since they installed the app.
-  //
-  // Primary is applied in SQL rather than in the loop below so the row budget
-  // is spent on candidates instead of on newsletters — it takes 127,000 rows
-  // down to about 9,000, which is the whole qualifying set rather than a
-  // recent slice of it. The JS `isPrimary` check stays as the guard it always
-  // was; this is the same rule, pushed down.
-  // The candidate scan must stay metadata-only. Pulling the complete body of
-  // every historical candidate transferred megabytes before returning even
-  // one People row. The list needs one short preview per returned conversation.
-  const { rows } = await readQuery(`
-    SELECT message_id, thread_id, subject, from_name, from_email,
-           internal_date, participants, unsubscribe_url, label_ids
-    FROM messages
-    WHERE user_id = $1
-      AND NOT EXISTS (
-            SELECT 1 FROM unnest(label_ids) l
-            WHERE l LIKE 'CATEGORY_%' AND l <> 'CATEGORY_PERSONAL'
-          )
-    ORDER BY internal_date DESC
-    LIMIT 20000
-  `, [userId]);
-  const metadataFinishedAt = performance.now();
+// Metadata is walked in bounded keyset pages; the end of a query page is never
+// mistaken for the end of someone's correspondence. Bodies are read separately.
+async function* metadataPages(userId, ownEmail, readQuery, { predicate = 'TRUE', values = [], batchSize = 2000 } = {}) {
+  let before = null;
+  do {
+    const args = [userId, ownEmail, ...values];
+    let boundary = '';
+    if (before) {
+      args.push(before[0], before[1]);
+      boundary = `AND (internal_date, message_id COLLATE "C") < ($${args.length - 1}::bigint, $${args.length}::text COLLATE "C")`;
+    }
+    args.push(batchSize);
+    const { rows } = await readQuery(`
+      SELECT message_id, thread_id, subject, from_name, from_email,
+             internal_date, participants, unsubscribe_url, label_ids
+      FROM messages WHERE user_id = $1
+        AND NOT (COALESCE(label_ids, '{}') && ARRAY['DRAFT', 'SPAM', 'TRASH']::text[])
+        AND (lower(from_email) = $2 OR NOT EXISTS (
+          SELECT 1 FROM unnest(label_ids) l WHERE l LIKE 'CATEGORY_%' AND l <> 'CATEGORY_PERSONAL'))
+        AND (${predicate}) ${boundary}
+      ORDER BY internal_date DESC, message_id COLLATE "C" DESC
+      LIMIT $${args.length}
+    `, args);
+    yield rows;
+    if (rows.length < batchSize) break;
+    const last = rows.at(-1);
+    before = [Number(last.internal_date) || 0, last.message_id];
+  } while (true);
+}
 
+function othersIn(row, me) {
+  const others = new Map();
+  const from = (row.from_email ?? '').toLowerCase();
+  if (from && from !== me) others.set(from, { name: row.from_name, email: from });
+  for (const p of Array.isArray(row.participants) ? row.participants : []) {
+    const email = p?.email?.toLowerCase();
+    if (email && email !== me && !others.has(email)) others.set(email, { ...p, email });
+  }
+  return [...others.values()];
+}
+
+function compareNewest(a, b) {
+  return b.lastAt - a.lastAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+}
+function pageLimit(value) { return Math.min(200, Math.max(1, Number.parseInt(value, 10) || 50)); }
+function encodeCursor(userId, scope, entry) {
+  return Buffer.from(JSON.stringify({ v: 1, user: userId, scope, at: entry.lastAt, id: entry.id })).toString('base64url');
+}
+function decodeCursor(value, userId, scope) {
+  if (!value) return null;
+  try {
+    if (typeof value !== 'string' || value.length > 8192) throw Error();
+    const c = JSON.parse(Buffer.from(value, 'base64url').toString());
+    if (c.v !== 1 || c.user !== userId || c.scope !== scope || !Number.isSafeInteger(c.at) || typeof c.id !== 'string') throw Error();
+    return { lastAt: c.at, id: c.id };
+  } catch { const error = new Error('Invalid conversation cursor'); error.status = 400; throw error; }
+}
+function selectPage(items, userId, scope, { cursor, limit } = {}) {
+  const before = decodeCursor(cursor, userId, scope);
+  const available = before ? items.filter(item => compareNewest(item, before) > 0) : items;
+  const selected = available.slice(0, pageLimit(limit));
+  return { selected, nextCursor: available.length > selected.length
+    ? encodeCursor(userId, scope, selected.at(-1)) : null };
+}
+
+async function listConversationsPage(userId, ownEmail, { limit = 50, cursor, resolveAvatar,
+  query: readQuery = query, batchSize = 2000 } = {}) {
+  decodeCursor(cursor, userId, 'people');
   const me = (ownEmail ?? '').toLowerCase();
   const conversations = new Map();
-
-  for (const row of rows) {
-    const fromEmail = (row.from_email ?? '').toLowerCase();
-    const mine = fromEmail === me;
-    const hasUnsubscribe = !!row.unsubscribe_url;
-
-    // Gmail's own classification, and it outranks every heuristic below it.
-    //
-    // A word count on the display name is a weak test and the real mailbox
-    // proved it immediately: "Ally Bank", "American Express", "USPS Informed
-    // Delivery" and "Nextdoor Local News" are all two or three words and all
-    // filed as people. Google already sorted this mail — anything carrying a
-    // CATEGORY_ label is Promotions, Social, Updates or Forums, and Primary is
-    // the absence of one. That is the signal.
-    if (!isPrimary(row.label_ids)) continue;
-
-    // Who is in this, other than me.
-    const others = [];
-    if (!mine) others.push({ name: row.from_name, email: fromEmail });
-    for (const p of row.participants ?? []) {
-      if (!p?.email || p.email === me) continue;
-      others.push(p);
-    }
-    if (!others.length) continue;
-
-    // Every participant has to be a person. One automated address on a thread
-    // makes the whole thing a notification, not a conversation.
-    if (!others.every(p => isPerson({ ...p, hasUnsubscribe: hasUnsubscribe && !mine }))) continue;
-
-    const key = setKey(others.map(p => p.email));
-    if (!conversations.has(key)) {
-      conversations.set(key, {
-        id: key,
-        participants: [],
-        seen: new Set(),
-        lastMessageId: row.message_id,
-        threadId: row.thread_id,
-        subject: row.subject,
-        preview: null,
-        lastAt: Number(row.internal_date),
-        lastFromMe: mine,
-        unread: false,
-        messageCount: 0,
-      });
-    }
-
-    const c = conversations.get(key);
-    for (const p of others) {
-      if (c.seen.has(p.email)) continue;
-      c.seen.add(p.email);
-      c.participants.push({
-        name: p.name || p.email.split('@')[0],
-        email: p.email,
-        avatarUri: resolveAvatar ? avatarFor(p.email, resolveAvatar) : null,
-      });
+  const threadKeys = new Map();
+  const orphanSent = [];
+  function add(row, key, others) {
+    const mine = (row.from_email ?? '').toLowerCase() === me;
+    let c = conversations.get(key);
+    if (!c) {
+      c = { id: key, participants: others.map(p => ({ ...p, name: p.name || p.email.split('@')[0],
+        avatarUri: resolveAvatar ? avatarFor(p.email, resolveAvatar) : null })),
+      lastMessageId: row.message_id, threadId: row.thread_id, subject: row.subject,
+      preview: null, lastAt: Number(row.internal_date) || 0, lastFromMe: mine,
+      unread: false, messageCount: 0 };
+      conversations.set(key, c);
     }
     c.messageCount++;
     if ((row.label_ids ?? []).includes('UNREAD') && !mine) c.unread = true;
-
-    if (Number(row.internal_date) >= c.lastAt) {
-      c.lastAt = Number(row.internal_date);
-      c.lastMessageId = row.message_id;
-      c.threadId = row.thread_id;
-      c.subject = row.subject;
-      c.lastFromMe = mine;
+    const date = Number(row.internal_date) || 0;
+    if (date > c.lastAt || (date === c.lastAt && row.message_id > c.lastMessageId)) {
+      Object.assign(c, { lastAt: date, lastMessageId: row.message_id,
+        threadId: row.thread_id, subject: row.subject, lastFromMe: mine });
     }
   }
-
-  const result = Array.from(conversations.values())
-    .map(({ seen, ...rest }) => rest)
-    .sort((a, b) => b.lastAt - a.lastAt)
-    .slice(0, limit);
-  const groupingFinishedAt = performance.now();
-
-  if (result.length) {
-    // Uses the existing (user_id, message_id) primary key. Never starts Gmail
-    // hydration: this is only the body already stored, then quote/snippet.
-    // A short prefix is enough for a one-line preview, and bounding it in SQL
-    // avoids transferring a huge body merely to truncate it in JavaScript.
-    const { rows: previews } = await readQuery(`
-      SELECT message_id, LEFT(body_text, 4096) AS body_text,
-             LEFT(quote, 4096) AS quote, LEFT(snippet, 4096) AS snippet
-      FROM messages
-      WHERE user_id = $1 AND message_id = ANY($2::text[])
-    `, [userId, result.map(c => c.lastMessageId)]);
-    const byId = new Map(previews.map(row => [row.message_id, row]));
-    for (const conversation of result) {
-      const row = byId.get(conversation.lastMessageId);
-      const text = row ? firstLine(row.body_text) || row.quote || row.snippet || '' : '';
-      // Iterate Unicode code points so a preview cannot end with half an emoji.
-      conversation.preview = Array.from(text).slice(0, 512).join('');
+  for await (const rows of metadataPages(userId, me, readQuery, { batchSize })) {
+    for (const row of rows) {
+      const mine = (row.from_email ?? '').toLowerCase() === me;
+      const others = othersIn(row, me);
+      if (!others.length) { if (mine && row.thread_id) orphanSent.push(row); continue; }
+      if (!others.every(p => isPerson({ ...p, hasUnsubscribe: !!row.unsubscribe_url && !mine }))) continue;
+      const key = setKey(others.map(p => p.email));
+      add(row, key, others);
+      if (row.thread_id) {
+        if (!threadKeys.has(row.thread_id)) threadKeys.set(row.thread_id, new Set());
+        threadKeys.get(row.thread_id).add(key);
+      }
     }
   }
-
-  const finishedAt = performance.now();
-  if (finishedAt - startedAt > 1000) {
-    // No addresses, bodies, message IDs or credentials in performance logs.
-    console.info(`[conversations] candidates=${rows.length} returned=${result.length}`
-      + ` metadataMs=${Math.round(metadataFinishedAt - startedAt)}`
-      + ` groupingMs=${Math.round(groupingFinishedAt - metadataFinishedAt)}`
-      + ` previewsMs=${Math.round(finishedAt - groupingFinishedAt)}`);
+  // Older imports lacked recipients on sent mail. A thread can supply the
+  // participant set only when that thread has one unambiguous set.
+  for (const row of orphanSent) {
+    const keys = threadKeys.get(row.thread_id);
+    if (keys?.size === 1) { const key = [...keys][0]; add(row, key, conversations.get(key).participants); }
   }
-  return result;
+  const all = [...conversations.values()].sort(compareNewest);
+  const { selected, nextCursor } = selectPage(all, userId, 'people', { cursor, limit });
+  if (selected.length) {
+    const { rows } = await readQuery(`SELECT message_id, LEFT(body_text, 4096) AS body_text,
+      LEFT(quote, 4096) AS quote, LEFT(snippet, 4096) AS snippet FROM messages
+      WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, selected.map(c => c.lastMessageId)]);
+    const previews = new Map(rows.map(r => [r.message_id, r]));
+    for (const c of selected) {
+      const row = previews.get(c.lastMessageId);
+      c.preview = Array.from(row ? firstLine(row.body_text) || row.quote || row.snippet || '' : '').slice(0, 512).join('');
+    }
+  }
+  return { conversations: selected, nextCursor, totalConversations: all.length,
+    unreadConversations: all.filter(c => c.unread).length };
 }
 
-/// Every message exchanged with one participant set, oldest first — the order
-/// a conversation is read in, which is the opposite of a feed.
-async function conversationMessages(userId, ownEmail, id, { resolveAvatar } = {}) {
-  const wanted = new Set(id.split('|').filter(Boolean));
-  const addresses = Array.from(wanted);
+// Legacy array helpers are retained for callers migrating to the page contract.
+async function listConversations(userId, ownEmail, options) {
+  return (await listConversationsPage(userId, ownEmail, options)).conversations;
+}
 
-  // Filtered in SQL, by address.
-  //
-  // This used to select everything and sift in JavaScript under
-  // `ORDER BY internal_date ASC LIMIT 4000` — which, against 126,000
-  // messages, is the OLDEST four thousand. Every conversation worth opening is
-  // recent, so the rows were all from 2023 and every thread rendered empty
-  // while the endpoint returned 200.
-  //
-  // The limit still has to be taken off the NEWEST end, which is why the sort
-  // is inverted inside and put back outside. A DESC-limited subquery reversed
-  // to ASC gives the most recent 500 in reading order; ASC on the outside
-  // alone would silently be the same bug in a narrower scope.
-  // Threads, not just addresses — because a message YOU sent names nobody
-  // this query can match on.
-  //
-  // A sent message has `from_email` = you, which is never in the wanted set,
-  // and its recipient lives in `participants` — a column that is NULL on every
-  // one of the 934 sent messages in the real archive, because the backfill
-  // never wrote it. So your own half of every old conversation matched neither
-  // arm of the filter and silently vanished. The thread rendered as the other
-  // person talking into space.
-  //
-  // Gmail already solved this: a reply carries the `thread_id` of what it
-  // replies to, and that column IS populated on all 934. So the addresses find
-  // the conversation, and the threads they belong to then pull in everything
-  // else said in them — which is exactly the set the user remembers sending.
-  const { rows } = await query(`
-    WITH anchors AS (
-      SELECT thread_id
-      FROM messages
-      WHERE user_id = $1
-        AND (
-          lower(from_email) = ANY($2::text[])
-          OR EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements(COALESCE(participants, '[]'::jsonb)) AS p
-            WHERE lower(p->>'email') = ANY($2::text[])
-          )
-        )
-      ORDER BY internal_date DESC
-      LIMIT 500
-    ),
-    threads AS (
-      SELECT DISTINCT thread_id FROM anchors
-      WHERE thread_id IS NOT NULL AND thread_id <> ''
-    )
-    SELECT * FROM (
-      SELECT message_id, thread_id, subject, from_name, from_email, snippet,
-             internal_date, participants, label_ids, quote, summary, attachments,
-             body_text
-      FROM messages
-      WHERE user_id = $1
-        AND (
-          lower(from_email) = ANY($2::text[])
-          OR EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements(COALESCE(participants, '[]'::jsonb)) AS p
-            WHERE lower(p->>'email') = ANY($2::text[])
-          )
-          OR thread_id IN (SELECT thread_id FROM threads)
-        )
-      ORDER BY internal_date DESC
-      LIMIT 1000
-    ) recent
-    ORDER BY internal_date ASC
-  `, [userId, addresses]);
-
+async function conversationMessagesPage(userId, ownEmail, id, { limit = 50, cursor, resolveAvatar,
+  query: readQuery = query, hydrate = hydrateBodies, batchSize = 2000 } = {}) {
   const me = (ownEmail ?? '').toLowerCase();
-  const kept = [];
-  const taken = new Set();
+  const key = setKey(id.split('|').filter(Boolean));
+  decodeCursor(cursor, userId, key);
+  const addresses = key.split('|');
+  const kept = new Map();
   const threads = new Set();
-
-  // Drafts are excluded everywhere, and duplicates of your own messages are
-  // collapsed across BOTH passes.
-  //
-  // Scoping either of these to pass two was not enough, and the real thread
-  // showed exactly why: Gmail had filed one reply three times — a DRAFT and
-  // two SENT copies — and one of the SENT rows happened to carry
-  // `participants`, so it matched pass one by address and skipped a guard
-  // that only pass two applied. The set has to be shared or the passes
-  // disagree about what has already been shown.
-  // Gmail files one message more than once, and the copies are identical in
-  // the only three things that can identify a message: the thread it is in,
-  // who sent it, and when. Not to the second — to the millisecond. Two
-  // genuinely different messages from one person in one thread at the same
-  // millisecond do not happen, so this is exact rather than fuzzy.
-  //
-  // Comparing the text instead was the obvious idea and it did not work: one
-  // copy had a fetched `body_text` and the other had only Gmail's snippet, so
-  // the two fingerprints were drawn from different sources and never matched.
-  // That is also why the duplicate rendered differently — a teaser shown as
-  // if it were the message.
-  const identity = (row, fromEmail) =>
-    `${row.thread_id ?? ''}|${fromEmail}|${row.internal_date}`;
-  const seen = new Map();
-
-  /// Keeps one row per identity, preferring the copy that has a real body.
-  /// Returns false when the row should be skipped.
-  function admit(row, fromEmail, mine) {
-    const key = seen.get(identity(row, fromEmail));
-    if (key === undefined) {
-      seen.set(identity(row, fromEmail), kept.length);
-      kept.push({ row, fromEmail, mine });
-      taken.add(row.message_id);
-      return true;
+  const predicate = `lower(from_email) = ANY($3::text[]) OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(participants) = 'array' THEN participants ELSE '[]'::jsonb END) p
+    WHERE lower(p->>'email') = ANY($3::text[]))`;
+  for await (const rows of metadataPages(userId, me, readQuery, { predicate, values: [addresses], batchSize })) {
+    for (const row of rows) {
+      if (setKey(othersIn(row, me).map(p => p.email)) !== key) continue;
+      kept.set(row.message_id, row);
+      if (row.thread_id) threads.add(row.thread_id);
     }
-    // Already have this message. Upgrade it if this copy is the fetched one.
-    const held = kept[key];
-    if (!held.row.body_text && row.body_text) {
-      kept[key] = { row, fromEmail, mine };
-      taken.add(row.message_id);
+  }
+  if (threads.size) {
+    for await (const rows of metadataPages(userId, me, readQuery, {
+      predicate: 'lower(from_email) = $2 AND thread_id = ANY($3::text[])', values: [[...threads]], batchSize,
+    })) {
+      for (const row of rows) {
+        // Explicit recipients win over the inherited Gmail thread. A reply-all
+        // to another participant set must not leak into this conversation.
+        const others = othersIn(row, me);
+        if (others.length && setKey(others.map(p => p.email)) !== key) continue;
+        kept.set(row.message_id, row);
+      }
     }
-    return false;
   }
-
-  // Pass one: the messages that identify this conversation by who is in them.
-  for (const row of rows) {
-    if (isDraft(row.label_ids)) continue;
-    const fromEmail = (row.from_email ?? '').toLowerCase();
-    const mine = fromEmail === me;
-    const others = new Set();
-    if (!mine) others.add(fromEmail);
-    for (const p of row.participants ?? []) {
-      if (p?.email && p.email !== me) others.add(p.email.toLowerCase());
-    }
-    if (!isPrimary(row.label_ids)) continue;
-    if (setKey(Array.from(others)) !== setKey(Array.from(wanted))) continue;
-
-    if (row.thread_id) threads.add(row.thread_id);
-    admit(row, fromEmail, mine);
+  const all = [...kept.values()].map(row => ({ id: row.message_id, lastAt: Number(row.internal_date) || 0 })).sort(compareNewest);
+  const { selected, nextCursor } = selectPage(all, userId, key, { cursor, limit });
+  let messages = [];
+  if (selected.length) {
+    const { rows } = await readQuery(`SELECT message_id, thread_id, subject, from_name, from_email, snippet,
+      internal_date, label_ids, quote, summary, attachments, body_text FROM messages
+      WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, selected.map(m => m.id)]);
+    rows.sort((a, b) => Number(a.internal_date) - Number(b.internal_date)
+      || (a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0));
+    hydrate(userId, rows).catch(err => console.warn('[conversations] background hydrate:', err.message));
+    messages = rows.map(row => {
+      const fromEmail = (row.from_email ?? '').toLowerCase();
+      return { messageId: row.message_id, threadId: row.thread_id, subject: row.subject,
+        fromName: row.from_name, fromEmail, avatarUri: resolveAvatar ? avatarFor(fromEmail, resolveAvatar) : null,
+        mine: fromEmail === me, body: unwrap(row.body_text || '') || row.quote || row.snippet || '',
+        summary: row.summary ?? null, internalDate: Number(row.internal_date),
+        unread: (row.label_ids ?? []).includes('UNREAD'), attachments: row.attachments ?? [] };
+    });
   }
-
-  // Pass two: your own replies in those same threads.
-  //
-  // Only messages you sent, and only into a thread pass one already accepted
-  // as this conversation — so this can add your side of a thread and nothing
-  // else. It cannot pull in a third party, because it never admits a message
-  // that is not from you.
-  //
-  // `isPrimary` is deliberately not applied here. It is a test of how Gmail
-  // sorted incoming mail, and it has no meaning for something you wrote; a
-  // reply you sent into a thread belongs in that thread whatever category
-  // label the thread happens to carry.
-  //
-  // Drafts and duplicates are both excluded, and both were only visible once
-  // sent mail started rendering at all. Gmail keeps the DRAFT of a reply in
-  // the thread beside the message it became, and files the sent copy more
-  // than once when a thread carries several labels — so one reply arrived as
-  // three rows and drew three identical bubbles.
-  for (const row of rows) {
-    if (taken.has(row.message_id)) continue;
-    if (isDraft(row.label_ids)) continue;
-    const fromEmail = (row.from_email ?? '').toLowerCase();
-    if (fromEmail !== me) continue;
-    if (!row.thread_id || !threads.has(row.thread_id)) continue;
-
-    admit(row, fromEmail, true);
-  }
-
-  // Both passes walked the same date-ordered rows, so the second one's
-  // additions land after the first one's. Reading order has to be restored or
-  // every message you sent appears in a block at the bottom.
-  kept.sort((a, b) => Number(a.row.internal_date) - Number(b.row.internal_date));
-
-  // The message, not a preview of it.
-  //
-  // Sync stores metadata only — `snippet` is Gmail's 200-character teaser and
-  // `quote` is one sentence the model pulled out for a feed card. Either one in
-  // a chat bubble is a truncated message presented as a whole one. The body is
-  // fetched once per message and kept.
-  //
-  // NOT awaited. Opening a conversation is a read, and a read should never wait
-  // on somebody else's network. Blocking here cost five to seven seconds on a
-  // first open and put a spinner where a thread should have been — the fix for
-  // which is not a nicer spinner, it is not fetching at read time. Sync fills
-  // these in before anyone opens anything; this is the backstop for whatever it
-  // missed, and it lands in the database for the next read.
-  hydrateBodies(userId, kept.map(m => m.row)).catch(err =>
-    console.warn('[conversations] background hydrate:', err.message));
-
-  return kept.map(({ row, fromEmail, mine }) => ({
-    messageId: row.message_id,
-    threadId: row.thread_id,
-    subject: row.subject,
-    fromName: row.from_name,
-    fromEmail,
-    avatarUri: resolveAvatar ? avatarFor(fromEmail, resolveAvatar) : null,
-    mine,
-    // The fragments remain as a fallback, for the moment between a message
-    // arriving and its body being fetched, and for the rare mail that is all
-    // quoted text. An empty bubble would be worse than a short one.
-    // Unwrapped on the way out as well as on the way in.
-    //
-    // Clearing the column at boot and re-fetching worked, and then kept
-    // half-working: the instance draining during a deploy re-wrote some rows
-    // with the previous code, so every release left a handful of bodies
-    // wrapped. Normalising at read time is idempotent and does not care which
-    // version wrote the row.
-    body: unwrap(row.body_text || '') || row.quote || row.snippet || '',
-    summary: row.summary ?? null,
-    internalDate: Number(row.internal_date),
-    unread: (row.label_ids ?? []).includes('UNREAD'),
-    attachments: row.attachments ?? [],
-  }));
+  return { messages, nextCursor, totalMessages: all.length };
+}
+async function conversationMessages(userId, ownEmail, id, options) {
+  return (await conversationMessagesPage(userId, ownEmail, id, options)).messages;
 }
 
 /// Gmail holds the body; the database holds metadata. This closes the gap for
@@ -561,7 +391,7 @@ async function hydrateBodies(userId, rows, { limit = 60, concurrency = 8 } = {})
         // it carries. This fetch is already paid for and the parts are right
         // here.
         if (row.attachments === null || row.attachments === undefined) {
-          const files = extractAttachments(full.payload);
+          const files = extractAttachments(full.payload, { limit: Infinity, minimumBytes: 0, allowGIF: true });
           row.attachments = files;
           await messageStore.setAttachments(userId, row.message_id, files);
         }
@@ -608,7 +438,7 @@ async function hydrateRecentPeople(userId, ownEmail, { limit = 40 } = {}) {
     const mine = fromEmail === me;
     const others = [];
     if (!mine) others.push({ name: row.from_name, email: fromEmail });
-    for (const p of row.participants ?? []) {
+    for (const p of Array.isArray(row.participants) ? row.participants : []) {
       if (p?.email && p.email.toLowerCase() !== me) others.push(p);
     }
     if (!others.length) continue;
@@ -625,6 +455,6 @@ async function hydrateRecentPeople(userId, ownEmail, { limit = 40 } = {}) {
 }
 
 module.exports = {
-  listConversations, conversationMessages, hydrateRecentPeople,
+  listConversations, listConversationsPage, conversationMessages, conversationMessagesPage, hydrateRecentPeople,
   isPerson, isPrimary, setKey,
 };
