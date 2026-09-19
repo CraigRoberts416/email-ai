@@ -5330,6 +5330,8 @@ A notification tap identifies both the email and its connected mailbox. Buffer a
 
 A People refresh failure shows **Couldn’t refresh conversations. Try again.** with **Try again**. Preserve any cached conversations beneath that recovery message. With no cached list, failure must not display **No one has written.**; that empty state requires a successful load. Profiles, original-email detail, People threads, and settings detail share `BackNavigation`: one native top-bar-leading Back control with an inline principal title where needed. iOS 26 supplies adaptive Liquid Glass and system placement; earlier iOS uses its native toolbar treatment. Do not position a separate back overlay inside the banner or give it a fixed white or black circle. The native safe area determines placement, and opening or returning from these detail routes still preserves the Feed session.
 
+Original-email detail and sender profiles keep the hero visible behind separate native glass controls. Their top edge has no full-width frosted veil or scroll-edge blur band. This treatment is specific to those hero routes; Feed, People lists and Settings retain their existing edge treatment.
+
 ---
 
 # **11.13 Future Enhancements**
