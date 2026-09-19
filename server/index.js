@@ -36,6 +36,7 @@ const { createFeedReader } = require('./feedReader');
 const { createMarkReadHandler } = require('./messageRead');
 const { createSenderHistory, registerSenderHistoryRoute } = require('./senderHistory');
 const { createProfileSource } = require('./profileSource');
+const { registerNotificationMessageRoute } = require('./notificationMessage');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -1405,6 +1406,10 @@ app.get('/all-mail', async (req, res) => {
 });
 
 // Mark message as read — removes UNREAD label via Gmail API + updates DB
+registerNotificationMessageRoute(app, {
+  resolveUserId, messageStore, gmailSync, cardsForMessages, sanitize: stripLoneSurrogates,
+});
+
 app.patch('/messages/:messageId/read', createMarkReadHandler({
   resolveUserId, userStore, messageStore, emitSSE,
   invalidateUnreadCount: userId => mailNotifications.invalidateUnreadCount(userId),
@@ -2020,6 +2025,11 @@ async function syncEveryone() {
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────
 
+// Schema migrations can update the same rows as background imports. Finish
+// them before admitting requests or starting workers, and fail startup if the
+// schema could not be prepared rather than serving a partially migrated app.
+const database = require('./db');
+database.ready.then(() => {
 processingWorker.init({
   streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE,
   onMessageReady: userId => mailNotifications.notifyMailbox(userId, [], { mailboxChanged: false }),
@@ -2061,4 +2071,8 @@ app.listen(PORT, () => {
   }).catch(err => {
     console.error('[startup] startup resume failed:', err.message);
   });
+});
+}).catch(error => {
+  console.error('[startup] database schema unavailable:', error.message);
+  database.pool.end().finally(() => process.exit(1));
 });

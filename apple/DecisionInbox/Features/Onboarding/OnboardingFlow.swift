@@ -121,9 +121,10 @@ struct OnboardingFlow: View {
                 scope("READ YOUR MAIL", "There is no card without the message behind it.")
                 scope("SEND AS YOU", "Only when you tap send. Never on its own, never to another AI.")
                 scope("CHANGE LABELS", "So archiving here archives in Gmail too.")
+                scope("CONTACT PHOTOS", "Read-only access to saved contacts and Other Contacts lets this phone match real photos by email address. Your address book is not sent to our server.")
             }
 
-            Text("We never ask for your contacts, your calendar, or your password.")
+            Text("Contact photos are optional. We never ask for your calendar or your password.")
                 .typeStyle(Style.body)
                 .foregroundStyle(Ink.primary)
                 .fixedSize(horizontal: false, vertical: true)

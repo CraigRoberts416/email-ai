@@ -11,13 +11,15 @@ import SwiftUI
 /// The unit of this surface is the person, not the message.
 struct DirectMessagesView: View {
     @Environment(FeedStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
     @State private var open: Conversation?
     @State private var profile: Sender?
     @State private var contactPhotos = ContactPhotoStore.shared
+    @State private var identities = SenderIdentityStore.shared
     @AppStorage("people.dismissPhotoPrompt") private var dismissPhotoPrompt = false
 
     private var waiting: Int {
-        store.conversations.count { $0.unread }
+        store.conversationsHistoryComplete ? (store.conversationsUnreadTotal ?? 0) : store.conversations.count { $0.unread }
     }
 
     var body: some View {
@@ -25,7 +27,8 @@ struct DirectMessagesView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
                     masthead
-                    if !contactPhotos.enabled && !dismissPhotoPrompt {
+                    if !contactPhotos.enabled && !dismissPhotoPrompt
+                        && !(identities.googlePhotosEnabled && store.auth.accounts.contains(where: { identities.hasGooglePhotoAccess(for: $0.id) })) {
                         HStack(spacing: Space.sm) {
                             Button {
                                 Task {
@@ -47,12 +50,20 @@ struct DirectMessagesView: View {
                         Rule()
                     }
 
-                    if store.conversations.isEmpty {
+                    if let failure = store.conversationsFailure {
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            Text(failure).typeStyle(Style.body).foregroundStyle(Ink.secondary)
+                            Button("Try again") { Task { await store.loadConversations() } }
+                                .frame(minHeight: Metric.tapTarget)
+                        }
+                        .padding(Metric.gutter)
+                    }
+                    if store.conversations.isEmpty && store.conversationsFailure == nil {
                         EmptyStateView(
-                            headline: store.conversationsLoaded
+                            headline: store.conversationsLoaded && store.conversationsHistoryComplete
                                 ? "No one has written."
                                 : "Reading your mail\u{2026}",
-                            detail: store.conversationsLoaded
+                            detail: store.conversationsLoaded && store.conversationsHistoryComplete
                                 ? "MAIL FROM A PERSON APPEARS HERE. COMPANIES STAY IN THE FEED."
                                 : "LOOKING FOR THE PEOPLE IN YOUR MAILBOX."
                         )
@@ -67,6 +78,30 @@ struct DirectMessagesView: View {
                             Rule()
                         }
                     }
+                    if store.conversationsNextCursor != nil {
+                        Button(store.conversationsLoading ? "Loading…" : "See older conversations") {
+                            Task { await store.loadMoreConversations() }
+                        }
+                        .typeStyle(Style.body)
+                        .frame(maxWidth: .infinity, minHeight: Metric.tapTarget)
+                        .disabled(store.conversationsLoading)
+                        .padding(Metric.gutter)
+                    }
+                    if store.conversationsLoaded && !store.conversationsHistoryComplete {
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            Text(store.conversationsSyncState == "failed"
+                                 ? "Older mail hasn’t finished importing."
+                                 : (store.conversationsSyncState == "indexing"
+                                    ? "Finding your conversations. Those found so far appear above."
+                                    : "Older mail is still importing. These are the conversations found so far."))
+                                .typeStyle(Style.monoCaption)
+                                .foregroundStyle(Ink.secondary)
+                            Button("Refresh history") { Task { await store.loadConversations() } }
+                                .frame(minHeight: Metric.tapTarget)
+                                .disabled(store.conversationsLoading)
+                        }
+                        .padding(Metric.gutter)
+                    }
                 }
                 .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
             }
@@ -76,7 +111,16 @@ struct DirectMessagesView: View {
             .navigationBarHidden(true)
             .navigationDestination(item: $open) { DirectThreadView(conversation: $0) }
             .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
-            .task { await store.loadConversations() }
+            .task(id: scenePhase == .active && open == nil && profile == nil) {
+                guard scenePhase == .active, open == nil, profile == nil else { return }
+                await store.loadConversations(preservingLoaded: true)
+                while !Task.isCancelled && !store.conversationsHistoryComplete {
+                    do { try await Task.sleep(for: .seconds(store.conversationsFailure == nil ? 3 : 8)) }
+                    catch { return }
+                    guard !Task.isCancelled else { return }
+                    await store.loadConversations(preservingLoaded: true)
+                }
+            }
             .refreshable { await store.loadConversations() }
         }
     }
@@ -96,7 +140,7 @@ struct DirectMessagesView: View {
                     .foregroundStyle(store.conversationsLoaded ? Ink.primary : Ink.tertiary)
                     .monospacedDigit()
                     .contentTransition(.numericText())
-                Text(store.conversationsLoaded ? "WAITING ON YOU" : "READING")
+                Text(store.conversationsLoaded ? (store.conversationsHistoryComplete ? "UNREAD CONVERSATIONS" : "UNREAD LOADED") : "READING")
                     .typeStyle(Style.kicker)
                     .foregroundStyle(store.conversationsLoaded ? Ink.primary : Ink.tertiary)
             }

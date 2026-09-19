@@ -24,6 +24,7 @@ struct SettingsPrivacyView: View {
     @AppStorage("links.richPreviews") private var richPreviews = false
 
     @State private var contactPhotos = ContactPhotoStore.shared
+    @State private var identities = SenderIdentityStore.shared
     @State private var contactPermissionDenied = false
     @State private var showingStorage = false
     @State private var exporting: ExportFile?
@@ -42,7 +43,35 @@ struct SettingsPrivacyView: View {
             SettingsGroup("PERSONAL PHOTOS")
             Rule()
             SettingsToggle(
-                title: "Contact photos",
+                title: "Google contact photos",
+                subtitle: "SAVED CONTACTS AND OTHER CONTACTS · READ ONLY",
+                isOn: Binding(get: { identities.googlePhotosEnabled }, set: { enabled in
+                    identities.setGooglePhotosEnabled(enabled)
+                    if enabled { Task { await identities.refreshGooglePhotos(force: true) } }
+                })
+            )
+            SettingsParagraph("Match photos by exact email address using Google People. Only email addresses and photos are read on this phone; your address book is never sent to our server. Google may not provide every photo shown in Gmail.")
+            if identities.googlePhotosEnabled && !store.isSample {
+                ForEach(store.auth.accounts) { account in
+                    if !identities.hasAllGooglePhotoAccess(for: account.id) {
+                        SettingsLink(title: "Connect photos for \(account.id)", subtitle: "ALLOW READ-ONLY CONTACT ACCESS IN GOOGLE", action: {
+                            Task {
+                                await store.reconnect(account.id)
+                                await identities.refreshGooglePhotos(force: true)
+                            }
+                        })
+                    }
+                    if let failure = identities.photoFailures[account.id] {
+                        SettingsParagraph(failure)
+                        SettingsLink(title: "Try contact photos again", action: {
+                            Task { await identities.refreshGooglePhotos(force: true) }
+                        })
+                    }
+                }
+            }
+            Rule()
+            SettingsToggle(
+                title: "Photos from this phone",
                 subtitle: "MATCH PEOPLE BY THEIR EMAIL ADDRESS",
                 isOn: Binding(get: { contactPhotos.enabled && contactPhotos.permitted }, set: { enabled in
                     Task {

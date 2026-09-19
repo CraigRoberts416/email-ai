@@ -30,6 +30,9 @@ struct SenderProfileView: View {
     @State private var opener = AttachmentOpener()
     @State private var presentedImage: MediaEntry?
     @State private var lastOpenedFile: Attachment?
+    @State private var identities = SenderIdentityStore.shared
+    @State private var history: SenderHistoryStore?
+    @State private var historyFooterVisible = false
 
     /// `emails`, not `messages`. This is a mail client — the thing on screen
     /// is an email, and calling it a message borrows a word from chat apps
@@ -56,6 +59,16 @@ struct SenderProfileView: View {
     /// Both entry points use the same post component. Conversation messages
     /// supply their original words; they do not receive invented summaries.
     private var posts: [Message] {
+        if let history, history.hasReceivedHistory || !history.messages.isEmpty {
+            return history.messages.map { source in
+                var message = source
+                let current = store.currentVersion(of: source)
+                message.isRead = source.isRead || current.isRead
+                message.isSaved = current.isSaved
+                message.reaction = current.reaction
+                return message
+            }.sorted(by: FeedSession.newer)
+        }
         var result = all
         var ids = Set(all.map(\.id))
         // Conversation loading is currently scoped to the first account.
@@ -94,7 +107,7 @@ struct SenderProfileView: View {
     }
 
     /// However many emails the EMAILS lane is showing.
-    private var emailCount: Int { posts.count }
+    private var emailCount: Int? { history?.totalCount }
 
     /// Their chat thread, which lives in the archive rather than the feed.
     private var chat: Conversation? { store.conversation(with: sender.address) }
@@ -124,12 +137,12 @@ struct SenderProfileView: View {
             for attachment in message.attachments {
                 if case .image(let url) = attachment.preview {
                     imageURLs.insert(url)
-                    entries.append(MediaEntry(id: "\(message.id)/\(attachment.id)", url: url,
+                    entries.append(MediaEntry(id: "\(message.feedKey)/\(attachment.id)", url: url,
                                               filename: attachment.filename, file: attachment))
                 }
             }
             if let picture = message.imageURL, !imageURLs.contains(picture) {
-                entries.append(MediaEntry(id: "\(message.id)/body-image", url: picture,
+                entries.append(MediaEntry(id: "\(message.feedKey)/body-image", url: picture,
                                           filename: nil, file: nil))
             }
         }
@@ -143,14 +156,15 @@ struct SenderProfileView: View {
         }
         return posts.flatMap { message in
             message.attachments.filter(isDocument).map {
-                FileEntry(id: "\(message.id)/\($0.id)", file: $0,
+                FileEntry(id: "\(message.feedKey)/\($0.id)", file: $0,
                           receivedAt: message.receivedAt)
             }
         }
     }
 
-    private var banner: URL? { all.compactMap(\.heroImageURL).first }
-    private var ground: Color { .sheet(fromHex: all.compactMap(\.heroBackground).first) }
+    private var identity: SenderIdentityStore.Profile? { identities.profile(for: sender.address) }
+    private var banner: URL? { identity?.heroImageUrl ?? all.compactMap(\.heroImageURL).first }
+    private var ground: Color { .sheet(fromHex: identity?.heroImageBgColor ?? all.compactMap(\.heroBackground).first) }
 
     var body: some View {
         ScrollView {
@@ -164,12 +178,29 @@ struct SenderProfileView: View {
                 case .docs:    docsGrid
                 case .emails:  emailList
                 }
+                historyFooter
+                    .onScrollVisibilityChange(threshold: 0.1) { historyFooterVisible = $0 }
+                    .onChange(of: "\(history?.messages.count ?? 0):\(history?.hasMore ?? false):\(history?.isLoading ?? false):\(historyFooterVisible)") {
+                        if historyFooterVisible, let history, history.hasMore, !history.isLoading, history.failure == nil {
+                            // Publishing page contents must not cancel the
+                            // same request's remaining source inspection.
+                            Task { await history.loadMore() }
+                        }
+                    }
             }
             .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
         }
         .scrollIndicators(.hidden)
+        .task(id: sender.address) {
+            if history == nil { history = SenderHistoryStore(auth: store.auth, sender: sender, sample: store.isSample, seed: all) }
+            await history?.start()
+        }
         .ignoresSafeArea(edges: .top)
         .background(Ink.surface)
+        .task(id: sender.address + identities.authorizationVersion) {
+            identities.remember(messages: all)
+            await identities.load(for: sender)
+        }
         .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
         .sheet(item: $presentedImage) { entry in
             NavigationStack {
@@ -215,33 +246,8 @@ struct SenderProfileView: View {
             // Keep useful cached content when the network returns no records.
             if !received.isEmpty || chatMessages.isEmpty { chatMessages = received }
         }
-        .toolbar(.hidden, for: .navigationBar)
-        // Same reason as the thread: this is a full-bleed screen carrying its
-        // own back button over a banner, so the system's bars are its to hide.
+        .backNavigation { dismiss() }
         .toolbar(.hidden, for: .tabBar)
-        .overlay(alignment: .topLeading) {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Ink.primary)
-                    .frame(width: Metric.tapTarget, height: Metric.tapTarget)
-                    // A fixed light ground keeps the back arrow legible over
-                    // both dark fallback bands and arbitrary sender images.
-                    .background(Ink.surface, in: Circle())
-                    .contentShape(.circle)
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, Space.md)
-            // 8, not 68.
-            //
-            // `ignoresSafeArea` applies to the scroll view; this overlay is
-            // attached outside it and still gets the inset, so a padding
-            // measured from the screen top was being added to 59pt of status
-            // bar and landing the control at 127 — straight onto the avatar.
-            // The inset is already the clearance; this is the gap after it.
-            .padding(.top, Space.sm)
-            .accessibilityLabel("Back")
-        }
         // A sheet everywhere, so a thread opened from here is the same
         // object as one opened from the feed.
         .sheet(item: $open) {
@@ -272,12 +278,8 @@ struct SenderProfileView: View {
             // their colour is honest and still recognisably theirs.
             Group {
                 if let banner {
-                    AsyncImage(url: banner, transaction: Transaction(animation: reduceMotion ? nil : Move.crossfade)) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().scaledToFill()
-                        } else {
-                            ground
-                        }
+                    CachedRemoteImage(url: banner, cacheKey: identities.imageKey(for: sender.address, role: "hero")) {
+                        ground
                     }
                 } else {
                     ground
@@ -314,7 +316,7 @@ struct SenderProfileView: View {
                     .foregroundStyle(Ink.primary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(sender.address)
+                Text(history?.scope == "domain" ? (history?.scopeKey ?? sender.address) : sender.address)
                     .typeStyle(Style.monoCaption)
                     .foregroundStyle(Ink.secondary)
                     .lineLimit(1)
@@ -354,13 +356,13 @@ struct SenderProfileView: View {
     }
 
     private var senderDescription: String? {
-        all.compactMap(\.senderDescription).first
+        identity?.senderDescription ?? all.compactMap(\.senderDescription).first
     }
 
     /// What Twitter fills with a location and a join date.
     private var metaRow: some View {
         HStack(spacing: Space.lg) {
-            if let first = posts.last {
+            if history?.isExhausted == true, let first = posts.last {
                 Label {
                     Text(first.receivedAt.formatted(.dateTime.month(.abbreviated).year()).uppercased())
                         .typeStyle(Style.monoMicro)
@@ -419,15 +421,12 @@ struct SenderProfileView: View {
     /// People and companies share exactly the feed's post rendering and actions.
     @ViewBuilder private var emailList: some View {
         if posts.isEmpty {
-            if loadingConversation {
-                ProgressView("Loading emails…")
-                    .frame(maxWidth: .infinity, minHeight: 240)
-            } else {
-                EmptyStateView(headline: "Nothing from them.", detail: "NO EMAIL FROM THIS SENDER YET.")
+            if history?.isExhausted == true {
+                EmptyStateView(headline: "No emails from this sender.", detail: "CHECKED YOUR COMPLETE EMAIL HISTORY.")
                     .frame(height: 240)
             }
         } else {
-            ForEach(posts) { message in
+            ForEach(posts, id: \.feedKey) { message in
                 PostView(
                     message: message,
                     onOpen: { openPost(message) },
@@ -471,8 +470,10 @@ struct SenderProfileView: View {
     /// Cropping belongs to this overview only; opening retains the original.
     @ViewBuilder private var mediaGrid: some View {
         if media.isEmpty {
-            EmptyStateView(headline: "No pictures.", detail: "NOTHING THIS SENDER WROTE CARRIED ONE.")
-                .frame(height: 240)
+            if history?.sourcesComplete == true {
+                EmptyStateView(headline: "No pictures.", detail: "NOTHING THIS SENDER WROTE CARRIED ONE.")
+                    .frame(height: 240)
+            }
         } else {
             LazyVGrid(columns: gridColumns, spacing: 1) {
                 ForEach(media) { entry in
@@ -524,8 +525,10 @@ struct SenderProfileView: View {
     /// without pretending a generated image is a preview of its contents.
     @ViewBuilder private var docsGrid: some View {
         if docs.isEmpty {
-            EmptyStateView(headline: "No files.", detail: "THIS SENDER HAS NOT ATTACHED ANYTHING.")
-                .frame(height: 240)
+            if history?.sourcesComplete == true {
+                EmptyStateView(headline: "No files.", detail: "THIS SENDER HAS NOT ATTACHED ANYTHING.")
+                    .frame(height: 240)
+            }
         } else {
             LazyVGrid(columns: gridColumns, spacing: 1) {
                 ForEach(docs) { entry in
@@ -575,21 +578,34 @@ struct SenderProfileView: View {
     /// Counts, not engagement. How much of your attention this sender takes is
     /// a fact worth knowing; a follower count would be a fiction.
     private var stats: some View {
-        HStack(spacing: Space.md) {
-            // What the lane below actually shows. It read the feed only, so
-            // a profile listing four emails was headed "0 EMAILS" — a number
-            // contradicting the list directly beneath it.
-            stat(emailCount, emailCount == 1 ? "EMAIL" : "EMAILS")
-            Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
-            // The conversation counts as a thread. Without this the profile
-            // of somebody you are mid-exchange with read "0 THREADS".
-            stat(threads.count + (chat == nil ? 0 : 1),
-                 threads.count + (chat == nil ? 0 : 1) == 1 ? "THREAD" : "THREADS")
-            if !replies.isEmpty {
-                Text("·").typeStyle(Style.separator).foregroundStyle(Ink.tertiary)
-                stat(replies.count, "AWAITING")
+        HStack(alignment: .firstTextBaseline, spacing: Space.xs) {
+            Text(emailCount.map { $0.formatted() } ?? "…")
+                .typeStyle(Style.countInline).monospacedDigit()
+            Text(emailCount == 1 ? "EMAIL" : "EMAILS")
+                .typeStyle(Style.monoMicro).foregroundStyle(Ink.tertiary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(emailCount.map { "\($0) emails in complete history" } ?? "Email history count loading")
+    }
+
+    @ViewBuilder private var historyFooter: some View {
+        VStack(spacing: Space.sm) {
+            if let failure = history?.failure {
+                Text(failure).typeStyle(Style.body).foregroundStyle(Ink.secondary)
+                Button("Try again") { Task { await history?.start() } }
+                    .frame(minHeight: Metric.tapTarget)
+            } else if history?.isExhausted == true {
+                if !posts.isEmpty { Text("All emails loaded.").typeStyle(Style.body).foregroundStyle(Ink.secondary) }
+            } else {
+                ProgressView("Loading email history…")
+                if history?.hasMore == true {
+                    Button("Load older emails") { Task { await history?.loadMore() } }
+                        .frame(minHeight: Metric.tapTarget)
+                }
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(Metric.gutter)
     }
 
     private func stat(_ count: Int, _ label: String) -> some View {

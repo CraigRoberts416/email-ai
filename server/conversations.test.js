@@ -8,14 +8,20 @@ const { PGlite } = require('@electric-sql/pglite');
 // Load the production module with fail-closed external dependencies. Listing
 // conversations must never read a live database or hydrate mail from Gmail.
 const filename = path.join(__dirname, 'conversations.js');
+let fetchSource = () => { throw Error('People list must never hydrate Gmail'); };
+let savedSources = [];
 const isolated = new Module(filename, module);
 isolated.filename = filename;
 isolated.require = name => {
   if (name === './db') return { query: () => { throw Error('Live database forbidden in this test'); } };
-  if (name === './gmailSync') return { fetchFullMessage: () => { throw Error('People list must never hydrate Gmail'); } };
-  if (name === './messageStore') return {};
-  if (name === './replyText') return { unwrap: text => text };
-  if (name === './emailAttachments') return {};
+  if (name === './gmailSync') return { fetchFullMessage: (...args) => fetchSource(...args) };
+  if (name === './messageStore') return { saveProfileSource: async (user, id, source) => {
+    await db.query(`UPDATE messages SET body_text=COALESCE(body_text,$3),attachments=$4::jsonb,source_version=2
+      WHERE user_id=$1 AND message_id=$2`, [user,id,source.bodyText,JSON.stringify(source.attachments)]);
+    savedSources.push(source);
+  } };
+  if (name === './replyText') return { ...require('./replyText'), unwrap: text => text };
+  if (name === './emailAttachments') return require('./emailAttachments');
   throw Error(`Unexpected dependency ${name}`);
 };
 isolated._compile(fs.readFileSync(filename, 'utf8'), filename);
@@ -36,11 +42,18 @@ before(async () => {
     subject TEXT, from_name TEXT, from_email TEXT, snippet TEXT,
     internal_date BIGINT, participants JSONB, unsubscribe_url TEXT,
     label_ids TEXT[], quote TEXT, summary TEXT, body_text TEXT,
-    attachments JSONB, post_cutoff BOOLEAN DEFAULT FALSE, PRIMARY KEY(user_id, message_id)
-  ); CREATE INDEX user_date ON messages(user_id, internal_date DESC);`);
+    attachments JSONB, source_version INT DEFAULT 0, post_cutoff BOOLEAN DEFAULT FALSE, PRIMARY KEY(user_id, message_id)
+  ); CREATE INDEX user_date ON messages(user_id, internal_date DESC);
+  CREATE INDEX idx_messages_user_sender ON messages(user_id, lower(from_email));
+  CREATE INDEX idx_messages_user_thread ON messages(user_id, thread_id);
+  CREATE INDEX idx_messages_participant_emails
+    ON messages USING gin ((lower(participants::text)::jsonb) jsonb_path_ops);`);
 });
 after(async () => db?.close());
-beforeEach(async () => { await db.exec('TRUNCATE messages'); reads = []; });
+beforeEach(async () => {
+  await db.exec('TRUNCATE messages'); reads = []; savedSources = [];
+  fetchSource = () => { throw Error('Unexpected Gmail source fetch'); };
+});
 
 async function add(id, date, { email = 'alice@gmail.com', name = 'Alice Adams',
   body = 'Original body', quote = null, snippet = 'A snippet', labels = [],
@@ -195,6 +208,79 @@ test('thread pages cover all history, preserve real same-millisecond message IDs
   assert.equal(seen.has('other-group'), false);
   assert.ok(hydrated.every(count => count <= 200));
   assert.ok(reads.filter(r => r.sql.includes('attachments, body_text')).every(r => r.rows.length <= 200));
+});
+
+test('thread lookup uses sender and participant indexes rather than expanding unrelated archive metadata', async () => {
+  await db.query(`INSERT INTO messages(user_id,message_id,thread_id,subject,from_name,from_email,
+    internal_date,participants,label_ids,body_text,attachments)
+    SELECT 'a','unrelated-'||n,'other-thread-'||n,'Subject','Other Person',
+      'person'||n||'@gmail.com', n,
+      '[{"name":"Owner Reader","email":"owner@gmail.com"}]'::jsonb,
+      ARRAY['UNREAD'], 'Unrelated body', '[]'::jsonb FROM generate_series(1,30000) n`);
+  await add('received', 2, { email: 'ALICE@GMAIL.COM' });
+  await add('sent', 1, { email: 'owner@gmail.com', name: 'Owner Reader', labels: ['SENT'],
+    participants: [{ name: 'Alice Adams', email: 'ALICE@GMAIL.COM' }] });
+  await add('fork', 3, { participants: [{ name: 'Bob Baker', email: 'bob@gmail.com' }] });
+  await add('other-account', 5, { user: 'b' });
+  await add('excluded', 6, { labels: ['SPAM'] });
+  await db.exec('ANALYZE messages');
+  const page = await conversationMessagesPage('a','owner@gmail.com','alice@gmail.com', {
+    query: readQuery, hydrate: async () => {},
+  });
+  assert.deepEqual(page.messages.map(message => message.messageId), ['sent','received']);
+  assert.equal(page.totalMessages, 2);
+  assert.equal(page.nextCursor, null);
+  const candidates = reads.find(read => read.sql.includes('ANY($4::jsonb[])'));
+  assert.ok(candidates, 'Production predicate uses indexed JSONB containment');
+  assert.equal(candidates.sql.includes('jsonb_array_elements'), false);
+  const explained = await db.query('EXPLAIN (FORMAT JSON) ' + candidates.sql, candidates.params);
+  const plan = JSON.stringify(explained.rows[0]['QUERY PLAN']);
+  assert.match(plan, /idx_messages_user_sender/);
+  assert.match(plan, /idx_messages_participant_emails/);
+  assert.ok(reads.every(read => read.rows.length <= 3), 'Only matching correspondence leaves the database');
+});
+
+test('legacy cached thread re-inspects inline photos asynchronously and coalesces concurrent source requests', async () => {
+  await add('legacy', 100, { body: 'Already cached body' });
+  await db.query("UPDATE messages SET attachments='[]'::jsonb WHERE message_id='legacy'");
+  let release; let fetches = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  fetchSource = async () => { fetches++; return gate; };
+  const first = await conversationMessagesPage('a','owner@gmail.com','alice@gmail.com', { query: readQuery });
+  assert.equal(first.sourcesPending, true);
+  assert.equal(first.messages[0].body, 'Already cached body', 'Cached text returns while Gmail source is blocked');
+  assert.deepEqual(first.messages[0].attachments, []);
+  const second = await conversationMessagesPage('a','owner@gmail.com','alice@gmail.com', { query: readQuery });
+  assert.equal(second.sourcesPending, true);
+  assert.equal(fetches, 1, 'Polling joins the in-flight inspection instead of fetching again');
+  release({ payload: { mimeType:'multipart/mixed', parts:[
+    { mimeType:'text/plain', body:{ data:Buffer.from('Original source').toString('base64url') } },
+    { mimeType:'image/jpeg', filename:'photo.jpg', body:{ attachmentId:'inline-photo',size:1200 },
+      headers:[{ name:'Content-Disposition',value:'inline' },{ name:'Content-ID',value:'<photo>' }] },
+    { mimeType:'application/pdf', filename:'notes.pdf', body:{ attachmentId:'document',size:100 } },
+  ] } });
+  const deadline = Date.now() + 1000;
+  while (!savedSources.length && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(savedSources.length, 1);
+  assert.deepEqual(savedSources[0].attachments.map(file => file.id), ['inline-photo','document']);
+  const complete = await conversationMessagesPage('a','owner@gmail.com','alice@gmail.com', { query: readQuery });
+  assert.equal(complete.sourcesPending, false, 'Pending clears only after complete attachment persistence');
+  assert.deepEqual(complete.messages[0].attachments.map(file => file.id), ['inline-photo','document']);
+  assert.equal(fetches, 1, 'Version 2 rows do not re-fetch on every poll');
+});
+
+test('source failure preserves cached files and leaves legacy rows unchecked for retry', async () => {
+  await add('legacy-failure',100);
+  await db.query("UPDATE messages SET attachments='[]'::jsonb WHERE message_id='legacy-failure'");
+  fetchSource = async () => { throw Error('source temporarily unavailable'); };
+  const page = await conversationMessagesPage('a','owner@gmail.com','alice@gmail.com', { query: readQuery });
+  assert.equal(page.sourcesPending, true);
+  await new Promise(resolve => setImmediate(resolve));
+  const stored = await db.query("SELECT source_version,body_text,attachments FROM messages WHERE message_id='legacy-failure'");
+  assert.equal(stored.rows[0].source_version,0);
+  assert.equal(stored.rows[0].body_text,'Original body');
+  assert.deepEqual(stored.rows[0].attachments,[]);
+  assert.equal(savedSources.length,0);
 });
 
 test('production background directory reads bounded metadata and source snippets without loading bodies', async () => {

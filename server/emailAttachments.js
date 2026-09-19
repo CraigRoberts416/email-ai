@@ -36,7 +36,7 @@ function pageCount() {
  * the layout from a picture the sender meant to send you. Gmail does not
  * always set it, so size is the backstop.
  */
-function extractAttachments(payload, { limit = 8, minimumBytes = MIN_BYTES, allowGIF = false } = {}) {
+function extractAttachments(payload, { limit = 8, minimumBytes = MIN_BYTES, allowGIF = false, includeInlineImages = false } = {}) {
   const found = [];
 
   function walk(part) {
@@ -53,7 +53,11 @@ function extractAttachments(payload, { limit = 8, minimumBytes = MIN_BYTES, allo
       const isInline = /^\s*inline/i.test(disposition);
       const mimeType = part.mimeType ?? 'application/octet-stream';
 
-      if (!isInline && size >= minimumBytes && (allowGIF || !INLINE_TYPES.has(mimeType))) {
+      // Personal photos pasted into a Gmail body are inline CID attachments.
+      // Complete source galleries include these; feed previews keep their
+      // existing compact attachment policy.
+      if ((!isInline || (includeInlineImages && mimeType.startsWith('image/')))
+          && size >= minimumBytes && (allowGIF || !INLINE_TYPES.has(mimeType))) {
         found.push({
           id: attachmentId,
           filename,

@@ -454,7 +454,12 @@ struct PostView: View {
 
             // The one thing on this card the model did not write.
             Group {
-                if message.isInterpreting && message.quote == nil {
+                if message.kicker == .original {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        Text(message.subject).typeStyle(Style.quote).foregroundStyle(Ink.primary).lineLimit(3)
+                        Text(message.snippet).typeStyle(Style.bodySmall).foregroundStyle(Ink.secondary).lineLimit(3)
+                    }
+                } else if message.isInterpreting && message.quote == nil {
                     CaretLine(label: "Reading this one\u{2026}")
                 } else if let quote = message.quote {
                     quoteText(quote, ink: message.isRead ? metaInk : Ink.primary)
@@ -795,12 +800,10 @@ struct PostView: View {
             .aspectRatio(Metric.mediaAspectWide, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .overlay {
-                AsyncImage(url: url, transaction: Transaction(animation: Move.crossfade)) { phase in
-                    if case .success(let image) = phase {
-                        image.resizable().scaledToFill()
-                    } else {
-                        heroGround
-                    }
+                CachedRemoteImage(url: url, cacheKey: url == message.heroImageURL
+                    ? SenderIdentityStore.shared.imageKey(for: message.sender.address, role: "hero")
+                    : "mail:\(message.mailboxID):\(message.id):picture") {
+                    heroGround
                 }
             }
             .clipped()
@@ -904,6 +907,7 @@ struct PostView: View {
     /// the AI did not write, and a VoiceOver user has to be able to tell.
     private var accessibilityLabel: String {
         var parts = ["\(message.sender.displayName), \(message.kicker.rawValue.lowercased())"]
+        if message.kicker == .original { parts += [message.subject, message.snippet] }
         // In a unified feed, which account a message landed in is information,
         // not decoration.
         if let tag { parts.append("in \(tag)") }

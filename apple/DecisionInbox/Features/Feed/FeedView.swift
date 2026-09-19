@@ -9,7 +9,7 @@ struct FeedView: View {
     /// Status-bar tap is free from UIKit while one scroll view is on screen and
     /// is deliberately not reimplemented here.
     var scrollTopSignal: Int = 0
-    var notificationMessageID: String? = nil
+    var notificationRequest: NotificationOpenRequest? = nil
 
     /// A `ScrollPosition` binding re-applies its last requested position on
     /// re-render, so once anything asked it for `.top` the feed was pinned
@@ -18,16 +18,49 @@ struct FeedView: View {
     @State private var scroller: ScrollViewProxy?
     private static let topAnchor = "feed.top"
     @State private var open: Message?
+    @State private var handledNotificationID: UUID?
+    @State private var notificationLoading = false
+    @State private var notificationFailure: String?
     @State private var profile: Sender?
     @State private var compose: ComposeView.Intent?
     @State private var showRunLog = false
     @State private var showingOldPosts = false
     @State private var scrollPass = ScrollPastState()
-    @State private var scrollingGroups: [(String, [Message])]?
     @State private var progress = FeedScrollProgress()
     @State private var viewportHeight: CGFloat = 700
     @State private var feedVisible = false
-    @State private var clearing: Task<Void, Never>?
+    @State private var footerVisible = false
+    @State private var scrollSnapshot: ScrollSnapshot?
+    @State private var readCommitTask: Task<Void, Never>?
+    @State private var readQueue = ScrollReadQueue()
+
+    /// Content can finish arriving while a finger or deceleration moves the
+    /// feed. This visit's geometry stays fixed until that movement ends.
+    private struct ScrollSnapshot {
+        let groups: [(String, [Message])]
+        let masthead: Masthead
+        let footer: AnyView
+        let seenFailure: String?
+    }
+
+    private var currentMasthead: Masthead {
+        Masthead(recap: store.recap, waiting: store.waitingCount,
+                 total: store.remainingInFeed ?? store.activeMessages.count,
+                 totalIsComplete: store.remainingInFeed != nil,
+                 isReading: store.isFirstSync || (store.activeMessages.isEmpty && store.checkingCompletion),
+                 isComplete: store.completionVerified)
+    }
+    private var displayedGroups: [(String, [Message])] { scrollSnapshot?.groups ?? store.messages() }
+    private var displayedMasthead: Masthead { scrollSnapshot?.masthead ?? currentMasthead }
+    private var displayedFooter: AnyView { scrollSnapshot?.footer ?? AnyView(feedFooter) }
+    private var displayedSeenFailure: String? {
+        if let scrollSnapshot { return scrollSnapshot.seenFailure }
+        return store.seenFailure
+    }
+    private var canCommitScrollReads: Bool {
+        feedVisible && scenePhase == .active && open == nil && profile == nil
+            && compose == nil && !showingOldPosts && !showRunLog && !swiping && !refreshing && !notificationLoading
+    }
 
 
     /// Hysteresis state for the pill. A `Bool` rather than a scroll offset, so
@@ -55,7 +88,7 @@ struct FeedView: View {
     /// the pill's faces.
     @Namespace private var feedZoom
 
-    private var showsPill: Bool { !store.pending.isEmpty && pillVisible && !swiping }
+    private var showsPill: Bool { !store.eligiblePending.isEmpty && pillVisible && !swiping }
 
     var body: some View {
         NavigationStack {
@@ -66,13 +99,10 @@ struct FeedView: View {
                         // The space the pull strip holds open while it works.
                         Color.clear.frame(height: stripHold)
 
-                        Masthead(
-                            recap: store.recap,
-                            waiting: store.waitingCount,
-                            total: store.activeMessages.count,
-                            isReading: store.isFirstSync || (store.activeMessages.isEmpty && store.checkingCompletion),
-                            isComplete: store.completionVerified
-                        )
+                        displayedMasthead
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
+                            cancelIfLayoutChanged(from: old, to: new)
+                        }
                         .accessibilityElement(children: .contain)
                         // `.refreshable` supplied the VoiceOver rotor's Refresh
                         // action for free. Driving the pull by hand removes
@@ -80,14 +110,14 @@ struct FeedView: View {
                         .accessibilityAction(named: "Refresh") { Task { await refreshNow() } }
                         .id(Self.topAnchor)
 
-                        ForEach(scrollingGroups ?? store.messages(), id: \.0) { section, items in
+                        ForEach(displayedGroups, id: \.0) { section, items in
                             Section {
-                            ForEach(items) { message in
+                            ForEach(items, id: \.feedKey) { message in
                                 PostView(
                                     message: message,
                                     tag: store.showsMailboxTags
                                         ? store.mailbox(message.mailboxID)?.tag : nil,
-                                    onOpen: { open = message },
+                                    onOpen: { store.noteFeedInteraction(); open = message },
                                     // Reply and Forward open the thread, where
                                     // the composer belongs — one tap, one
                                     // destination, rather than a push and a
@@ -102,32 +132,36 @@ struct FeedView: View {
                                     onReact: { store.react(message, $0) },
                                     onSwiping: { swiping = $0 }
                                 )
-                                .id(message.id)
-                                .onGeometryChange(for: ScrollPastState.Region.self) { geometry in
+                                .id(message.feedKey)
+                                .onGeometryChange(for: FeedPostGeometry.self) { geometry in
                                     let frame = geometry.frame(in: .scrollView(axis: .vertical))
-                                    if frame.maxY <= 0 { return .above }
-                                    if frame.minY >= viewportHeight { return .below }
-                                    return .visible
+                                    let region: ScrollPastState.Region = frame.maxY <= 0 ? .above
+                                        : (frame.minY >= viewportHeight ? .below : .visible)
+                                    return FeedPostGeometry(region: region, height: frame.height)
                                 } action: { old, new in
-                                    guard feedVisible, scenePhase == .active, open == nil,
-                                          profile == nil, !showingOldPosts, !swiping else { return }
-                                    scrollPass.moved(message.id, from: old, to: new, at: progress.offset)
+                                    guard canCommitScrollReads else { return }
+                                    guard !cancelIfLayoutChanged(from: old.height, to: new.height) else { return }
+                                    scrollPass.moved(message.feedKey, from: old.region, to: new.region, at: progress.offset)
+                                    enqueueScrollReads(scrollPass.takePassed())
                                 }
                                 .accessibilityAction(named: "Mark as seen") {
                                     Task { await store.markSeen(message) }
                                 }
                                 .opacity(admitted.contains(message.id) ? 0 : 1)
-                                .matchedTransitionSource(id: message.id, in: feedZoom)
+                                .matchedTransitionSource(id: message.feedKey, in: feedZoom)
                             }
                             } header: {
                                 // Sticky, because a date band that scrolls away
                                 // is decoration; one that stays is the landmark
                                 // you navigate a long feed by.
-                                Dateline(section)
+                                Dateline(section, remaining: displayedRemaining(in: section), showsCount: true)
+                                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
+                                        cancelIfLayoutChanged(from: old, to: new)
+                                    }
                             }
                         }
 
-                        if let failure = store.seenFailure {
+                        if let failure = displayedSeenFailure {
                             VStack(alignment: .leading, spacing: Space.sm) {
                                 Text(failure).typeStyle(Style.body).foregroundStyle(Ink.secondary)
                                 Button("Try again") { Task { await store.retrySeen() } }
@@ -136,49 +170,14 @@ struct FeedView: View {
                             .padding(Metric.gutter)
                         }
 
-                        if store.isFirstSync {
-                            // "Nothing waiting" would be a lie here: the mail
-                            // exists, we just have not been handed it yet.
-                            EmptyStateView(
-                                headline: "Reading your mailbox\u{2026}",
-                                detail: "THE FIRST PASS TAKES A MINUTE. POSTS APPEAR AS THEY ARE UNDERSTOOD."
-                            )
-                        } else if store.activeMessages.isEmpty, let failure = store.loadFailure {
-                            // An empty feed we could not fetch is not an empty
-                            // mailbox, and must never be reported as one.
-                            EmptyStateView(
-                                headline: "Couldn\u{2019}t load your mail.",
-                                detail: failure.uppercased(),
-                                actionLabel: "Try again",
-                                action: { Task { await refreshNow() } }
-                            )
-                        } else if store.activeMessages.isEmpty {
-                            if store.hasPendingInFeed {
-                                EmptyStateView(headline: "New posts are here.", detail: "READY WHEN YOU ARE.", actionLabel: "See new posts", action: { store.admitPending() })
-                            } else if store.checkingCompletion {
-                                ProgressView("Checking your inbox…").padding(Metric.gutter)
-                                    .frame(maxWidth: .infinity)
-                            } else if store.completionVerified {
-                                EmptyStateView(
-                                    headline: "Inbox zero.",
-                                    detail: "YOU’VE SEEN EVERY POST IN THIS FEED. YOUR EMAILS ARE STILL IN YOUR MAILBOX.",
-                                    actionLabel: store.showOldPosts ? "See old posts" : nil,
-                                    action: store.showOldPosts ? { showingOldPosts = true } : nil
-                                )
-                            } else {
-                                EmptyStateView(headline: "Your feed is clear.",
-                                    detail: store.completionFailure ?? "CHECKING FOR ANY REMAINING UNREAD MAIL.",
-                                    actionLabel: "Check remaining mail",
-                                    action: { Task { await store.verifyCompletion() } })
+                        displayedFooter
+                            .onScrollVisibilityChange(threshold: 0.1) { footerVisible = $0 }
+                            .task(id: "\(store.feedSessionID):\(store.sessionMessages.count):\(footerVisible):\(scrollSnapshot == nil)") {
+                                if scrollSnapshot == nil && footerVisible && store.hasMoreFeed && store.paginationFailure == nil {
+                                    await store.loadMoreFeed()
+                                }
                             }
-                        } else {
-                            Text("SCROLL PAST A POST TO CLEAR IT")
-                                .typeStyle(Style.monoSmall)
-                                .foregroundStyle(Ink.secondary)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.top, Space.xl)
-                                .frame(height: viewportHeight, alignment: .top)
-                        }
+
                     }
                     // The tab bar floats over content on iOS 26, so the feed
                     // has to clear it itself or the last post sits underneath.
@@ -190,7 +189,10 @@ struct FeedView: View {
                     // This plain reference does not invalidate the view at scroll frequency.
                     progress.offset = Double(value)
                 }
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _, height in viewportHeight = height }
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { old, new in
+                    if old != .zero && old != new { scrollPass.cancel() }
+                    viewportHeight = new.height
+                }
                 // Content used to run straight under the clock and under the
                 // floating tab bar with nothing between them, so a post's CTA
                 // could sit in the notch and the dateline had bare white above
@@ -239,29 +241,28 @@ struct FeedView: View {
                 }
                 }
                 .onScrollPhaseChange { old, phase in
-                    if phase == .tracking { clearing?.cancel() }
-                    if phase == .interacting {
-                        clearing?.cancel()
-                        // Keep row geometry still while a finger is down. Late
-                        // network responses can reconcile when scrolling rests.
-                        scrollingGroups = store.messages()
-                        scrollPass.begin(at: progress.offset)
-                    }
-                    if phase == .idle {
+                    switch phase {
+                    case .tracking:
+                        scrollPass.cancel()
+                        captureScrollSnapshot()
+                    case .interacting:
+                        captureScrollSnapshot()
+                        store.noteFeedInteraction()
+                        if canCommitScrollReads { scrollPass.begin(at: progress.offset) }
+                    case .decelerating:
+                        // Keep measuring the same layout after finger release.
+                        break
+                    case .idle:
+                        // Finish against the held layout before any newly
+                        // completed content is allowed to change its bounds.
                         let ids = scrollPass.finish()
-                        scrollingGroups = nil
-                        if feedVisible && scenePhase == .active && open == nil && profile == nil && !showingOldPosts && !ids.isEmpty {
-                            let posts = store.activeMessages.filter { ids.contains($0.id) }
-                            clearing?.cancel()
-                            clearing = Task {
-                                for post in posts {
-                                    guard !Task.isCancelled, feedVisible, scenePhase == .active, open == nil,
-                                          profile == nil, !showingOldPosts, !scrollPass.userScrolling else { break }
-                                    await store.markSeen(post)
-                                }
-                                if store.activeMessages.isEmpty && !Task.isCancelled { scroller?.scrollTo(Self.topAnchor, anchor: .top) }
-                            }
-                        }
+                        releaseScrollSnapshot()
+                        enqueueScrollReads(ids)
+                    case .animating:
+                        // Programmatic scrolling is navigation, never reading.
+                        cancelScrollReads()
+                    @unknown default:
+                        cancelScrollReads()
                     }
                     // No cue on release: H2 already reported the decision, and
                     // a second cue re-reports one decision.
@@ -270,6 +271,10 @@ struct FeedView: View {
                     startRefresh()
                 }
                 .onChange(of: scrollTopSignal) { _, _ in scrollToTop() }
+                .onChange(of: store.feedSessionID) { _, _ in
+                    cancelScrollReads()
+                    scroller?.scrollTo(Self.topAnchor, anchor: .top)
+                }
 
                 // Both live on the top edge, so they stack rather than
                 // overlapping when a pull happens during a degraded state.
@@ -291,16 +296,45 @@ struct FeedView: View {
             .background(Ink.surface)
             .navigationBarHidden(true)
             .onAppear { feedVisible = true }
-            .onChange(of: notificationMessageID) { _, id in
-                if let id { open = (store.messages + store.pending).first { $0.id == id } }
+            .onChange(of: notificationRequest, initial: true) { _, _ in
+                handledNotificationID = nil
+                notificationFailure = nil
+                openNotificationIfAvailable()
             }
-            .onDisappear { feedVisible = false; scrollPass.cancel(); scrollingGroups = nil; clearing?.cancel() }
+            .task(id: notificationRequest?.id) {
+                guard let request = notificationRequest else { return }
+                await loadNotification(request)
+            }
+            .onChange(of: store.messages.map(\.feedKey)) { openNotificationIfAvailable() }
+            .onChange(of: store.pending.map(\.feedKey)) { openNotificationIfAvailable() }
+            .overlay(alignment: .top) {
+                if notificationLoading {
+                    ProgressView("Opening email…")
+                        .padding().background(.regularMaterial, in: Capsule())
+                        .padding(.top, Space.sm)
+                        .accessibilityAddTraits(.updatesFrequently)
+                }
+            }
+            .alert("Couldn’t open email", isPresented: Binding(
+                get: { notificationFailure != nil }, set: { if !$0 { notificationFailure = nil } }
+            )) {
+                Button("Try again") {
+                    if let request = notificationRequest { Task { await loadNotification(request) } }
+                }
+                Button("Cancel", role: .cancel) { notificationFailure = nil }
+            } message: { Text(notificationFailure ?? "Please try again.") }
+            .onDisappear { feedVisible = false; cancelScrollReads() }
             .onChange(of: scenePhase) { _, phase in
-                if phase != .active { scrollPass.cancel(); clearing?.cancel() }
+                if phase != .active { cancelScrollReads() }
             }
             .onChange(of: open != nil) { _, presented in
-                if presented { scrollPass.cancel(); clearing?.cancel() }
+                if presented { store.noteFeedInteraction(); cancelScrollReads() }
             }
+            .onChange(of: profile != nil) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: showingOldPosts) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: compose != nil) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: showRunLog) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: swiping) { _, active in if active { cancelScrollReads() } }
             .sheet(isPresented: $showingOldPosts) { OldPostsView() }
             // The sender. `profile` was being set by every avatar tap and
             // observed by nothing — the screen existed, was built, was styled,
@@ -316,6 +350,7 @@ struct FeedView: View {
             // wrong even when the radius is right.
             .sheet(item: $open) { message in
                 ThreadView(message: message)
+                    .id(message.feedKey)
                     .presentationDetents([.large])
                     // No grabber. The gesture exists either way, and the
                     // handle is the system's way of advertising a *resize*
@@ -325,7 +360,7 @@ struct FeedView: View {
                     // Delivers the post lifting and expanding into the sheet,
                     // and the system's own fallback when the source row has
                     // been recycled out of the LazyVStack.
-                    .navigationTransition(.zoom(sourceID: message.id, in: feedZoom))
+                    .navigationTransition(.zoom(sourceID: message.feedKey, in: feedZoom))
             }
             // Agent progress and receipts stack at the bottom, above the tab
             // bar. Neither ever takes the screen.
@@ -353,9 +388,96 @@ struct FeedView: View {
         }
     }
 
+    private func openNotificationIfAvailable() {
+        guard let request = notificationRequest, handledNotificationID != request.id else { return }
+        let connected = Set(store.auth.accounts.map(\.id))
+        guard let message = (store.messages + store.pending + store.sessionMessages + store.saved).first(where: {
+            request.matches(messageID: $0.id, mailboxID: $0.mailboxID, connectedMailboxIDs: connected)
+        }) else { return }
+        handledNotificationID = request.id
+        notificationLoading = false
+        notificationFailure = nil
+        open = message
+    }
+
+    private func loadNotification(_ request: NotificationOpenRequest) async {
+        guard !store.isSample, handledNotificationID != request.id else { return }
+        notificationLoading = true
+        notificationFailure = nil
+        cancelScrollReads()
+        defer { if notificationRequest?.id == request.id { notificationLoading = false } }
+        do {
+            let message = try await store.notificationMessage(request)
+            guard !Task.isCancelled, notificationRequest?.id == request.id,
+                  handledNotificationID != request.id else { return }
+            handledNotificationID = request.id
+            open = message
+        } catch {
+            guard !Task.isCancelled, notificationRequest?.id == request.id,
+                  handledNotificationID != request.id else { return }
+            notificationFailure = error.localizedDescription
+        }
+    }
+
     // MARK: Scroll to top
 
+    private func captureScrollSnapshot() {
+        guard scrollSnapshot == nil else { return }
+        scrollSnapshot = ScrollSnapshot(groups: store.messages(), masthead: currentMasthead,
+                                        footer: AnyView(feedFooter), seenFailure: store.seenFailure)
+    }
+
+    private func releaseScrollSnapshot() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { scrollSnapshot = nil }
+    }
+
+    private func cancelScrollReads() {
+        // Already-sent reads finish: cancelling their response could leave
+        // Gmail read while the app incorrectly rolls its count back.
+        readQueue.cancelPending()
+        scrollPass.cancel()
+        releaseScrollSnapshot()
+    }
+
+    @discardableResult private func cancelIfLayoutChanged(from old: CGFloat, to new: CGFloat) -> Bool {
+        guard scrollPass.userScrolling, old > 0, abs(new - old) > 0.5 else { return false }
+        // Rotation, Dynamic Type, or an unexpected size change invalidates
+        // this gesture's evidence. A later gesture can establish a new pass.
+        scrollPass.cancel()
+        return true
+    }
+
+    private func displayedRemaining(in section: String) -> Int? {
+        let unread = Set(store.messages().first(where: { $0.0 == section })?.1
+            .filter { !$0.isRead }.map(\.feedKey) ?? [])
+        return readQueue.remaining(confirmed: store.progressRemaining(in: section), unreadKeys: unread)
+    }
+
+    private func enqueueScrollReads(_ keys: Set<String>) {
+        guard canCommitScrollReads, !keys.isEmpty else { return }
+        let posts = store.sessionMessages.filter { keys.contains($0.feedKey) && !$0.isRead }
+        readQueue.enqueue(posts.map(\.feedKey), generation: store.feedSessionID)
+        guard readCommitTask == nil else { return }
+        readCommitTask = Task { @MainActor in
+            while canCommitScrollReads,
+                  let entry = readQueue.takeNext(generation: store.feedSessionID) {
+                if let current = store.sessionMessages.first(where: { $0.feedKey == entry.key }),
+                   !current.isRead {
+                    await store.markSeen(current)
+                }
+                // Success is already reflected in confirmed counts/read
+                // state. Failure releases the optimistic subtraction.
+                readQueue.finish(entry)
+            }
+            readQueue.cancelPending()
+            readCommitTask = nil
+        }
+    }
+
     private func scrollToTop() {
+        cancelScrollReads()
         // A 2000pt animated camera move is the clearest vestibular trigger in
         // this app, and the destination is what matters, not the journey.
         guard !reduceMotion else { scroller?.scrollTo(Self.topAnchor, anchor: .top); return }
@@ -368,8 +490,8 @@ struct FeedView: View {
         Group {
             if showsPill {
                 NewPostsPill(
-                    senders: store.pending.map(\.sender),
-                    count: store.pending.count,
+                    senders: store.eligiblePending.map(\.sender),
+                    count: store.eligiblePending.count,
                     action: admitPending
                 )
                 .padding(.top, Space.sm)
@@ -392,7 +514,8 @@ struct FeedView: View {
     /// valid regardless of how much content was just inserted, so no delayed
     /// callback is needed.
     private func admitPending() {
-        let batch = Set(store.pending.map(\.id))
+        cancelScrollReads()
+        let batch = Set(store.eligiblePending.map(\.id))
 
         let land = {
             scroller?.scrollTo(Self.topAnchor, anchor: .top)
@@ -462,6 +585,7 @@ struct FeedView: View {
     }
 
     private func startRefresh() {
+        cancelScrollReads()
         refreshing = true
         armed = false
         withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
@@ -509,10 +633,53 @@ struct FeedView: View {
     /// incoherent, and the insertion is safe because a pull only happens at the
     /// top.
     private func refreshNow() async {
-        if !store.pending.isEmpty {
-            withAnimation(Move.resolved(Move.layout, reduceMotion)) { store.admitPending() }
-        }
+        cancelScrollReads()
+        store.beginFeedSession()
         await store.refresh()
+    }
+
+    @ViewBuilder private var feedFooter: some View {
+        if store.isFirstSync && store.sessionMessages.isEmpty {
+            EmptyStateView(headline: "Reading your mailbox…", detail: "YOUR EMAILS WILL APPEAR HERE AS THEY LOAD.")
+        } else if store.sessionMessages.isEmpty, let failure = store.loadFailure {
+            EmptyStateView(headline: "Couldn’t load your mail.", detail: failure,
+                           actionLabel: "Try again", action: { Task { await refreshNow() } })
+        } else if store.hasMoreFeed {
+            VStack(spacing: Space.md) {
+                if let failure = store.paginationFailure {
+                    Text(failure).typeStyle(Style.body).foregroundStyle(Ink.secondary)
+                    Button("Try again") { Task { await store.loadMoreFeed() } }
+                        .frame(minHeight: Metric.tapTarget)
+                } else {
+                    ProgressView("Loading older emails…")
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 100)
+        } else if store.checkingCompletion && store.sessionMessages.isEmpty {
+            ProgressView("Checking your inbox…").frame(maxWidth: .infinity).padding(Metric.gutter)
+        } else if store.feedEndVerified {
+            VStack(spacing: Space.md) {
+                Text("No more emails.")
+                    .typeStyle(Style.body).foregroundStyle(Ink.secondary)
+                if store.hasPendingInFeed {
+                    Button("See new posts") { store.admitPending() }.frame(minHeight: Metric.tapTarget)
+                } else if store.completionVerified && store.showOldPosts {
+                    Button("See old posts") { showingOldPosts = true }.frame(minHeight: Metric.tapTarget)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, Space.xl)
+            .frame(minHeight: store.sessionMessages.isEmpty ? 180 : viewportHeight, alignment: .top)
+            .accessibilityIdentifier("feed.end")
+        } else {
+            VStack(spacing: Space.md) {
+                Text(store.completionFailure ?? "Checking for older emails…")
+                    .typeStyle(Style.body).foregroundStyle(Ink.secondary)
+                Button("Check again") { Task { await store.verifyCompletion() } }
+                    .frame(minHeight: Metric.tapTarget)
+            }
+            .frame(maxWidth: .infinity).padding(Metric.gutter)
+        }
     }
 
     private func undo(_ receipt: FeedStore.Receipt) -> (() -> Void)? {
@@ -612,6 +779,7 @@ struct Masthead: View {
     let recap: APIClient.Recap?
     let waiting: Int
     let total: Int
+    var totalIsComplete = true
     /// The mailbox has not been read yet, so there is no count to print.
     var isReading = false
     var isComplete = false
@@ -734,14 +902,14 @@ struct Masthead: View {
                 Text("·")
                     .typeStyle(Style.kicker)
                     .foregroundStyle(Ink.tertiary)
-                Text("\(total) NEW")
+                Text("\(total) \(totalIsComplete ? "NEW" : "LOADED")")
                     .typeStyle(Style.kicker)
                     .foregroundStyle(Ink.tertiary)
                     .monospacedDigit()
             } else {
                 // Nothing waiting is the good morning, and it does not need a
                 // zero printed at size to say so.
-                Text(total > 0 ? "\(total) NEW POSTS" : (isComplete ? "NO UNREAD POSTS" : "NO POSTS TO SHOW"))
+                Text(total > 0 ? "\(total) \(totalIsComplete ? "NEW POSTS" : "LOADED")" : (isComplete ? "NO UNREAD POSTS" : "NO POSTS TO SHOW"))
                     .typeStyle(Style.kicker)
                     .foregroundStyle(Ink.tertiary)
                     .monospacedDigit()
@@ -774,21 +942,38 @@ struct Masthead: View {
 
 struct Dateline: View {
     let label: String
-    init(_ label: String) { self.label = label }
+    var remaining: Int?
+    var showsCount: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(_ label: String, remaining: Int? = nil, showsCount: Bool = false) {
+        self.label = label
+        self.remaining = remaining
+        self.showsCount = showsCount
+    }
 
     var body: some View {
-        // No leading rule: the post above already drew one, and two hairlines
-        // 1pt apart read as a rendering fault rather than a boundary.
-        VStack(spacing: 0) {
-            Text(label)
-                .typeStyle(Style.dateline)
-                .foregroundStyle(Ink.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Metric.gutter)
-                .padding(.vertical, Space.sm)
-                .background(Ink.surfaceTertiary)
-            Rule()
+        HStack(alignment: .firstTextBaseline) {
+            Text(label.uppercased()).typeStyle(Style.dateline)
+            Spacer(minLength: Space.md)
+            if showsCount {
+                Text(remaining.map { $0.formatted() + " LEFT" } ?? "…")
+                    .typeStyle(Style.dateline)
+                    .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText(value: Double(remaining ?? 0)))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: remaining)
+                    .accessibilityIdentifier("feed.count." + label.lowercased())
+            }
         }
+        .foregroundStyle(Ink.secondary)
+        .padding(.horizontal, Metric.gutter)
+        .padding(.vertical, Space.sm)
+        .background(Ink.surfaceTertiary)
+        .overlay(alignment: .bottom) { Rule() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(showsCount
+            ? label.capitalized + (remaining.map { ", \($0) unread emails remaining" } ?? ", unread count syncing")
+            : label)
     }
 }
 
@@ -865,3 +1050,9 @@ struct CaughtUp: View {
 
 /// Scroll position is sampled for gesture eligibility, never rendered.
 private final class FeedScrollProgress { var offset: Double = 0 }
+
+/// Changes only when a card changes region or size, not on every scroll frame.
+private struct FeedPostGeometry: Equatable {
+    let region: ScrollPastState.Region
+    let height: CGFloat
+}

@@ -16,7 +16,7 @@ struct OldPostsView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(posts) { message in
+                    ForEach(posts, id: \.feedKey) { message in
                         PostView(message: store.currentVersion(of: message),
                             tag: store.showsMailboxTags ? store.mailbox(message.mailboxID)?.tag : nil,
                             onOpen: { open = message }, onReply: { open = message },

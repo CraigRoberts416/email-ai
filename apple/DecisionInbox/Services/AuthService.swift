@@ -35,6 +35,7 @@ final class AuthService: NSObject {
 
     private static let scopes = [
         "openid", "profile", "email", "https://mail.google.com/",
+        GooglePeoplePhotos.contactsScope, GooglePeoplePhotos.otherContactsScope,
     ].joined(separator: " ")
 
     private enum Key {
@@ -43,11 +44,13 @@ final class AuthService: NSObject {
         static func refreshToken(_ id: String) -> String { "google.\(id).refreshToken" }
         static func expiresAt(_ id: String) -> String { "google.\(id).expiresAt" }
         static func tag(_ id: String) -> String { "google.\(id).tag" }
+        static func scopes(_ id: String) -> String { "google.\(id).scopes" }
     }
 
     var accounts: [Account] = []
     var lastError: String?
     var isConnecting = false
+    var photoAuthorizationVersion = 0
 
     var isAuthenticated: Bool { !accounts.isEmpty }
 
@@ -156,10 +159,11 @@ final class AuthService: NSObject {
     }
 
     func disconnect(_ id: String) {
-        [Key.accessToken(id), Key.refreshToken(id), Key.expiresAt(id), Key.tag(id)]
+        [Key.accessToken(id), Key.refreshToken(id), Key.expiresAt(id), Key.tag(id), Key.scopes(id)]
             .forEach(Keychain.remove)
         accounts.removeAll { $0.id == id }
         Self.storeIDs(accounts.map(\.id))
+        photoAuthorizationVersion += 1
     }
 
     func rename(_ id: String, tag: String) {
@@ -193,6 +197,12 @@ final class AuthService: NSObject {
 
     func refreshToken(for id: String) -> String? { Keychain.get(Key.refreshToken(id)) }
 
+    func googlePhotoScopes(for id: String) -> Set<String> {
+        guard accounts.contains(where: { $0.id == id }) else { return [] }
+        let granted = Set((Keychain.get(Key.scopes(id)) ?? "").split(separator: " ").map(String.init))
+        return granted.intersection([GooglePeoplePhotos.contactsScope, GooglePeoplePhotos.otherContactsScope])
+    }
+
     func expiresAt(for id: String) -> Double {
         Keychain.get(Key.expiresAt(id)).flatMap(Double.init) ?? 0
     }
@@ -206,6 +216,11 @@ final class AuthService: NSObject {
         // Google omits the refresh token on refresh responses; never clobber it.
         if let refresh = token.refreshToken ?? existing {
             Keychain.set(refresh, for: Key.refreshToken(id))
+        }
+        if let scopes = token.scope {
+            let previous = Keychain.get(Key.scopes(id))
+            Keychain.set(scopes, for: Key.scopes(id))
+            if scopes != previous { photoAuthorizationVersion += 1 }
         }
     }
 
@@ -331,11 +346,13 @@ struct TokenResponse: Decodable {
     let accessToken: String
     let expiresIn: Int
     let refreshToken: String?
+    let scope: String?
 
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case expiresIn = "expires_in"
         case refreshToken = "refresh_token"
+        case scope
     }
 }
 

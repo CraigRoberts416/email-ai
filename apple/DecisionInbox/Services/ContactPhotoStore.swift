@@ -36,7 +36,8 @@ final class ContactPhotoStore {
     }
 
     func refreshAuthorization() {
-        photos.removeAll()
+        // Foregrounding is a refresh, not evidence that a known photo vanished.
+        if !enabled || !permitted { photos.removeAll() }
         queried.removeAll()
         authorizationVersion += 1
     }
@@ -46,15 +47,19 @@ final class ContactPhotoStore {
         guard enabled, permitted, !queried.contains(key), loading.insert(key).inserted else { return }
         let version = authorizationVersion
         // CNContactStore's synchronous query runs away from the UI thread.
-        let data = await Task.detached(priority: .utility) {
+        let result = await Task.detached(priority: .utility) { () -> Result<Data?, Error> in
+            do {
             let predicate = CNContact.predicateForContacts(matchingEmailAddress: key)
-            let contacts = try? CNContactStore().unifiedContacts(matching: predicate,
+            let contacts = try CNContactStore().unifiedContacts(matching: predicate,
                 keysToFetch: [CNContactThumbnailImageDataKey as CNKeyDescriptor])
-            return contacts?.compactMap(\.thumbnailImageData).first
+            return .success(contacts.compactMap(\.thumbnailImageData).first)
+            } catch { return .failure(error) }
         }.value
         loading.remove(key)
         guard version == authorizationVersion, enabled, permitted else { return }
-        queried.insert(key)
-        if let data { photos[key] = data }
+        if case .success(let data) = result {
+            queried.insert(key)
+            photos[key] = data
+        }
     }
 }

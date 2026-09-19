@@ -20,7 +20,6 @@ final class PushService: NSObject {
         self.auth = auth
         self.baseURL = baseURL
         super.init()
-        UNUserNotificationCenter.current().delegate = self
     }
 
     /// Asks only if the system has not already been asked.
@@ -55,14 +54,14 @@ final class PushService: NSObject {
     }
 }
 
-extension PushService: UNUserNotificationCenterDelegate {
+extension AppDelegate: UNUserNotificationCenterDelegate {
     /// Shown while the app is open too. Mail that needs you does not become
     /// less urgent because you happen to be looking at a different tab.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        await AppDelegate.onMailboxUpdate?()
+        Task { @MainActor in await AppDelegate.onMailboxUpdate?() }
         return [.banner, .sound, .badge, .list]
     }
 
@@ -70,8 +69,8 @@ extension PushService: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        let messageID = response.notification.request.content.userInfo["messageId"] as? String
-        await AppDelegate.onOpenMessage?(messageID)
+        let request = NotificationOpenRequest(userInfo: response.notification.request.content.userInfo)
+        await AppDelegate.notificationTaps.receive(request)
     }
 }
 
@@ -80,7 +79,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     static var onToken: ((Data) -> Void)?
     static var lastToken: Data?
     static var onMailboxUpdate: (@MainActor () async -> Void)?
-    static var onOpenMessage: (@MainActor (String?) async -> Void)?
+    @MainActor static let notificationTaps = NotificationTapBuffer()
+
+    func application(_ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // Install before SwiftUI builds RootView so a notification that
+        // launches the process can reach the buffer immediately.
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
 
     func application(
         _ application: UIApplication,

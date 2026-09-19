@@ -50,7 +50,7 @@ struct SettingsFeedView: View {
                 }
             }
 
-            SettingsGroup("INBOX ZERO", caption: "Posts leave the feed when you scroll past them. Your emails stay in your mailbox.")
+            SettingsGroup("INBOX ZERO", caption: "Scroll past a post or open its email to mark it read. Cards stay until you refresh or return from another tab or app.")
             Rule()
             SettingsToggle(title: "See old posts", subtitle: "Offer a way back to older posts once the feed is clear.", isOn: Binding(
                 get: { store.showOldPosts }, set: { store.showOldPosts = $0 }

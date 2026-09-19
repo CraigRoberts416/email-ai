@@ -18,10 +18,8 @@ struct ThreadView: View {
     @State private var body_: APIClient.Body?
     @State private var failed = false
     @State private var showRemoteContent = false
-    /// The sender, when their avatar has been tapped. A sheet rather than a
-    /// push because this screen is itself a sheet with no navigation stack —
-    /// `SenderProfileView` draws its own back chevron and calls `dismiss()`,
-    /// which resolves to whichever presentation it actually got.
+    /// Sender profiles share the same system navigation controls in a sheet
+    /// as they do when pushed from Feed or People.
     @State private var profile: Sender?
     @State private var compose: ComposeView.Intent?
     @State private var discuss = DiscussModel()
@@ -47,6 +45,10 @@ struct ThreadView: View {
     private var sheetColor: Color { .sheet(fromHex: message.heroBackground) }
 
     var body: some View {
+        NavigationStack { threadContent }
+    }
+
+    private var threadContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 masthead
@@ -54,6 +56,7 @@ struct ThreadView: View {
                 DiscussSection(model: discuss)
             }
         }
+        .ignoresSafeArea(edges: .top)
         .scrollIndicators(.hidden)
         .feedEdges()
         // A real inset, not an overlay in a ZStack.
@@ -67,15 +70,8 @@ struct ThreadView: View {
         // every messaging app on the phone.
         .safeAreaInset(edge: .bottom, spacing: 0) { askBar }
         .background(sheetColor)
-        .overlay(alignment: .top) { floatingControls }
-        // Both bars, and owned here rather than by whoever pushed this view.
-        // The feed's destination hid the tab bar and search's did not, so the
-        // same thread was clean from one tab and, from the other, arrived with
-        // a tab bar across its ask field and a second back button above its
-        // own. A full-bleed sheet with its own chrome needs the system's gone;
-        // that is this screen's requirement to state, not every caller's to
-        // remember.
-        .toolbar(.hidden, for: .navigationBar)
+        .backNavigation { dismiss() }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { moreActions } }
         .toolbar(.hidden, for: .tabBar)
         .task {
             store.markRead(message)
@@ -83,7 +79,7 @@ struct ThreadView: View {
         }
         .sheet(item: $compose) { ComposeView(intent: $0, message: message) }
         .sheet(item: $profile) { sender in
-            SenderProfileView(sender: sender)
+            NavigationStack { SenderProfileView(sender: sender) }
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
         }
@@ -170,19 +166,10 @@ struct ThreadView: View {
     private var hero: some View {
         ZStack(alignment: .bottom) {
             if let url = message.heroImageURL {
-                AsyncImage(url: url, transaction: Transaction(animation: Move.crossfade)) { phase in
-                    if case .success(let image) = phase {
-                        // Fit, not fill, and no fixed height. A 320pt box with
-                        // `scaledToFill` crops every picture to the same
-                        // letterbox regardless of what it is — a product shot
-                        // lost its own packaging that way. The sender chose
-                        // the proportions; this shows them.
-                        image.resizable().aspectRatio(contentMode: .fit)
-                    } else {
-                        // Never a spinner. A picture that has not arrived is
-                        // the sender's own colour, which is already theirs.
-                        sheetColor.frame(height: heroHeight)
-                    }
+                CachedRemoteImage(url: url,
+                                  cacheKey: SenderIdentityStore.shared.imageKey(for: message.sender.address, role: "hero"),
+                                  contentMode: .fit) {
+                    sheetColor.frame(height: heroHeight)
                 }
                 .frame(maxWidth: .infinity)
             } else {
@@ -306,58 +293,24 @@ struct ThreadView: View {
 
     // MARK: Chrome
 
-    private var floatingControls: some View {
-        VStack(spacing: Space.md) {
-            // No grabber. The zoom transition already gives drag-down
-            // dismissal, and a drawn handle on a pushed view is a control that
-            // does not exist — the corners say "sheet" without claiming a
-            // gesture nothing is listening for.
-            HStack {
-                circleButton("chevron.left") { dismiss() }
-                Spacer()
-                Menu {
-                    Button("Save", systemImage: message.isSaved ? "bookmark.fill" : "bookmark") {
-                        store.toggleSaved(message)
-                    }
-                    Button("Archive", systemImage: "archivebox") {
-                        store.archive(message)
-                        dismiss()
-                    }
-                    if message.isPromotion {
-                        Button("Unsubscribe", systemImage: "xmark") {
-                            store.unsubscribe(from: message)
-                            dismiss()
-                        }
-                    }
-                } label: {
-                    circleLabel("ellipsis")
+    private var moreActions: some View {
+        Menu {
+            Button("Save", systemImage: message.isSaved ? "bookmark.fill" : "bookmark") {
+                store.toggleSaved(message)
+            }
+            Button("Archive", systemImage: "archivebox") {
+                store.archive(message)
+                dismiss()
+            }
+            if message.isPromotion {
+                Button("Unsubscribe", systemImage: "xmark") {
+                    store.unsubscribe(from: message)
+                    dismiss()
                 }
             }
-            .padding(.horizontal, Space.md)
+        } label: {
+            Label("More actions", systemImage: "ellipsis").labelStyle(.iconOnly)
         }
-        .padding(.top, Space.lg)
-    }
-
-    private func circleButton(_ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { circleLabel(symbol) }.buttonStyle(.plain)
-    }
-
-    private func circleLabel(_ symbol: String) -> some View {
-        // Glass rather than a flat scrim disc. These two sit on a photograph
-        // whose tone is whatever the sender's image happened to be, so a fixed
-        // black wash is a guess that is wrong for a bright hero and heavy on a
-        // dark one. Glass takes its value from what is actually behind it,
-        // which is the only thing that holds across every sender.
-        Image(systemName: symbol)
-            .font(.system(size: 15, weight: .medium))
-            // Not white. Glass lifts whatever is behind it, so white on it is
-            // unreadable over any hero; the scrim fallback still wants white.
-            .foregroundStyle(GlassInk.onScrim)
-            .frame(width: 40, height: 40)
-            .glassControl(fallback: Ink.scrim, in: Circle())
-            // Glass draws but does not hit-test, so the tappable area was the
-            // glyph rather than the disc around it.
-            .contentShape(.circle)
     }
 
     private var askBar: some View {

@@ -20,7 +20,7 @@ struct SettingsAIView: View {
         SettingsScreen(title: "AI", onBack: { dismiss() }) {
             SettingsGroup(
                 "INTERPRETATION",
-                caption: "Every email that reaches us is read by a model before you see it. That happens on our server, so there is nothing on this phone to turn off."
+                caption: "A model interprets feed posts on our server. Older email history can appear as original text before interpretation, so you can read it without waiting."
             )
             Rule()
             SettingsFact(title: "Posts in your feed", value: "\(visible.count)")

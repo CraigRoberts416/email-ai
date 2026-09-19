@@ -70,7 +70,7 @@ async function upsertMessages(userId, records) {
         -- that predates this column must not blank what is already stored.
         participants  = COALESCE(EXCLUDED.participants, messages.participants),
         synced_at     = NOW()
-    `, params);
+    `, params, { mailboxWriteUserId: userId });
   }
 }
 
@@ -94,14 +94,14 @@ async function getMessagesByIds(userId, ids) {
 async function getHistoryPageRecords(userId, ids) {
   if (!ids.length) return [];
   const { rows } = await query(`SELECT ${CARD_COLUMNS.join(', ')},
-      (body_text IS NOT NULL AND attachments IS NOT NULL AND image_url IS NOT NULL) AS source_inspected,
+      (body_text IS NOT NULL AND attachments IS NOT NULL AND image_url IS NOT NULL AND source_version >= 2) AS source_inspected,
       CASE WHEN ai_status <> 'done' THEN LEFT(body_text, 8000) ELSE NULL END AS original_text
     FROM messages WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, ids]);
   return rows.map(row => ({ ...rowToRecord(row), sourceInspected: row.source_inspected, originalText: row.original_text }));
 }
 async function saveProfileSource(userId, messageId, { bodyText, attachments, imageUrl = null }) {
   await query(`UPDATE messages SET body_text = COALESCE(body_text, $3),
-    attachments = $4::jsonb, image_url = COALESCE($5, image_url)
+    attachments = $4::jsonb, image_url = COALESCE($5, image_url), source_version = 2
     WHERE user_id = $1 AND message_id = $2`,
   [userId, messageId, bodyText, JSON.stringify(attachments), imageUrl]);
 }
@@ -129,7 +129,7 @@ async function reconcileUnreadLabels(userId, ids, startedAt, excluded = {}) {
       labels_updated_at = $3::timestamptz
     WHERE user_id = $1 AND labels_updated_at <= $3::timestamptz
       AND ('UNREAD' = ANY(label_ids) OR message_id = ANY($2::text[]))
-  `, [userId, ids, startedAt, excluded.SPAM ?? [], excluded.TRASH ?? []]);
+  `, [userId, ids, startedAt, excluded.SPAM ?? [], excluded.TRASH ?? []], { mailboxWriteUserId: userId });
 }
 
 async function getAll(userId, { limit = 50, cursor } = {}) {
@@ -331,7 +331,7 @@ async function queueNotifications(userId, messageIds) {
       AND m.message_id = ANY($2::text[]) AND m.post_cutoff = TRUE
       AND 'UNREAD' = ANY(m.label_ids) AND m.notification_sent_at IS NULL
       AND m.internal_date >= EXTRACT(EPOCH FROM u.notifications_started_at) * 1000
-  `, [userId, messageIds]);
+  `, [userId, messageIds], { mailboxWriteUserId: userId });
 }
 
 async function getPendingNotifications(userId) {
@@ -382,14 +382,15 @@ module.exports = {
 // Only called for Gmail messageDeleted history events; this removes the local
 // mirror, never the provider message. The account scope is mandatory.
 async function removeMessages(userId, ids) {
-  if (ids.length) await query('DELETE FROM messages WHERE user_id = $1 AND message_id = ANY($2::text[])', [userId, ids]);
+  if (ids.length) await query('DELETE FROM messages WHERE user_id = $1 AND message_id = ANY($2::text[])',
+    [userId, ids], { mailboxWriteUserId: userId });
 }
 module.exports.removeMessages = removeMessages;
 
 
 async function markAllMailSeen(userId, ids, generation) {
   if (ids.length) await query(`UPDATE messages SET all_mail_sync_generation = $3
-    WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, ids, generation]);
+    WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, ids, generation], { mailboxWriteUserId: userId });
 }
 
 // Pruning runs only after every provider page has been imported successfully.
@@ -400,7 +401,7 @@ async function reconcileAllMail(userId, generation, startedAt) {
     AND all_mail_sync_generation IS DISTINCT FROM $2
     AND first_synced_at < $3 AND labels_updated_at < $3
     AND NOT (COALESCE(label_ids, '{}') && ARRAY['SPAM', 'TRASH']::text[])`,
-  [userId, generation, startedAt]);
+  [userId, generation, startedAt], { mailboxWriteUserId: userId });
 }
 module.exports.markAllMailSeen = markAllMailSeen;
 module.exports.reconcileAllMail = reconcileAllMail;

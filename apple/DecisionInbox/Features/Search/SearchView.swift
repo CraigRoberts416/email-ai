@@ -37,7 +37,7 @@ struct SearchView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(results) { message in
+                            ForEach(results, id: \.feedKey) { message in
                                 PostView(
                                     message: message,
                                     tag: store.showsMailboxTags ? store.mailbox(message.mailboxID)?.tag : nil,

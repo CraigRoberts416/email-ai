@@ -12,15 +12,15 @@ It does not replace email infrastructure.
 
 Instead, it restructures the inbox into a system that makes email **faster to understand, safer to use, and easier to act on**.
 
-Supported providers include:
-
-* Gmail
-
-* Outlook
-
-* Yahoo Mail
+Current native support: **Gmail and Google Workspace**. Outlook and Yahoo Mail are planned and appear as unavailable provider choices; they are not working integrations yet.
 
 ---
+
+## **Current native contract — September 19, 2026**
+
+This document contains both the product vision and implementation requirements. For the current SwiftUI app, sections **11.12–11.12.2**, **12.9**, and **13.11.1** are authoritative for feed sessions, sender identity, read state, notifications, and badges. The feed currently runs chronologically; relevance-mode controls, per-mailbox notification switches, block/always-show lists, and other future controls described elsewhere are not shipped merely because they appear in this spec. The Figma audit distinguishes current native assets from historical concepts.
+
+Implementation and live-account verification are separate. See [improvement-review.md](./improvement-review.md) and [figma-audit-2026-09-19.md](./figma-audit-2026-09-19.md) for design evidence and remaining verification.
 
 # **Vision**
 
@@ -630,11 +630,11 @@ Users should feel that they can process their inbox quickly and reach a clear en
 
 When the feed ends, the product reinforces completion.
 
-Inbox zero is a core habit: the incoming feed clears as the user reviews it. A post is seen when the user scrolls past it, and it leaves the feed after moving above the viewport. There is no reading timer.
+Inbox zero is a core habit. The feed is a stable reading session: scrolling a post fully above the viewport marks it read, but the card stays in place for the rest of that session. There is no reading timer. A fresh session removes read posts and presents the remaining unread mail.
 
-Clearing a post marks its email read; it does not delete, archive, reply, or resolve an obligation. The completion state means there is nothing left to review in the feed, not necessarily nothing left to do.
+Seeing a post marks its email read; it does not delete, archive, reply, or resolve an obligation. The true endpoint means no eligible unread mail remains in the included mailboxes, not necessarily nothing left to do. Archived unread mail is included; Spam and Trash are excluded.
 
-After the feed is clear, users may explicitly choose **See old posts**. This optional shortcut can be turned off. Previously read posts never automatically refill the incoming feed. Section 11.12 defines the behavior and recovery requirements.
+At the verified end of the eligible history, **No more emails** provides a finite stopping point. When the remaining unread total also reaches zero, users may explicitly choose **See old posts**; this optional shortcut can be turned off. A fresh incoming session does not refill with previously read mail. Section 11.12 defines session boundaries, counts, pagination, and recovery.
 
 The system should encourage users to leave their inbox and return to the rest of their day.
 
@@ -1362,13 +1362,7 @@ Decision Inbox is an **email client**.
 
 It connects to existing email providers and restructures the inbox experience.
 
-Supported providers include:
-
-* Gmail
-
-* Outlook
-
-* Yahoo Mail
+Current native support: **Gmail and Google Workspace**. Outlook and Yahoo Mail are planned and appear as unavailable provider choices; they are not working integrations yet.
 
 The product does **not replace the underlying email infrastructure**.
 
@@ -5238,7 +5232,7 @@ Two rules ensure this.
 
 ## **Rule 1: Chronological fallback**
 
-Users can always switch to chronological mode.
+The current native feed is chronological. A future relevance mode must retain a chronological alternative; no working mode switch is implied by this requirement.
 
 This ensures nothing feels hidden.
 
@@ -5256,45 +5250,85 @@ Searchable
 
 Accessible
 
-Visible in the incoming feed until reviewed, then available through old posts or All Mail
+Visible throughout the active feed session, with read state updated as they are reviewed; read cards are removed only at the next session boundary and remain searchable
 
-Read-state clearing is an explicit product rule in both feed modes, not hidden relevance filtering. Ranking must not silently remove unseen mail.
+Session reset is an explicit product rule, not hidden relevance filtering. Ranking must not silently remove unseen mail.
 
 ---
 
-# **11.12 Feed Completion State**
+# **11.12 Feed Sessions, Read State, and Completion**
 
-Unlike social media feeds, the inbox feed is **finite**.
+**Confirmed contract, September 19, 2026.** This supersedes the September 18 immediate-removal design. Inbox zero remains the goal, while the active feed stays stable so posts do not disappear or shift under the reader.
 
-**Confirmed requirement, September 18, 2026:** inbox zero remains a core habit. Scrolling past a post counts as seeing it; there is no dwell-time requirement.
+### **A stable session**
 
-### **Seen and cleared**
+* The incoming feed contains unread email from the included mailboxes, ordered newest first. Historical unread mail remains eligible regardless of its age; no recent-date cutoff may silently exclude it. Archived unread mail is included. Spam and Trash are excluded.
+* Once admitted to a session, a post stays in its position when it is marked read. Card read styling waits for server confirmation and remains frozen during the active scroll, so card geometry stays stable. The displayed section count responds immediately as described below. Reading a post never causes neighboring cards to jump.
+* Scrolling counts as seeing only when a real forward user scroll carries the whole post above the viewport. There is no dwell-time requirement. Loading, programmatic scrolling, geometry changes, and moving back up the feed do not count. The final post has enough scroll space to pass the viewport.
+* Opening an email may also mark it read. Opening or returning from an email, sender profile, or other detail within Feed preserves the same session and position.
+* A fresh session begins when the app returns after being left, when the user switches away from Feed and returns, or when the user pulls to refresh. At that boundary, remove confirmed-read posts and rebuild the incoming view from remaining unread mail. A detail-view appearance callback is not a session boundary.
+* New mail arriving during a session uses the existing new-post bubble. It is held pending until the user admits it, rather than silently inserted into the reading position.
+* Read state is not archive, deletion, reply, unsubscribe, or task completion. Those explicit actions keep their own behavior. The explicit Archive action archives **and marks read** after its undo window; Undo cancels both changes. Archived mail must not reappear in a future incoming session unless it is explicitly marked unread again. This differs from mail archived elsewhere while still unread, which remains eligible.
+* If marking read fails or its result is unknown, keep the post unread, preserve it in the session and subsequent incoming sessions, and provide **Try again**. Restore any provisional section-count decrement with the same count animation. The provider-confirmed count, badge, and completion state never use an unconfirmed read.
 
-* A post is eligible to clear only after user scrolling carries the whole post above the viewport. Loading a card, an automatic layout change, or a brief appearance below the viewport does not count.
-* Keep the post visible while the user is reading or interacting with it. Apply the same behavior to the final post, with enough scroll space to move it above the viewport.
-* Clearing uses the email's read state. Remove the post after the server confirms the read update, preserve the reader's scroll position, and reconcile the feed on refresh or re-entry.
-* If the update fails or its result is unknown, retain the post and provide a clear recovery action. A failed save must not become a successful completion claim.
-* Clearing does not archive, delete, unsubscribe, reply, or change the status of a request inside the email. Previously read mail remains accessible. A new unread email in a conversation makes it eligible to appear again.
-* Opening a post also marks its email read. Reading and clearing are distinct from the explicit archive action; never use a delete icon to represent read state.
+### **TODAY, YESTERDAY, EARLIER**
 
-### **Completion and old posts**
+* Group the session into **TODAY**, **YESTERDAY**, and **EARLIER** using the device’s time zone and a date anchored when that session begins. Headers and membership stay stable if midnight passes during the visit. Earlier includes all older eligible unread mail, not only the loaded page. API requests carry the same session date and IANA time zone.
+* Each section header has its own right-aligned **X LEFT** count; both the day label and LEFT are uppercase. The total includes eligible unread mail not yet loaded into cards. A qualifying scroll-past immediately animates its displayed decrement while a bounded serial read queue obtains server confirmation. Failure animates the provisional decrement back up. Keep the last verified section baseline visible during temporary revalidation; clear that display baseline at a fresh session because the anchored date groups may change. This responsive display is not authority for badge totals or completion. Read cards may remain below a zero-count header until the session resets.
+* Per-section counts describe included feed mailboxes. The app-icon badge independently totals all connected mailboxes, including accounts excluded from the feed.
+* Unknown counts must remain unknown; a missing or failed provider response is not zero. Loading cards and loading totals are separate states. While historical reconciliation is incomplete, the masthead labels available content as **200 LOADED** (using the actual loaded count), not **200 NEW**; section counts show **…** until their totals are known.
 
-* The current native feed loads at most 200 posts per account at a time. After the loaded window clears, verify the authoritative unread totals for the included mailboxes and fetch the next unread batch before declaring completion. Loading, incomplete synchronization, unavailable counts, and failed requests must remain distinct from confirmed completion. Excluded mailboxes may still contribute unread mail to the app badge.
-* Never automatically load old posts into a cleared feed. The user may leave the app with a stable sense of completion.
-* Offer **See old posts** only after completion. This opens a separate view of previously read posts with a clear return path to incoming mail. Opening it does not make those posts unread.
-* Provide a **See old posts** preference controlling that completion shortcut. Persist it on the device across launches for the native multi-account app. Turning it off hides the shortcut without deleting mail; Search remains available. The native history sheet reads previously read mail from the included mailboxes and has a Done action.
-* Incoming unread mail belongs to the incoming feed even while the user browses old posts; it must not be mixed into the old-posts view.
-* Completion describes reviewed mail and must not claim unfinished obligations are resolved. Current native copy is “Inbox zero.” with “You’ve seen every post in this feed. Your emails are still in your mailbox.” Operational labels and failure recovery use the narrow resilience exception in the zero-shot philosophy; interpretations remain generated from actual mail.
+### **The real end and old posts**
+
+* Fetch unread mail in pages until the complete eligible history has been reached. A page-size limit is not the end of the inbox. Loading the next page must preserve session order and existing cards.
+* Show **No more emails** only when successful synchronization and count verification establish that all eligible unread history is accounted for in the session and there is no further page. This means there are no more emails beyond the session; it does not mark the visible posts read. Remaining unread counts can still appear above this endpoint. A separate verified-zero state requires those counts to reach zero, with no pending unread arrivals. Loading, incomplete history, failed reads, unavailable totals, and failed requests must not claim inbox zero.
+* Do not automatically replace the endpoint with old posts. Offer **See old posts** only as an explicit secondary action after verified zero. If new mail is pending, offer its existing admission action before old-post access.
+* The **See old posts** preference is stored on the device across launches. Turning it off hides that shortcut without deleting mail; Search remains available.
+* Old posts open in a separate history sheet with **Done**. Browsing its read mail never starts an automatic read/clear cycle. New unread arrivals stay in the incoming flow, including while history is open.
+* Literal navigation, state, and recovery copy follows the operational fallback exception in the zero-shot philosophy. Email interpretations remain generated from actual mail. Completion never says an email's requested obligation has been resolved merely because it was read.
 
 ### **Acceptance checks**
 
-1. A stationary visible card remains; scrolling it fully above the viewport clears it after a confirmed read update, including the last card.
-2. Refreshing or reopening does not restore successfully cleared posts. A failed read update retains the post with recovery available.
-3. Successful empty feed, loading feed, incomplete sync, and failed feed are visibly distinct.
-4. Old posts appear only by explicit choice; disabling the shortcut survives restart; Search stays available. Scrolling in the history sheet never changes read state.
-5. New unread mail resurfaces while previously read mail stays out of the incoming feed. Clearing it changes read state without deleting it or completing its requested action.
+1. A stationary post remains unread. A qualifying forward scroll-past immediately animates X LEFT downward while the card and neighboring positions stay stable. Successful confirmation updates read styling after active scrolling ends; failure restores the displayed count and exposes retry. Provisional zero never establishes completion.
+2. Opening and returning from an email or profile preserves the session, including read cards and scroll position.
+3. Leaving/returning to the app, switching away/back to Feed, and pull-to-refresh each start a fresh session that excludes confirmed-read cards.
+4. An unread email older than the initial page or synchronization window remains reachable in Earlier, including archived unread mail. Spam and Trash are excluded. Counts include unloaded eligible unread messages and never use loaded-card length as a substitute; date groups stay stable across midnight within the session.
+5. The existing new-post bubble admits arrivals deliberately during the session. Pending unread arrivals prevent a false completion claim.
+6. The true end says **No more emails** after all eligible history is accounted for. This label never claims the remaining posts are already read. Only verified zero unlocks old-post access; failed reads, unknown counts, failed pagination, and initial sync stay distinguishable and offer recovery where appropriate.
+7. Old posts require explicit choice; the shortcut preference survives restart; Search stays available. Reading never deletes mail or resolves its requested action.
+8. Archive commits archive plus read after its undo window. Undo preserves the original state. A later session does not restore archived-and-read mail unless the user explicitly marks it unread.
 
-The goal is to help users return to their lives, without an endless consumption loop.
+The finite endpoint supports leaving the app. Keeping the active session stable supports reviewing at the user's own pace.
+
+---
+
+# **11.12.1 Sender Identity and Contact Photos**
+
+**Confirmed September 19, 2026:** people and companies share one profile layout and the same PostView used in Feed. Media and documents use three equal square columns. A personal sender uses a real accessible photo consistently in Feed, People, profiles, threads, Search, Saved, and recipient surfaces; an unavailable photo falls back to initials rather than invented identity.
+
+Every sender profile shows the sender’s **complete retained email history across all connected mailboxes**, independent of Feed inclusion. Include read, unread and archived mail; exclude Spam and Trash. A person matches their exact email address. A company combines its canonical registrable domain and subdomains across addresses; shared/free email-provider domains must never merge unrelated people. This history is fetched from Gmail in pages without a 200-card or recent-date cutoff.
+
+The **EMAILS** count is exact only after every participating account has completed history reconciliation. Until then show **…**; never present the loaded-feed count as the sender’s total. Remove THREADS and AWAITING subset counts until authoritative full-history totals exist. Keep cached posts visible during loading or retry. Use **Loading email history…**, **Couldn’t load email history. Try again.**, and **All emails loaded.** for their corresponding states. A failed or partial account prevents the completed label. Show **No emails from this sender.** only after successful verification establishes zero across all connected mailboxes.
+
+An older email that has not received an AI interpretation still renders in the shared PostView. Its kicker is **EMAIL**, followed by the actual subject and original body excerpt; do not invent a summary, quotation, or completed interpretation. Original-source image/file inspection runs in bounded passes. Keep available mail and media visible while inspection is pending or has failed. A stalled inspection shows **Couldn’t finish loading email images and files. Try again.** with **Try again**. The Docs or Media lane may show **No files.** or **No pictures.** only after the complete history and every source have been inspected successfully. A verified message total alone does not prove that there are no attachments.
+
+Google Saved contacts and Other contacts are approved photo sources, using read-only `contacts.readonly` and `contacts.other.readonly` authorization. Existing accounts require consent for the added scopes. The phone requests only the email addresses and photos needed for exact-address matching through Google People API; the address book does not pass through the app server. Google photos take priority when available. Access to iOS Contacts remains a separate optional device permission and secondary local source. Revoking or disabling a source removes its usable cached photos. Missing access, empty results, and failed requests must retain a working initials fallback.
+
+This is a confirmed product contract. Build, simulator, provider authorization, and physical-device verification are separate release evidence; the specification itself is not proof those checks passed.
+
+---
+
+# **11.12.2 Cached Startup and Recoverable Loading**
+
+Previously cached feed posts, People conversations, sender identities, and opened message bodies should paint before background reconciliation. Cached content is immediately useful; its presence does not establish that provider counts or all history are synchronized.
+
+People conversations paginate in 50-item pages using **See older conversations**; a direct thread paginates in 50-message pages using **See older emails**, preserving the visible scroll anchor. There is no 200-conversation, 500-anchor, or 1,000-message history cutoff. Before the exhaustive mailbox inventory completes, People labels its currently loaded unread count **UNREAD LOADED**; only the verified aggregate uses **UNREAD CONVERSATIONS**. Thread totals similarly use **X LOADED** until complete, then **X EMAILS**. Importing and failed-import states keep cached content visible, explain that older mail is still importing or has not finished, and offer **Refresh history**. A loading or failed inventory must never claim successful empty history.
+
+A direct thread displays cached text and files immediately. Source inspection is separate from finding the complete history: a loaded page may still need its original body, inline CID images or attachment metadata. Show **Loading original emails and files…** while each unfinished loaded page is retried every two seconds, for at most six attempts; update existing rows in place and pause while the app is inactive or a profile is open. Transport failure shows **Couldn’t finish loading original emails and files. Your saved messages are still here.**; an exhausted wait shows **Some original emails and files are still loading. Try again.** Both offer **Try again** and retain available content. Only successful persisted source inspection clears pending status; it does not require an AI interpretation or a file download.
+
+A notification tap identifies both the email and its connected mailbox. Buffer a cold-launch tap until navigation exists, then consume it once. Open matching cached mail immediately; fetch an uncached email directly with **Opening email…** visible. Failure uses **Couldn’t open email**, the specific failure reason, and **Try again** / **Cancel**. A disconnected mailbox or ambiguous legacy notification must never open a different account’s email. These routes preserve the current Feed session.
+
+A People refresh failure shows **Couldn’t refresh conversations. Try again.** with **Try again**. Preserve any cached conversations beneath that recovery message. With no cached list, failure must not display **No one has written.**; that empty state requires a successful load. Profiles, original-email detail, People threads, and settings detail share `BackNavigation`: one native top-bar-leading Back control with an inline principal title where needed. iOS 26 supplies adaptive Liquid Glass and system placement; earlier iOS uses its native toolbar treatment. Do not position a separate back overlay inside the banner or give it a fixed white or black circle. The native safe area determines placement, and opening or returning from these detail routes still preserves the Feed session.
 
 ---
 
@@ -5902,7 +5936,7 @@ user actions occur
 
 ### **Read state and completion preference**
 
-Feed visibility must reflect the provider's authoritative read/unread state and confirmed changes to that state. A seen card is not a deleted email or a resolved task. Incoming and old-post views must distinguish unread and previously read messages; a local loading or failed-update state must not overwrite the provider's state.
+Read/unread state must reflect provider-confirmed changes. Feed membership is a session snapshot: cards that become read remain visible until an explicit session boundary (app return, tab return, or pull-to-refresh). Opening and returning from an email/profile preserves that snapshot. Read state, session membership, provider pagination, and per-section unread totals are separate values; a loaded-card count must not stand in for an authoritative unread total. A seen card is not a deleted email or a resolved task.
 
 For the native multi-account client, the preference to show the old-posts shortcut is persisted on the device. It affects the completion screen only, not message retention or provider labels.
 
@@ -6578,10 +6612,10 @@ The UI refreshes automatically.
 
 **Confirmed requirement, September 18, 2026:** support new-mail notifications and display the unread email count on the app icon where the platform and granted permissions support it. The native implementation preserves the existing attention-only alert policy: only a new unread email whose completed interpretation requires an answer triggers a visible alert; other new unread mail updates the badge silently.
 
-* The badge sums the authoritative **unread email counts** across all connected accounts registered to that device, including mailboxes excluded from the feed. It is not the number of rendered cards or items that AI thinks require attention. The Gmail integration uses each provider UNREAD total. If any account total is unavailable, preserve the last confirmed badge instead of publishing a partial sum.
+* The badge sums the authoritative **unread email counts** across all connected accounts registered to that device, including mailboxes excluded from the feed. It is not the number of rendered cards or items that AI thinks require attention. The Gmail integration uses each provider UNREAD total, including archived unread mail and excluding Spam and Trash. If any account total is unavailable, preserve the last confirmed badge instead of publishing a partial sum.
 * Refresh the count when registering the device, opening or refreshing the app, receiving new mail, marking mail read, and reconciling provider-side changes. Clear the badge when the confirmed unread count reaches zero.
 * An unavailable count is unknown, not zero. Preserve the last confirmed count until reconciliation succeeds; do not invent a precise count from a partial local feed.
-* Badge totals can exceed the loaded feed during initial synchronization. The interface must not claim inbox zero while unread mail is still being synchronized.
+* Badge totals can exceed the loaded feed during initial synchronization. The interface must not claim feed completion while eligible unread mail is still being synchronized. Feed completion may coexist with a nonzero badge when unread mail belongs to connected mailboxes excluded from Feed. Spam and Trash are excluded from both counts.
 * Visible alerts use the provider’s real sender and message context only after the model has completed interpretation and classified the new unread email as requiring attention. Receipts, promotions, and newsletters remain silent unless they satisfy that same established condition.
 * Suppress new-mail alerts for initial historical synchronization and for repeated delivery of the same arrival. Updating the badge does not itself require another interrupting alert.
 * Respect the operating system's notification and badge permissions, privacy settings, and delivery behavior. Denying permission must not block the inbox. Platform support and user settings determine whether a numbered badge, dot, sound, or banner appears; the app cannot guarantee presentation or delivery timing.
@@ -10043,7 +10077,7 @@ Examples:
 
 Completion must feel real.
 
-Inbox zero means no incoming posts remain to review. Reinforce that endpoint without implying that reading an email has completed the request inside it.
+Inbox zero means no eligible unread email remains in the included mailboxes, including archived unread but excluding Spam and Trash. The active session may still display cards that were just read; they leave at the next session boundary. Reinforce the verified endpoint with **No more emails**, without implying that reading an email has completed the request inside it.
 
 Generate completion language from the known feed state. Do not claim that nothing is waiting on the user merely because posts have been read. The optional old-posts shortcut must remain secondary and can be turned off.
 

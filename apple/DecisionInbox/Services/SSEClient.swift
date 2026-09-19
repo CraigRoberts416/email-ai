@@ -10,7 +10,7 @@ import Foundation
 actor SSEClient {
     enum Event {
         case messageAdded(APIClient.Card)
-        case messageRead(String)
+        case messageRead(String, wasUnread: Bool?)
         case processing(String)
         /// A token of a field being written. Field is `quote`, `summary`, `action`.
         case chunk(messageID: String, field: String, text: String)
@@ -98,16 +98,18 @@ actor SSEClient {
     private struct Envelope: Decodable {
         let type: String
         let messageId: String?
+        let wasUnread: Bool?
         let field: String?
         let chunk: String?
         let value: String?
 
-        enum CodingKeys: String, CodingKey { case type, messageId, field, chunk, value }
+        enum CodingKeys: String, CodingKey { case type, messageId, field, chunk, value, wasUnread }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             type = try c.decode(String.self, forKey: .type)
             messageId = try c.decodeIfPresent(String.self, forKey: .messageId)
+            wasUnread = try c.decodeIfPresent(Bool.self, forKey: .wasUnread)
             field = try c.decodeIfPresent(String.self, forKey: .field)
             chunk = try c.decodeIfPresent(String.self, forKey: .chunk)
 
@@ -137,7 +139,7 @@ actor SSEClient {
             // so the one mapping in APIClient covers both paths.
             return (try? decoder.decode(APIClient.Card.self, from: data)).map(Event.messageAdded)
         case "message-read":
-            return envelope.messageId.map(Event.messageRead)
+            return envelope.messageId.map { Event.messageRead($0, wasUnread: envelope.wasUnread) }
         case "processing":
             return envelope.messageId.map(Event.processing)
         case "chunk":

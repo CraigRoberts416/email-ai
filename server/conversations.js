@@ -404,10 +404,16 @@ async function conversationMessagesPage(userId, ownEmail, id, { limit = 50, curs
   const addresses = key.split('|');
   const kept = new Map();
   const threads = new Set();
-  const predicate = `lower(from_email) = ANY($3::text[]) OR EXISTS (
-    SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(participants) = 'array' THEN participants ELSE '[]'::jsonb END) p
-    WHERE lower(p->>'email') = ANY($3::text[]))`;
-  for await (const rows of metadataPages(userId, me, readQuery, { predicate, values: [addresses], batchSize })) {
+  // Both branches have indexes. Expanding participants with a correlated
+  // jsonb_array_elements/EXISTS decoded every message in the account before
+  // a small thread could open. Containment narrows candidates first; the
+  // exact participant-set check below still keeps reply-all forks separate.
+  const participantMatches = addresses.map(email => JSON.stringify([{ email }]));
+  const predicate = `lower(from_email) = ANY($3::text[])
+    OR lower(participants::text)::jsonb @> ANY($4::jsonb[])`;
+  for await (const rows of metadataPages(userId, me, readQuery, {
+    predicate, values: [addresses, participantMatches], batchSize,
+  })) {
     for (const row of rows) {
       if (setKey(othersIn(row, me).map(p => p.email)) !== key) continue;
       kept.set(row.message_id, row);
@@ -430,12 +436,14 @@ async function conversationMessagesPage(userId, ownEmail, id, { limit = 50, curs
   const all = [...kept.values()].map(row => ({ id: row.message_id, lastAt: Number(row.internal_date) || 0 })).sort(compareNewest);
   const { selected, nextCursor } = selectPage(all, userId, key, { cursor, limit });
   let messages = [];
+  let sourcesPending = false;
   if (selected.length) {
     const { rows } = await readQuery(`SELECT message_id, thread_id, subject, from_name, from_email, snippet,
-      internal_date, label_ids, quote, summary, attachments, body_text FROM messages
+      internal_date, label_ids, quote, summary, attachments, body_text, source_version FROM messages
       WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, selected.map(m => m.id)]);
     rows.sort((a, b) => Number(a.internal_date) - Number(b.internal_date)
       || (a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0));
+    sourcesPending = rows.some(needsSourceInspection);
     hydrate(userId, rows).catch(err => console.warn('[conversations] background hydrate:', err.message));
     messages = rows.map(row => {
       const fromEmail = (row.from_email ?? '').toLowerCase();
@@ -446,60 +454,48 @@ async function conversationMessagesPage(userId, ownEmail, id, { limit = 50, curs
         unread: (row.label_ids ?? []).includes('UNREAD'), attachments: row.attachments ?? [] };
     });
   }
-  return { messages, nextCursor, totalMessages: all.length };
+  return { messages, nextCursor, totalMessages: all.length, sourcesPending };
 }
 async function conversationMessages(userId, ownEmail, id, options) {
   return (await conversationMessagesPage(userId, ownEmail, id, options)).messages;
 }
 
-/// Gmail holds the body; the database holds metadata. This closes the gap for
-/// one conversation's worth of messages, writes what it finds back, and mutates
-/// the rows in place so the caller reads one shape whether it hit cache or not.
-///
-/// Bounded three ways: only rows with no `body_text`, only the most recent 60,
-/// and eight requests at a time. A conversation is a handful of messages in
-/// practice — the caps are for the thread with a decade of history in it, where
-/// the recent end is the part anyone scrolls to.
-async function hydrateBodies(userId, rows, { limit = 60, concurrency = 8 } = {}) {
-  // Either one missing is a reason to fetch, because one fetch answers both.
-  // Scoping this to the body alone left the message that actually had an
-  // attachment unfixed, since its body had already been stored.
-  const blank = v => v === null || v === undefined;
-  const missing = rows
-    .filter(r => blank(r.body_text) || blank(r.attachments))
-    .slice(-limit);
-  if (!missing.length) return;
+// Version 2 includes every file and inline CID photo. A legacy empty array
+// with a cached body is unchecked, not evidence that no files were sent.
+const sourceHydrations = new Map();
+function needsSourceInspection(row) {
+  return row.body_text == null || row.attachments == null || (row.source_version ?? 0) < 2;
+}
 
+async function hydrateBodies(userId, rows, { limit = 60, concurrency = 8 } = {}) {
+  const missing = rows.filter(needsSourceInspection).slice(-limit);
+  if (!missing.length) return;
   let next = 0;
   const workers = Array.from({ length: Math.min(concurrency, missing.length) }, async () => {
     while (next < missing.length) {
       const row = missing[next++];
       try {
-        const full = await gmailSync.fetchFullMessage(userId, row.message_id);
-        const text = newText(full.payload);
-        row.body_text = text;
-        await query(
-          'UPDATE messages SET body_text = $1 WHERE user_id = $2 AND message_id = $3',
-          [text, userId, row.message_id]
-        );
-
-        // The files, from the payload already in hand.
-        //
-        // Nadia wrote "please also see the Token 101 attached" and the bubble
-        // showed no attachment — it was waiting on the interpretation worker,
-        // which is about what a message means and has nothing to do with what
-        // it carries. This fetch is already paid for and the parts are right
-        // here.
-        if (row.attachments === null || row.attachments === undefined) {
-          const files = extractAttachments(full.payload, { limit: Infinity, minimumBytes: 0, allowGIF: true });
-          row.attachments = files;
-          await messageStore.setAttachments(userId, row.message_id, files);
+        const key = JSON.stringify([userId, row.message_id]);
+        let work = sourceHydrations.get(key);
+        if (!work) {
+          work = (async () => {
+            const full = await gmailSync.fetchFullMessage(userId, row.message_id);
+            const bodyText = newText(full.payload);
+            const attachments = extractAttachments(full.payload, {
+              limit: Infinity, minimumBytes: 0, allowGIF: true, includeInlineImages: true,
+            });
+            // Persist full files and inspection version together, independently
+            // of interpretation. Polling never starts a duplicate Gmail fetch.
+            await messageStore.saveProfileSource(userId, row.message_id, { bodyText, attachments });
+            return { body_text: bodyText, attachments, source_version: 2 };
+          })();
+          sourceHydrations.set(key, work);
+          work.finally(() => sourceHydrations.delete(key)).catch(() => {});
         }
+        Object.assign(row, await work);
       } catch (err) {
-        // A message that will not fetch falls back to its fragment rather than
-        // failing the conversation. Left NULL so the next open tries again —
-        // this is usually a rate limit or a deleted message, and only one of
-        // those is permanent.
+        // A failed source remains unchecked and retryable. Cached text/files
+        // still render; callers cannot turn failure into an empty-file verdict.
         console.error('[conversations] body fetch failed', row.message_id, err.message);
       }
     }
@@ -555,6 +551,6 @@ async function hydrateRecentPeople(userId, ownEmail, { limit = 40 } = {}) {
 }
 
 module.exports = {
-  createConversationDirectory, conversationDirectory, listConversations, listConversationsPage, conversationMessages, conversationMessagesPage, hydrateRecentPeople,
+  createConversationDirectory, conversationDirectory, listConversations, listConversationsPage, conversationMessages, conversationMessagesPage, hydrateRecentPeople, hydrateBodies,
   isPerson, isPrimary, setKey,
 };

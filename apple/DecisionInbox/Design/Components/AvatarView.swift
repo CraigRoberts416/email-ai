@@ -15,6 +15,7 @@ struct AvatarView: View {
 
     @Environment(\.colorSchemeContrast) private var contrast
     @State private var contactPhotos = ContactPhotoStore.shared
+    @State private var identities = SenderIdentityStore.shared
 
     /// One circular identity shape for people and companies. The source
     /// determines the image: an authorized contact photo, a supplied avatar,
@@ -22,30 +23,19 @@ struct AvatarView: View {
     private var corner: CGFloat { size / 2 }
 
     private var contactImage: UIImage? {
-        contactPhotos.imageData(for: sender.address).flatMap(UIImage.init(data:))
+        guard identities.allowsPersonalPhotos else { return nil }
+        return contactPhotos.imageData(for: sender.address).flatMap(UIImage.init(data:))
     }
 
     var body: some View {
         ZStack {
             shape.fill(Ink.surfaceTertiary)
 
-            if let contactImage {
-                Image(uiImage: contactImage)
-                    .resizable()
-                    .scaledToFill()
-            } else if let url = sender.logoURL {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        // Photo and square logo sources share the same crop.
-                        image.resizable().scaledToFill()
-                    default:
-                        monogram
-                    }
+            if let photo = identities.googlePhoto(for: sender.address) {
+                CachedRemoteImage(url: photo.url, cacheKey: photo.cacheKey) {
+                    localPhotoOrLogo
                 }
-            } else {
-                monogram
-            }
+            } else { localPhotoOrLogo }
         }
         .frame(width: size, height: size)
         .clipShape(shape)
@@ -57,8 +47,24 @@ struct AvatarView: View {
         // Avatars stay at their token size and do not scale with Dynamic Type.
         // An avatar is an image, not text.
         .accessibilityHidden(true)
-        .task(id: sender.address.lowercased() + ":\(contactPhotos.authorizationVersion)") {
-            await contactPhotos.loadPhoto(for: sender.address)
+        .task(id: sender.address.lowercased() + ":\(contactPhotos.authorizationVersion):" + identities.authorizationVersion) {
+            guard identities.allowsPersonalPhotos else { return }
+            async let local: Void = contactPhotos.loadPhoto(for: sender.address)
+            await identities.refreshGooglePhotos()
+            await local
+        }
+    }
+
+    @ViewBuilder private var localPhotoOrLogo: some View {
+        if let contactImage {
+            Image(uiImage: contactImage).resizable().scaledToFill()
+        } else { logo }
+    }
+
+    private var logo: some View {
+        CachedRemoteImage(url: identities.profile(for: sender.address)?.avatarUri ?? sender.logoURL,
+                          cacheKey: identities.imageKey(for: sender.address, role: "logo")) {
+            monogram
         }
     }
 

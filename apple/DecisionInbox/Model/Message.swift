@@ -33,6 +33,7 @@ struct Sender: Identifiable, Hashable {
 /// What the AI decided this message wants from you. Rendered as an uppercase
 /// mono kicker above the quote — this is what stands in for an accent colour.
 enum Kicker: String, Hashable {
+    case original = "EMAIL"
     case needsYou = "NEEDS YOU"
     case waitingOnThem = "WAITING ON THEM"
     case fyi = "FYI"
@@ -135,6 +136,7 @@ struct Message: Identifiable, Hashable {
     var attachments: [Attachment] = []
 
     var isRead: Bool
+    var isFeedEligible: Bool = true
     var isSaved: Bool = false
     /// The emoji the reader put on this message. Local to them — nothing is
     /// sent to the sender. See `ActionRow.react`.

@@ -62,6 +62,32 @@ test('source fetch failures remain retryable and are not retried on every pollin
   assert.equal(calls, 2);
 });
 
+test('complete source inspection retains photos pasted inline into a personal email', async () => {
+  const saved = [];
+  const payload = { parts: [
+    { mimeType: 'text/plain', body: { data: Buffer.from('Our trip photos').toString('base64url') } },
+    { mimeType: 'image/jpeg', filename: 'holiday.jpg', headers: [{ name: 'Content-Disposition', value: 'inline' }],
+      body: { attachmentId: 'inline-photo', size: 42000 } },
+  ] };
+  const source = createProfileSource({ image, fetchFullMessage: async () => ({ payload }),
+    saveSource: async (_user, _id, content) => saved.push(content) });
+  source.enqueue('a', [{ messageId: 'photo', sourceInspected: false, imageUrl: null }]);
+  await until(() => saved.length === 2);
+  assert.equal(saved[1].attachments.length, 1);
+  assert.equal(saved[1].attachments[0].id, 'inline-photo');
+  assert.equal(saved[1].attachments[0].isImage, true);
+  assert.deepEqual(extractAttachments(payload), [], 'Compact feed extraction remains unchanged');
+});
+
+test('plain-text source with no HTML completes image inspection without a retry loop', async () => {
+  const saved = [];
+  const source = createProfileSource({ image: { ...image, pickCandidates: () => null },
+    fetchFullMessage: async () => full(), saveSource: async (_u, _id, content) => saved.push(content) });
+  source.enqueue('a', [{ messageId: 'plain', sourceInspected: false, imageUrl: null }]);
+  await until(() => saved.length === 2);
+  assert.equal(saved[1].imageUrl, '');
+});
+
 test('image-host failure preserves source text but never invents an inspected-empty media verdict', async () => {
   const saved = [];
   const source = createProfileSource({ logger: { warn() {} }, fetchFullMessage: async () => full(),

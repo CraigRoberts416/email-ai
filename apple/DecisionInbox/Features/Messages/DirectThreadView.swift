@@ -18,8 +18,20 @@ struct DirectThreadView: View {
 
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var messages: [ConversationMessage] = []
     @State private var seeded = false
+    @State private var nextCursor: String?
+    @State private var totalMessages: Int?
+    @State private var historyComplete = false
+    @State private var historySyncState = "pending"
+    @State private var loading = false
+    @State private var failure: String?
+    @State private var pendingScrollAnchor: String?
+    @State private var sourceRefresh = ConversationSourceRefresh()
+    @State private var sourceRefreshSignal = 0
+    @State private var sourceFailure: String?
+
     @State private var opener = AttachmentOpener()
     @State private var link: LinkTarget?
     @State private var writeTo: String?
@@ -36,133 +48,248 @@ struct DirectThreadView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ThreadProfileStub(conversation: conversation, count: messages.count,
-                                  onProfile: { profile = $0 })
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ThreadProfileStub(conversation: conversation, count: historyComplete ? (totalMessages ?? messages.count) : messages.count,
+                                      countComplete: historyComplete,
+                                      onProfile: { profile = $0 })
 
-                ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-                    if let stamp = daySeparator(before: index) {
-                        Text(stamp)
-                            .typeStyle(Style.monoMicro)
-                            .foregroundStyle(Ink.tertiary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, index == 0 ? Space.sm : Space.lg)
-                            .padding(.bottom, Space.md)
+                    if let failure {
+                        Text(failure).typeStyle(Style.body).foregroundStyle(Ink.secondary)
+                            .padding(.bottom, Space.sm)
+                        Button("Try again") { Task { await refresh() } }
+                            .frame(minHeight: Metric.tapTarget)
+                    }
+                    if nextCursor != nil {
+                        Button(loading ? "Loading…" : "See older emails") {
+                            Task {
+                                let anchor = messages.first?.id
+                                if await loadOlder() { pendingScrollAnchor = anchor }
+                            }
+                        }
+                        .typeStyle(Style.body)
+                        .frame(maxWidth: .infinity, minHeight: Metric.tapTarget)
+                        .disabled(loading)
+                        .padding(.bottom, Space.md)
+                    }
+                    if !historyComplete && totalMessages != nil {
+                        Text(historySyncState == "failed" ? "Older mail hasn’t finished importing." : "Older mail is still importing.")
+                            .typeStyle(Style.monoCaption).foregroundStyle(Ink.tertiary)
+                            .frame(maxWidth: .infinity).padding(.bottom, Space.md)
+                        Button("Refresh history") { Task { await refresh() } }
+                            .frame(maxWidth: .infinity, minHeight: Metric.tapTarget)
+                            .disabled(loading)
+                    }
+                    if loading && messages.isEmpty {
+                        ProgressView().frame(maxWidth: .infinity).padding(Space.lg)
+                    }
+                    if sourceRefresh.hasPending {
+                        VStack(spacing: Space.sm) {
+                            Text(sourceFailure ?? "Loading original emails and files…")
+                                .typeStyle(Style.monoCaption).foregroundStyle(Ink.tertiary)
+                            if sourceFailure != nil {
+                                Button("Try again") {
+                                    sourceFailure = nil
+                                    sourceRefresh.retry()
+                                    sourceRefreshSignal += 1
+                                }
+                                .frame(minHeight: Metric.tapTarget)
+                            }
+                        }
+                        .frame(maxWidth: .infinity).padding(.bottom, Space.md)
                     }
 
-                    MessageGroup(group: group, showsSender: conversation.isGroup, opener: opener)
-                        .padding(.top, index == 0 ? 0 : Space.md)
+                    ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                        if let stamp = daySeparator(before: index) {
+                            Text(stamp)
+                                .typeStyle(Style.monoMicro)
+                                .foregroundStyle(Ink.tertiary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, index == 0 ? Space.sm : Space.lg)
+                                .padding(.bottom, Space.md)
+                        }
+
+                        MessageGroup(group: group, showsSender: conversation.isGroup, opener: opener)
+                            .padding(.top, index == 0 ? 0 : Space.md)
+                    }
+                }
+                .padding(.horizontal, Metric.gutter)
+                .padding(.top, Space.lg)
+                .padding(.bottom, Space.xl)
+            }
+            .onChange(of: pendingScrollAnchor) { _, anchor in
+                guard let anchor else { return }
+                proxy.scrollTo(anchor, anchor: .top)
+                pendingScrollAnchor = nil
+            }
+            .scrollIndicators(.hidden)
+            // A conversation opens at the end, where a feed opens at the start:
+            // the newest thing said is what you came for.
+            //
+            // `defaultScrollAnchor` and not a `scrollTo` on appear. Asking a proxy
+            // to scroll the last message to `.bottom` does exactly that even when
+            // the whole conversation is shorter than the screen — two short
+            // bubbles were pushed up out of view and the thread looked empty while
+            // the data was sitting right there.
+            .defaultScrollAnchor(.bottom)
+            .background(Ink.surface)
+            .toolbar { ToolbarItem(placement: .principal) { header } }
+            // A bottom inset, not an overlay: the scroll view reserves the space,
+            // so the last bubble can always be scrolled clear of the pill instead
+            // of hiding under it forever.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                ThreadComposer(conversation: conversation, replyingTo: messages.last) {
+                    Task { await refresh() }
                 }
             }
-            .padding(.horizontal, Metric.gutter)
-            .padding(.top, Space.lg)
-            .padding(.bottom, Space.xl)
-        }
-        .scrollIndicators(.hidden)
-        // A conversation opens at the end, where a feed opens at the start:
-        // the newest thing said is what you came for.
-        //
-        // `defaultScrollAnchor` and not a `scrollTo` on appear. Asking a proxy
-        // to scroll the last message to `.bottom` does exactly that even when
-        // the whole conversation is shorter than the screen — two short
-        // bubbles were pushed up out of view and the thread looked empty while
-        // the data was sitting right there.
-        .defaultScrollAnchor(.bottom)
-        .background(Ink.surface)
-        .safeAreaInset(edge: .top, spacing: 0) { header }
-        // A bottom inset, not an overlay: the scroll view reserves the space,
-        // so the last bubble can always be scrolled clear of the pill instead
-        // of hiding under it forever.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            ThreadComposer(conversation: conversation, replyingTo: messages.last) {
-                Task { await refresh() }
+            .backNavigation { dismiss() }
+            .toolbar(.hidden, for: .tabBar)
+            // No loading state, because there is nothing to load. What was said
+            // last time is read off disk before the first frame, so a thread you
+            // have opened before is simply already there; the network then refills
+            // it in place.
+            //
+            // Both halves were needed. The server used to fetch every body from
+            // Gmail while the reader watched — that is gone — but a fast request
+            // is still a request, and on a sleeping instance still seconds of
+            // empty screen.
+            .onAppear {
+                guard !seeded else { return }
+                seeded = true
+                messages = store.cachedMessages(in: conversation)
             }
-        }
-        .toolbar(.hidden, for: .navigationBar)
-        .toolbar(.hidden, for: .tabBar)
-        // No loading state, because there is nothing to load. What was said
-        // last time is read off disk before the first frame, so a thread you
-        // have opened before is simply already there; the network then refills
-        // it in place.
-        //
-        // Both halves were needed. The server used to fetch every body from
-        // Gmail while the reader watched — that is gone — but a fast request
-        // is still a request, and on a sleeping instance still seconds of
-        // empty screen.
-        .onAppear {
-            guard !seeded else { return }
-            seeded = true
-            messages = store.cachedMessages(in: conversation)
-        }
-        .task { await refresh() }
-        // A link in a message is part of reading the message. Following one
-        // should not throw the reader out of the app and lose their place in
-        // the thread.
-        //
-        // Routed by scheme, because they are not the same thing.
-        // `SFSafariViewController` accepts http and https and traps on
-        // anything else — handing it the `mailto:` from a signature crashed
-        // the app outright. An address is not a page to visit anyway; it is a
-        // person to write to.
-        .environment(\.openURL, OpenURLAction { url in
-            switch url.scheme?.lowercased() {
-            case "http", "https":
-                link = LinkTarget(url: url)
-                return .handled
-            case "mailto":
-                writeTo = url.emailAddress
-                return .handled
-            default:
-                // tel:, maps:, anything a message might carry. The system
-                // knows what to do with these and this app does not.
-                return .systemAction
+            .task { await refresh() }
+            .task(id: "\(sourceRefreshSignal):\(scenePhase == .active):\(profile == nil)") {
+                guard scenePhase == .active, profile == nil else { return }
+                await refreshSources()
             }
-        })
-        .sheet(item: $link) { SafariView(url: $0.url).ignoresSafeArea() }
-        .sheet(item: $writeTo) { address in
-            ComposeView(intent: .new, prefilledTo: address)
-                .environment(store)
-        }
-        .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
-        .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
-        .overlay(alignment: .bottom) {
-            if case .failed(let why) = opener.state {
-                Text(why)
-                    .typeStyle(Style.monoCaption)
-                    .foregroundStyle(Ink.surface)
-                    .padding(.horizontal, Space.lg)
-                    .padding(.vertical, Space.md)
-                    .background(Ink.primary, in: Capsule())
-                    .padding(.bottom, Space.xxl)
-                    .task {
-                        try? await Task.sleep(for: .seconds(3))
-                        opener.state = .idle
-                    }
+            // A link in a message is part of reading the message. Following one
+            // should not throw the reader out of the app and lose their place in
+            // the thread.
+            //
+            // Routed by scheme, because they are not the same thing.
+            // `SFSafariViewController` accepts http and https and traps on
+            // anything else — handing it the `mailto:` from a signature crashed
+            // the app outright. An address is not a page to visit anyway; it is a
+            // person to write to.
+            .environment(\.openURL, OpenURLAction { url in
+                switch url.scheme?.lowercased() {
+                case "http", "https":
+                    link = LinkTarget(url: url)
+                    return .handled
+                case "mailto":
+                    writeTo = url.emailAddress
+                    return .handled
+                default:
+                    // tel:, maps:, anything a message might carry. The system
+                    // knows what to do with these and this app does not.
+                    return .systemAction
+                }
+            })
+            .sheet(item: $link) { SafariView(url: $0.url).ignoresSafeArea() }
+            .sheet(item: $writeTo) { address in
+                ComposeView(intent: .new, prefilledTo: address)
+                    .environment(store)
+            }
+            .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
+            .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
+            .overlay(alignment: .bottom) {
+                if case .failed(let why) = opener.state {
+                    Text(why)
+                        .typeStyle(Style.monoCaption)
+                        .foregroundStyle(Ink.surface)
+                        .padding(.horizontal, Space.lg)
+                        .padding(.vertical, Space.md)
+                        .background(Ink.primary, in: Capsule())
+                        .padding(.bottom, Space.xxl)
+                        .task {
+                            try? await Task.sleep(for: .seconds(3))
+                            opener.state = .idle
+                        }
+                }
             }
         }
     }
 
-    /// Re-reads the thread. An empty result is how a failed request looks
-    /// too, and wiping a thread the reader is looking at is worse than showing
-    /// it a minute stale.
+    /// Keeps cached content on failures. A successful response can be empty
+    /// when the provider removed the last message.
     private func refresh() async {
-        let fresh = await store.messages(in: conversation)
-        if !fresh.isEmpty { messages = fresh }
+        guard !loading else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let page = try await store.messagesPage(in: conversation)
+            guard !Task.isCancelled else { return }
+            // A successful refresh starts a new traversal. New imports can
+            // add mail behind a previously exhausted cursor.
+            messages = page.messages
+            nextCursor = page.nextCursor
+            totalMessages = page.totalMessages
+            historyComplete = page.historyComplete
+            historySyncState = page.historySyncState
+            sourceRefresh.clear()
+            sourceRefresh.record(cursor: nil, pending: page.sourcesPending)
+            sourceFailure = nil
+            sourceRefreshSignal += 1
+            failure = nil
+        } catch is CancellationError { } catch {
+            failure = "Couldn’t refresh this conversation. Your saved messages are still here."
+        }
+    }
+
+    private func loadOlder() async -> Bool {
+        guard !loading, let cursor = nextCursor else { return false }
+        loading = true
+        defer { loading = false }
+        do {
+            let page = try await store.messagesPage(in: conversation, cursor: cursor)
+            guard !Task.isCancelled else { return false }
+            let existing = Set(messages.map(\.id))
+            messages.insert(contentsOf: page.messages.filter { !existing.contains($0.id) }, at: 0)
+            nextCursor = page.nextCursor
+            totalMessages = page.totalMessages
+            historyComplete = page.historyComplete
+            historySyncState = page.historySyncState
+            sourceRefresh.record(cursor: cursor, pending: page.sourcesPending)
+            sourceFailure = nil
+            sourceRefreshSignal += 1
+            failure = nil
+            return true
+        } catch is CancellationError { return false } catch {
+            failure = "Couldn’t load older emails. Try again."
+            return false
+        }
+    }
+
+    private func refreshSources() async {
+        while !Task.isCancelled && !sourceRefresh.readyPages.isEmpty {
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            for key in sourceRefresh.readyPages {
+                guard !Task.isCancelled, sourceRefresh.beginAttempt(key) else { return }
+                do {
+                    let page = try await store.messagesPage(in: conversation, cursor: key.isEmpty ? nil : key)
+                    guard !Task.isCancelled else { return }
+                    let updates = Dictionary(page.messages.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+                    // Replace content in place: hydration never resets an older
+                    // page, inserts a new arrival, or changes its page cursor.
+                    messages = messages.map { updates[$0.id] ?? $0 }
+                    sourceRefresh.record(cursor: key.isEmpty ? nil : key, pending: page.sourcesPending)
+                    sourceFailure = nil
+                } catch is CancellationError { return } catch {
+                    guard !Task.isCancelled else { return }
+                    sourceFailure = "Couldn’t finish loading original emails and files. Your saved messages are still here."
+                    return
+                }
+            }
+        }
+        if sourceRefresh.hasPending && !Task.isCancelled {
+            sourceFailure = "Some original emails and files are still loading. Try again."
+        }
     }
 
     private var header: some View {
         HStack(spacing: Space.sm + 2) {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(Ink.primary)
-                    .frame(width: 40, height: 40)
-                    .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Back")
-
             GroupAvatar(participants: conversation.participants, size: 32)
                 .contentShape(.circle)
                 .highPriorityGesture(TapGesture().onEnded {
@@ -190,16 +317,7 @@ struct DirectThreadView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.leading, Space.sm)
-        .padding(.trailing, Metric.gutter)
-        .padding(.bottom, Space.sm + 2)
-        .background {
-            Ink.surface
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(Ink.border).frame(height: Metric.hairline)
-                }
-                .ignoresSafeArea(edges: .top)
-        }
+
     }
 
     // MARK: - Grouping
@@ -252,6 +370,7 @@ struct DirectThreadView: View {
 struct ThreadProfileStub: View {
     let conversation: Conversation
     let count: Int
+    var countComplete = false
     var onProfile: (Sender) -> Void = { _ in }
 
     var body: some View {
@@ -279,7 +398,7 @@ struct ThreadProfileStub: View {
             // An em dash until the messages have loaded. A count of zero here
             // would be an assertion about a correspondence before it has been
             // read, which is the same rule the mastheads follow.
-            Text(count > 0 ? "\(count) EMAIL\(count == 1 ? "" : "S")" : "\u{2014}")
+            Text(countComplete ? "\(count) EMAIL\(count == 1 ? "" : "S")" : (count > 0 ? "\(count) LOADED" : "\u{2014}"))
                 .typeStyle(Style.monoMicro)
                 .foregroundStyle(Ink.tertiary)
                 .monospacedDigit()
@@ -319,39 +438,42 @@ struct MessageGroup: View {
             }
 
             ForEach(group.messages) { message in
-                // Files first, each its own object. An attachment is not a
-                // strip glued to the top of a sentence — it is a discrete
-                // thing with a boundary and a name, which is exactly the test
-                // this system uses to decide what gets a container.
-                ForEach(message.attachments) { attachment in
-                    // Never `onDark`. A card is a sibling of the bubble, not
-                    // a thing inside it — it sits on the page whichever side
-                    // it is aligned to. Tinting it for the black bubble drew a
-                    // white-on-white card that read as a gap in the thread.
-                    AttachmentBubble(
-                        attachment: attachment,
-                        isOpening: opener?.state == .loading(attachment.id)
-                    ) {
-                        Task { await opener?.open(attachment, authorization: nil) }
+                VStack(alignment: group.mine ? .trailing : .leading, spacing: 3) {
+                    // Files first, each its own object. An attachment is not a
+                    // strip glued to the top of a sentence — it is a discrete
+                    // thing with a boundary and a name, which is exactly the test
+                    // this system uses to decide what gets a container.
+                    ForEach(message.attachments) { attachment in
+                        // Never `onDark`. A card is a sibling of the bubble, not
+                        // a thing inside it — it sits on the page whichever side
+                        // it is aligned to. Tinting it for the black bubble drew a
+                        // white-on-white card that read as a gap in the thread.
+                        AttachmentBubble(
+                            attachment: attachment,
+                            isOpening: opener?.state == .loading(attachment.id)
+                        ) {
+                            Task { await opener?.open(attachment, authorization: nil) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
-                }
 
-                let split = MessageBubble.split(message.body)
+                    let split = MessageBubble.split(message.body)
 
-                if !split.text.isEmpty {
-                    MessageBubble(message: message, body: split.text)
-                        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
-                }
+                    if !split.text.isEmpty {
+                        MessageBubble(message: message, body: split.text)
+                            .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+                    }
 
-                // A link on its own line is a thing somebody sent, not a word
-                // in a sentence — so it gets the same treatment as a file.
-                // Messages does exactly this, which is why a 90-character
-                // tracking URL never appears as text there.
-                ForEach(split.links, id: \.absoluteString) { url in
-                    LinkCard(url: url)
-                        .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+                    // A link on its own line is a thing somebody sent, not a word
+                    // in a sentence — so it gets the same treatment as a file.
+                    // Messages does exactly this, which is why a 90-character
+                    // tracking URL never appears as text there.
+                    ForEach(split.links, id: \.absoluteString) { url in
+                        LinkCard(url: url)
+                            .frame(maxWidth: .infinity, alignment: group.mine ? .trailing : .leading)
+                    }
                 }
+                .id(message.id)
             }
 
             Text(group.last.receivedAt.clockStamp.uppercased())

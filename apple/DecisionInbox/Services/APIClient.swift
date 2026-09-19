@@ -9,6 +9,8 @@ struct APIClient {
     /// The mailbox this client speaks for. Every request carries that
     /// mailbox's own token, which is how the server tells the sessions apart.
     let accountID: String
+    var session: URLSession = .shared
+    var timeZone: TimeZone = .current
 
     // MARK: Wire types
 
@@ -18,6 +20,13 @@ struct APIClient {
         /// Provider total, independent of the bounded card window. Older
         /// servers may omit it; absence must never become a confirmed zero.
         let unreadCount: Int?
+        let nextCursor: String?
+        let sections: FeedSectionCounts?
+        let countsComplete: Bool
+        let syncState: String?
+        let droppedCards: Int
+        let knownReadMessageIds: [String]
+        let knownStateComplete: Bool
 
         /// Decodes cards individually. A single unexpected field in one card
         /// used to throw for the whole response, which emptied the feed and
@@ -33,7 +42,7 @@ struct APIClient {
             }
         }
 
-        enum CodingKeys: String, CodingKey { case cards, recap, unreadCount }
+        enum CodingKeys: String, CodingKey { case cards, recap, unreadCount, nextCursor, sections, countsComplete, syncState, knownReadMessageIds, knownStateComplete }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -42,6 +51,15 @@ struct APIClient {
             recap = try? container.decodeIfPresent(Recap.self, forKey: .recap)
             let count = try? container.decodeIfPresent(Int.self, forKey: .unreadCount)
             unreadCount = count.flatMap { $0 >= 0 ? $0 : nil }
+            nextCursor = try? container.decodeIfPresent(String.self, forKey: .nextCursor)
+            let decodedSections = try? container.decodeIfPresent(FeedSectionCounts.self, forKey: .sections)
+            sections = decodedSections.flatMap { $0.isValid ? $0 : nil }
+            countsComplete = (try? container.decode(Bool.self, forKey: .countsComplete)) == true
+                && sections != nil && unreadCount != nil
+            syncState = try? container.decodeIfPresent(String.self, forKey: .syncState)
+            droppedCards = lossy.count - cards.count
+            knownReadMessageIds = (try? container.decode([String].self, forKey: .knownReadMessageIds)) ?? []
+            knownStateComplete = (try? container.decode(Bool.self, forKey: .knownStateComplete)) == true && countsComplete
             if lossy.count != cards.count {
                 print("[feed] kept \(cards.count) of \(lossy.count) cards")
             }
@@ -51,6 +69,37 @@ struct APIClient {
     struct AllMailResponse: Decodable {
         let cards: [Card]
         let nextCursor: Int?
+    }
+
+    struct FeedCountsResponse: Decodable {
+        let sections: FeedSectionCounts
+        let countsComplete: Bool
+        let unreadCount: Int?
+        let knownReadMessageIds: [String]?
+        let knownStateComplete: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case sections, countsComplete, unreadCount, knownReadMessageIds, knownStateComplete
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            sections = try container.decode(FeedSectionCounts.self, forKey: .sections)
+            let count = try? container.decodeIfPresent(Int.self, forKey: .unreadCount)
+            unreadCount = count.flatMap { $0 >= 0 ? $0 : nil }
+            countsComplete = (try? container.decode(Bool.self, forKey: .countsComplete)) == true
+                && sections.isValid && unreadCount != nil
+            knownReadMessageIds = try? container.decodeIfPresent([String].self, forKey: .knownReadMessageIds)
+            knownStateComplete = (try? container.decode(Bool.self, forKey: .knownStateComplete)) == true && countsComplete
+        }
+    }
+
+    func feedCounts(sectionDate: Date, knownMessageIDs: [String] = []) async throws -> FeedCountsResponse {
+        var parts = URLComponents()
+        parts.queryItems = [URLQueryItem(name: "timeZone", value: timeZone.identifier),
+                            URLQueryItem(name: "sectionDate", value: ISO8601DateFormatter().string(from: sectionDate))]
+        if !knownMessageIDs.isEmpty { parts.queryItems?.append(URLQueryItem(name: "knownMessageIds", value: knownMessageIDs.joined(separator: ","))) }
+        return try await get("/feed/counts?" + Self.queryString(parts))
     }
 
     struct Recap: Codable, Equatable {
@@ -97,6 +146,8 @@ struct APIClient {
         /// `none` or `possible_scam`. Only ever set when the server could also
         /// say why — a flag it cannot explain is downgraded server-side.
         let riskLevel: String?
+        var sourceInspected: Bool? = nil
+        var originalText: String? = nil
     }
 
     struct AttachmentWire: Codable {
@@ -113,6 +164,31 @@ struct APIClient {
     }
 
     // MARK: Conversations
+
+    struct SenderHistoryResponse: Decodable {
+        let cards: [Card]
+        let nextCursor: String?
+        let totalCount: Int?
+        let countComplete: Bool
+        let syncState: String
+        let scope: String
+        let scopeKey: String
+        let countsAsOf: String?
+        let sourcePendingCount: Int?
+    }
+
+    func senderHistory(address: String, kind: String, cursor: String? = nil) async throws -> SenderHistoryResponse {
+        var parts = URLComponents()
+        parts.queryItems = [.init(name: "address", value: address), .init(name: "kind", value: kind)]
+        if let cursor { parts.queryItems?.append(.init(name: "cursor", value: cursor)) }
+        return try await get("/sender-history?" + Self.queryString(parts))
+    }
+
+    struct MessageCardResponse: Decodable { let card: Card }
+    func messageCard(_ messageID: String) async throws -> Card {
+        let response: MessageCardResponse = try await get("/messages/\(Self.pathComponent(messageID))/card")
+        return response.card
+    }
 
     // Codable, not just Decodable: these are cached to disk so the People
     // list renders from what was true a minute ago instead of an empty screen.
@@ -147,26 +223,55 @@ struct APIClient {
         let attachments: [AttachmentWire]?
     }
 
+    struct ConversationsPage: Decodable {
+        let conversations: [ConversationWire]
+        let nextCursor: String?
+        let totalConversations: Int?
+        let unreadConversations: Int?
+        let historyComplete: Bool?
+        let historySyncState: String?
+    }
+
+    struct ConversationMessagesPage: Decodable {
+        let messages: [ConversationMessageWire]
+        let nextCursor: String?
+        let totalMessages: Int?
+        let historyComplete: Bool?
+        let historySyncState: String?
+        let sourcesPending: Bool?
+    }
+
+    func conversationsPage(cursor: String? = nil) async throws -> ConversationsPage {
+        var parts = URLComponents()
+        parts.queryItems = [.init(name: "limit", value: "50")]
+        if let cursor { parts.queryItems?.append(.init(name: "cursor", value: cursor)) }
+        return try await get("/conversations?" + Self.queryString(parts))
+    }
+
+    func conversationMessagesPage(_ id: String, cursor: String? = nil) async throws -> ConversationMessagesPage {
+        var parts = URLComponents()
+        parts.queryItems = [.init(name: "limit", value: "50")]
+        if let cursor { parts.queryItems?.append(.init(name: "cursor", value: cursor)) }
+        return try await get("/conversations/\(Self.pathComponent(id))/messages?" + Self.queryString(parts))
+    }
+
     func conversations() async throws -> [ConversationWire] {
-        struct Wrapper: Decodable { let conversations: [ConversationWire] }
-        let wrapper: Wrapper = try await get("/conversations")
-        return wrapper.conversations
+        try await conversationsPage().conversations
     }
 
     func conversationMessages(_ id: String) async throws -> [ConversationMessageWire] {
-        struct Wrapper: Decodable { let messages: [ConversationMessageWire] }
-        // NOT percent-encoded here. `URL.appending(path:)` escapes what it is
-        // given, so a pre-encoded id arrived double-escaped: `%2E` became
-        // `%252E`, the server decoded it once back to `%2E`, and the
-        // participant set never matched anything. Every thread opened empty.
-        let wrapper: Wrapper = try await get("/conversations/\(id)/messages")
-        return wrapper.messages
+        try await conversationMessagesPage(id).messages
     }
 
     // MARK: Requests
 
-    func feed() async throws -> FeedResponse {
-        try await get("/feed")
+    func feed(cursor: String? = nil, sectionDate: Date = .now, knownMessageIDs: [String] = []) async throws -> FeedResponse {
+        var parts = URLComponents()
+        parts.queryItems = [URLQueryItem(name: "timeZone", value: timeZone.identifier),
+                            URLQueryItem(name: "sectionDate", value: ISO8601DateFormatter().string(from: sectionDate))]
+        if let cursor { parts.queryItems?.append(URLQueryItem(name: "cursor", value: cursor)) }
+        if !knownMessageIDs.isEmpty { parts.queryItems?.append(URLQueryItem(name: "knownMessageIds", value: knownMessageIDs.joined(separator: ","))) }
+        return try await get("/feed?" + Self.queryString(parts))
     }
 
     func allMail(cursor: Int? = nil) async throws -> AllMailResponse {
@@ -177,8 +282,10 @@ struct APIClient {
         _ = try await send(path: "/auth/push-token", method: "DELETE", body: nil)
     }
 
-    func markRead(_ messageID: String) async throws {
-        _ = try await send(path: "/messages/\(messageID)/read", method: "PATCH", body: nil)
+    @discardableResult func markRead(_ messageID: String) async throws -> Bool? {
+        let data = try await send(path: "/messages/\(Self.pathComponent(messageID))/read", method: "PATCH", body: nil)
+        struct Result: Decodable { let wasUnread: Bool? }
+        return try JSONDecoder().decode(Result.self, from: data).wasUnread
     }
 
     struct Body: Codable {
@@ -187,7 +294,7 @@ struct APIClient {
     }
 
     func body(of messageID: String) async throws -> Body {
-        try await get("/messages/\(messageID)/body")
+        try await get("/messages/\(Self.pathComponent(messageID))/body")
     }
 
     /// The masthead. Written fresh each session rather than assembled from a
@@ -272,14 +379,45 @@ struct APIClient {
 
     // MARK: Plumbing
 
+    private static func queryString(_ parts: URLComponents) -> String {
+        // Express decodes query strings as form data: a bare + means a space.
+        // URLComponents preserves + by default, including in Etc/GMT+5.
+        (parts.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B")
+    }
+
+    private static func pathComponent(_ value: String) -> String {
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+    }
+
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let data = try await send(path: path, method: "GET", body: nil)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     private func send(path: String, method: String, body: Data?) async throws -> Data {
-        let token = try await auth.validAccessToken(for: accountID)
-        var request = URLRequest(url: baseURL.appending(path: path))
+        // `path` may already contain encoded query items. Appending it as a
+        // filesystem-style path turns ? into %3F and breaks every filter.
+        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else { throw APIError.transport }
+        #if DEBUG
+        let startedAt = Date()
+        // Conversation IDs contain addresses. Log the route template only.
+        let route = url.path.hasPrefix("/conversations/") ? "/conversations/:id/messages"
+            : (url.path.hasPrefix("/messages/") ? "/messages/:id/" + (url.path.hasSuffix("/read") ? "read" : "body") : url.path)
+        func trace(_ status: String, bytes: Int = 0) {
+            print("[api] \(method) \(route) status=\(status) bytes=\(bytes) ms=\(Int(Date().timeIntervalSince(startedAt) * 1000))")
+        }
+        trace("start")
+        #endif
+        let token: String
+        do { token = try await auth.validAccessToken(for: accountID) }
+        catch {
+            #if DEBUG
+            trace("auth_error")
+            #endif
+            throw error
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 15
@@ -292,7 +430,25 @@ struct APIClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do { (data, response) = try await session.data(for: request) }
+        catch {
+            #if DEBUG
+            trace("transport_error")
+            #endif
+            throw error
+        }
+        #if DEBUG
+        trace(String((response as? HTTPURLResponse)?.statusCode ?? 0), bytes: data.count)
+        if url.path == "/feed/counts",
+           let metadata = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            let safeKeys = ["allSyncedUnreadCount", "unreadCount", "countsComplete", "syncState", "syncCompletedAt", "sections"]
+            let aggregate = metadata.filter { safeKeys.contains($0.key) }
+            if let encoded = try? JSONSerialization.data(withJSONObject: aggregate, options: .sortedKeys),
+               let text = String(data: encoded, encoding: .utf8) { print("[feed-counts] \(text)") }
+        }
+        #endif
         guard let http = response as? HTTPURLResponse else { throw APIError.transport }
         guard (200..<300).contains(http.statusCode) else {
             throw http.statusCode == 401 ? APIError.unauthorized : APIError.server(http.statusCode)
@@ -414,6 +570,7 @@ extension APIClient.Card {
                 )
             },
             isRead: !(labelIds ?? []).contains("UNREAD"),
+            isFeedEligible: !(labelIds ?? []).contains(where: { $0 == "SPAM" || $0 == "TRASH" }),
             isSaved: false,
             threadCount: 1,
             unsubscribeURL: unsubscribeUrl.flatMap(URL.init(string:)),

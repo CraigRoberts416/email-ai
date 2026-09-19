@@ -157,24 +157,13 @@ struct GhostButton: View {
 
 // MARK: - Nav bar
 
-/// Hand-built rather than `.navigationTitle`, because the system bar brings a
-/// blur, a tint and a font this product does not use.
+/// Root-screen heading. Detail screens use the shared system back toolbar.
 struct NavBar<Trailing: View>: View {
     let title: String
-    var onBack: (() -> Void)?
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
         HStack(spacing: Space.md) {
-            if let onBack {
-                Button(action: onBack) {
-                    Image(systemName: "arrow.left")
-                        .font(.system(size: 17))
-                        .foregroundStyle(Ink.primary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Back")
-            }
             Text(title)
                 .typeStyle(Style.navTitle)
                 .foregroundStyle(Ink.primary)
@@ -188,8 +177,8 @@ struct NavBar<Trailing: View>: View {
 }
 
 extension NavBar where Trailing == EmptyView {
-    init(title: String, onBack: (() -> Void)? = nil) {
-        self.init(title: title, onBack: onBack) { EmptyView() }
+    init(title: String) {
+        self.init(title: title) { EmptyView() }
     }
 }
 

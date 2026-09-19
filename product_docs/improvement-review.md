@@ -1,6 +1,6 @@
 # Inbox zero improvement review
 
-September 18, 2026. Scope: improve the existing email app, preserving its card structure, monochrome palette, typography, and navigation. The user confirmed that scrolling past a post counts as seeing it and authorized a new TestFlight build after implementation.
+Updated September 19, 2026. Scope: improve the existing email app, preserving its card structure, monochrome palette, typography, and navigation. The user confirmed that scrolling past a post counts as seeing it and authorized a new TestFlight build after implementation.
 
 ## Current implementation
 
@@ -10,7 +10,7 @@ The native scope now also includes one shared profile structure for people and c
 
 ## Product contract
 
-The existing spec already favored a finite feed and resolution. The change makes that endpoint concrete: user scrolling carries a post above the viewport, a confirmed read update clears it, and a completed feed stays clear. Viewing a post does not complete the request inside its email. Old posts are an explicit, optional destination after completion. The app icon counts provider-confirmed unread emails, which can differ from the number of loaded cards.
+The September 19 contract supersedes immediate card removal. A qualifying scroll-past animates the displayed section count immediately; server confirmation updates read state, and a failed read restores the displayed count. The card stays in its session position. App return, Feed-tab return, and pull-to-refresh start a new session; opening an email or profile preserves it. TODAY, YESTERDAY, and EARLIER show right-aligned X LEFT totals including unloaded historical mail. Displayed optimism never changes provider-confirmed badge or completion gates. Groups are anchored to the session date and time zone. Archived unread mail is included; Spam and Trash are excluded. Explicit Archive commits archive plus read after its undo window, so it does not return unless explicitly marked unread. The verified endpoint says **No more emails**, with optional old-post access. Viewing a post does not complete the request inside it. The app icon independently totals provider-confirmed unread email across all connected mailboxes, including archived mail but excluding Spam and Trash.
 
 Detailed requirements and acceptance checks live in [Email App.md](./Email%20App.md), sections 2.10, 11.11–11.12, 12.9, and 13.11.1. The [zero-shot philosophy](./zero-shot-philosophy.md) now documents a narrow fallback exception for operational labels and recovery when runtime copy is unavailable; email interpretations remain generated from actual context.
 
@@ -74,10 +74,48 @@ The source review identifies existing behavior and implementation requirements. 
 
 Signed-in Mobbin references were inspected visually: [Instagram profile flow](https://mobbin.com/flows/75b6fe16-40a2-45c6-bd20-b11f1291219e) informed the compact identity, selected icon tab and close three-column media grid; [X profile flow](https://mobbin.com/flows/e4158f14-2675-4577-aef1-4e953b8b02d1) informed the banner/avatar seam and shared home/profile post vocabulary. Instagram currently uses taller thumbnails; the native implementation uses square tiles to keep photo and document lanes consistent. No visual assets were imported from either reference.
 
-Contact photos are matched by email only after an explicit opt-in; the address book remains on the phone. Personal and company profiles share PostView; both media and documents use three square columns with 1pt gaps. A missing photo keeps initials or the existing avatar.
+Approved Google Saved contacts and Other contacts supply photos after read-only consent, matched by exact email on the phone. The app server does not receive the address book. Optional iOS Contacts is a separate secondary local source. Personal and company profiles share PostView; both media and documents use three square columns with 1pt gaps. A missing photo keeps initials or the existing avatar.
 
 The existing [Figma file’s native implementation board](https://www.figma.com/design/LlstGMGXZrDiY2Ee4dd3yl/Email-App-Component-Library?node-id=323-742) records these changes using native DM Sans/DM Mono styles, shared components and official iOS 26 chrome. Earlier explorations remain labeled separately; source code is the reference for implemented behavior.
 
-Native backend verification includes 16 isolated APNs/badge tests. These establish signing, routing, aggregation, unknown-count handling and alert eligibility; they do not establish live APNs delivery. Physical-device notification and badge verification still requires configured provider credentials.
+Native backend verification includes 16 isolated APNs/badge tests. These establish signing, routing, aggregation, unknown-count handling and alert eligibility; they do not establish live APNs delivery. The later production APNs configuration is recorded below; physical-device notification and badge delivery remain unverified.
 
-Figma verification: 12 editable native screen states and four completion/recovery/badge specimens were rendered and inspected. The original SenderProfile and document-grid components were updated, with one shared native PostView, bound Ink tokens and native text styles. The media grid deliberately shows image-loading placeholders, not invented received photos. The actual app-icon asset was reused for badge examples. A canvas constraint check found no board children outside the review section. These checks verify the design artifact, not physical-device behavior.
+Historical September 18 Figma verification: 12 editable native screen states and four completion/recovery/badge specimens were rendered and inspected. The original SenderProfile and document-grid components were updated, with one shared native PostView, bound Ink tokens and native text styles. The media grid deliberately shows image-loading placeholders, not invented received photos. The actual app-icon asset was reused for badge examples. A canvas constraint check found no board children outside the review section. These checks verify the design artifact, not physical-device behavior.
+
+## September 19 full-file cleanup
+
+The September 19 session contract supersedes the immediate-removal board. All 17 original Figma pages were inventoried, rendered and explicitly archived, including unsupported settings, superseded card variants, outdated swipe behaviors and experimental mastheads. Four canonical pages now lead the file: Start here, Native foundations, Native components and Native screens. Fifty-three editable native screen/state specimens cover the current main flows, session transitions, settings, consent and supporting routes. [The full Figma audit](./figma-audit-2026-09-19.md) records each page’s disposition, current links, render corrections and remaining verification. A live company-profile screenshot was compared structurally, and the implementation task reports successful read-in-place, tab-return, detail-return and pull-to-refresh checks. Figma also reflects incomplete-count and People failure states, plus complete sender-history loading, partial failure, verified-end and verified-empty states. Profiles span all connected accounts independently of Feed inclusion; EMAILS stays unknown until fully reconciled, and misleading THREADS/AWAITING subset counters are removed. Personal-photo consent, full backfill and physical push/release verification remain distinct; design rendering alone does not establish them.
+
+
+## September 19 notification readiness audit
+
+Read-only inspection confirmed valid local development and App Store provisioning profiles for `com.craigroberts.decisioninbox` on team `48X38356RX`. The App Store profile permits production push and expires August 31, 2027; the development profile expires September 14, 2027. An archive can carry the development profile before export re-signing, so the final exported app's production entitlement is the release check.
+
+None of the APNs configuration names were present with a value in local `server/.env` or the current process environment. This does **not** establish Render's configuration. Chrome required sign-in to both Render and Apple Developer, and no in-app browser was connected; deployed secret-name presence, live deployment/backfill logs, and Apple key capabilities therefore remain unverified. A targeted filename-only search found one existing Apple `.p8` key in Downloads; its contents were not read and the filename does not establish APNs capability.
+
+The server requires an APNs-enabled key, its key/team identifiers, its private key (value or secret-file path), and the app topic. Production is the TestFlight transport environment. The exact configuration contract is in [server/NOTIFICATIONS.md](../server/NOTIFICATIONS.md). No keys were created, secret values revealed, or hosting settings changed during this audit. Physical-device display, badge clearing and notification navigation remain separate acceptance checks after live configuration is confirmed.
+
+
+## Final native consistency pass
+
+The source now shares one native top-bar-leading Back control across profiles, original emails, People threads and settings detail. iOS supplies adaptive Liquid Glass and safe-area placement. Full sender history displays uninterpreted messages as **EMAIL** with their real subject/body excerpt; bounded source inspection retains content and provides retry, and empty media/file claims require successful source completion. People and direct-thread history use 50-item cursor pages, loaded-versus-complete labels, and recovery for incomplete imports.
+
+The implementation task reported successful live feed reconciliation: 22,360 eligible unread emails (Today 0, Yesterday 51, Earlier 22,309) matched the provider total; the raw inventory was 23,134, including 774 excluded Spam/Trash messages. These are point-in-time validation counts, not fixed product copy. The app badge uses the same Spam/Trash exclusion across all connected accounts; only account inclusion can make its scope wider than Feed. This does not establish physical APNs delivery. At that earlier check Render and Apple Developer still required sign-in; the later deployment audit below supersedes that access limitation.
+
+
+A later Simulator check showed an app-icon badge of 22,361 matching the then-current provider unread count. The implementation task also reported permission changing from denied to authorized with Settings reflecting ON, plus a banner delivered through local `simctl push`. These checks establish Simulator presentation and permission behavior, not remote APNs signing/routing/delivery. Notification-tap timing was being corrected and awaits its own final verification.
+
+
+## Live APNs configuration
+
+After sign-in, Apple Developer confirmed the existing APNs key is team-scoped for all topics and valid for Sandbox and Production. Its matching local key was validated as P-256, then supplied directly to Render's secret field without printing its contents. The five required production variables are now present: `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_PRIVATE_KEY`, `APNS_TOPIC`, and `APNS_ENVIRONMENT`. No new key or access grant was created. Existing environment values were preserved.
+
+Render deployed commit `796239b` after the configuration save and reported **Deploy succeeded | Live** at 10:59:49 AM. The variable names were verified after deployment without revealing values. This removes the missing-server-configuration blocker; physical-device APNs delivery remains unverified. The earlier read-only audit is retained as the record of the initial state. Before the restart, visible operational logs showed full-history import advancing in 500-message pages through page 19 / 9,500 messages, with incremental arrivals continuing; this is progress evidence, not a completed sender-history count.
+
+
+The implementation task also reported that Hayden’s real personal contact photo is visible in the live People thread header and profile, with **12 complete emails** established for that personal profile. That validates the tested identity and total; it does not establish every sender’s complete history or all pagination paths.
+
+
+A deeper filtered Render log check subsequently exposed database contention: **[conversations] archive sync failed: deadlock detected** at 11:00:36 AM, followed by **[poll] unread backlog failed: deadlock detected** and repeated **[feed] unread reconciliation failed: deadlock detected** at 11:01:53 AM. These operational errors were handed to the backend implementation task. Render being Live and APNs being configured do not establish successful mail-history reconciliation; unknown totals must remain unknown while recovery is verified.
+
+The implementation task subsequently reported the real-account **No more emails.** endpoint, successful opening of old posts, and the **See old posts** preference remaining off after reopening Settings. The preference was restored to On and the real account retained. These checks establish the tested endpoint and preference persistence. A newly discovered omission of inline CID photos, database deadlock recovery, and bounded thread-source inspection remain part of the final release retest. The reported 100 passing backend tests are isolated regression evidence; the new deployment and TestFlight build are checked separately.

@@ -11,12 +11,12 @@ function createProfileSource({ fetchFullMessage, saveSource, image, fetchImpl = 
   async function inspect(job) {
     const full = await fetchFullMessage(job.userId, job.record.messageId);
     const bodyText = newText(full.payload);
-    const attachments = extractAttachments(full.payload, { limit: Infinity, minimumBytes: 0, allowGIF: true });
+    const attachments = extractAttachments(full.payload, { limit: Infinity, minimumBytes: 0, allowGIF: true, includeInlineImages: true });
     // Preserve original text/files even when an image host is temporarily
     // unavailable. A missing image verdict stays unknown and retryable.
     await saveSource(job.userId, job.record.messageId, { bodyText, attachments });
     if (job.record.imageUrl !== null && job.record.imageUrl !== undefined) return;
-    const candidates = image.pickCandidates(image.extractHtml(full.payload));
+    const candidates = image.pickCandidates(image.extractHtml(full.payload)) ?? [];
     let unavailable = false;
     const picture = candidates.length ? await image.resolveBest(candidates, {
       fetchImpl: async (url, options) => {

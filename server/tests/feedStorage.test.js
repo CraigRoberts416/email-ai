@@ -14,7 +14,8 @@ before(async () => {
   db = new PGlite();
   await db.exec(fs.readFileSync(path.join(__dirname, '../schema.sql'), 'utf8'));
   await db.exec(`ALTER TABLE messages ADD COLUMN participants JSONB,
-    ADD COLUMN attachments JSONB, ADD COLUMN image_url TEXT, ADD COLUMN body_text TEXT`);
+    ADD COLUMN attachments JSONB, ADD COLUMN image_url TEXT, ADD COLUMN body_text TEXT,
+    ADD COLUMN source_version INT NOT NULL DEFAULT 0`);
 });
 after(async () => db?.close());
 beforeEach(async () => {
@@ -265,6 +266,9 @@ test('profile source inspection is account-scoped, distinguishes unknown from em
   assert.equal(inspected.quote, null);
   assert.equal(inspected.summary, null);
   assert.equal((await messages.getHistoryPageRecords('b', ['source']))[0].sourceInspected, false);
+  await query("UPDATE messages SET body_text = 'legacy', attachments = '[]', image_url = '' WHERE user_id = 'b' AND message_id = 'source'");
+  assert.equal((await messages.getHistoryPageRecords('b', ['source']))[0].sourceInspected, false,
+    'Previously inspected sources are rechecked for inline personal photos');
   const metadata = (await messages.getMessagesByIds('a', ['source']))[0];
   assert.equal(metadata.originalText, undefined, 'Counting candidates does not transfer body excerpts');
   await messages.saveProfileSource('a', 'source', { bodyText: 'Original text', imageUrl: '',

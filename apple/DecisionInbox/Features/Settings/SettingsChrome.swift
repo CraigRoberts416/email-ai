@@ -3,12 +3,8 @@ import UIKit
 
 // The furniture every settings screen is assembled from.
 //
-// Nothing here is a system control. `List`, `Form`, `Toggle` and
-// `.navigationTitle` all bring back the tint, the inset rounded row and the
-// blurred bar this design spent its argument removing — so the screens are
-// built out of `Controls.swift` instead: `NavBar`, `SectionHeader`, `ListRow`,
-// `RowArrow`, `RowValue`, `InkToggle`, `InkCheckbox`, `PrimaryButton`,
-// `SearchField`, `TagPill`, `SheetChrome`.
+// Content keeps the app's typography and rows. Back navigation uses the
+// system toolbar so placement and adaptive Liquid Glass match other screens.
 //
 // One typographic rule runs through all of it, and it is the one the content
 // audit found broken: **uppercase mono is a label or a count; a sentence is set
@@ -18,30 +14,35 @@ import UIKit
 
 // MARK: - Screen shell
 
-/// Nav bar pinned above a scroller, on the product's own ground. The system
-/// bar is hidden rather than styled: there is no configuration of it that
-/// produces this.
+/// Shared settings content with native back navigation on detail screens.
 struct SettingsScreen<Content: View>: View {
     let title: String
     var onBack: (() -> Void)?
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(spacing: 0) {
-            NavBar(title: title, onBack: onBack)
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    content
+        Group {
+            if let onBack {
+                scroller.backNavigation(title: title, action: onBack)
+            } else {
+                VStack(spacing: 0) {
+                    NavBar(title: title)
+                    scroller
                 }
-                // The tab bar floats over content, so a settings screen has to
-                // clear it itself or its last row sits underneath.
-                .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
+                .toolbar(.hidden, for: .navigationBar)
             }
-            .scrollIndicators(.hidden)
         }
         .background(Ink.surface)
-        .toolbar(.hidden, for: .navigationBar)
     }
+
+    private var scroller: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) { content }
+                .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
+        }
+        .scrollIndicators(.hidden)
+    }
+
 }
 
 // MARK: - Group header

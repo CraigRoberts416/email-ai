@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { Pool } = require('pg');
+const { createMailboxWriter } = require('./mailboxWrites');
 
 // Requires DATABASE_URL environment variable — e.g.:
 //   postgres://user:password@host:5432/dbname
@@ -16,7 +17,10 @@ pool.on('error', (err) => {
   console.error('[db] unexpected pool error:', err.message);
 });
 
-async function query(sql, params) {
+const mailboxWriter = createMailboxWriter({ pool });
+
+async function query(sql, params, { mailboxWriteUserId } = {}) {
+  if (mailboxWriteUserId) return mailboxWriter.write(mailboxWriteUserId, sql, params);
   const client = await pool.connect();
   try {
     return await client.query(sql, params);
@@ -142,6 +146,17 @@ async function runMigrations() {
   await pool.query(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS participants JSONB
   `);
+  // A People thread must find its participants before paging bodies, without
+  // decoding the entire archive. Normalize legacy mixed-case address values
+  // in the indexed expression used by conversations.js.
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_messages_user_sender
+      ON messages(user_id, lower(from_email));
+    CREATE INDEX IF NOT EXISTS idx_messages_user_thread
+      ON messages(user_id, thread_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_participant_emails
+      ON messages USING gin ((lower(participants::text)::jsonb) jsonb_path_ops)
+  `);
 
   // What the sender actually wrote, with the quoted history cut off.
   //
@@ -152,6 +167,9 @@ async function runMigrations() {
   // there was nothing but quoted text.
   await pool.query(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS body_text TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS source_version INT NOT NULL DEFAULT 0
   `);
 
   // Bodies stored before link footnotes were recognised as quoted material.
@@ -225,8 +243,9 @@ async function runMigrations() {
   if (rowCount) console.log(`[db] re-queued ${rowCount} failed post-cutoff message(s)`);
 }
 
-runMigrations().catch(err =>
+const ready = runMigrations();
+ready.catch(err =>
   console.error('[db] migration error:', err.message)
 );
 
-module.exports = { query, pool };
+module.exports = { query, pool, ready };

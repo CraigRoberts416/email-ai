@@ -49,3 +49,26 @@ struct ConversationMessage: Identifiable, Hashable {
     var receivedAt: Date
     var attachments: [Attachment]
 }
+
+/// Inspection happens after a page's cached content is returned. Track each
+/// loaded page independently so an older page cannot stop the newest page's
+/// refresh, or make already-loaded correspondence disappear.
+struct ConversationSourceRefresh {
+    private var attempts: [String: Int] = [:]
+    let maximumAttempts = 6
+    var hasPending: Bool { !attempts.isEmpty }
+    var readyPages: [String] { attempts.keys.filter { attempts[$0, default: 0] < maximumAttempts }.sorted() }
+
+    mutating func record(cursor: String?, pending: Bool) {
+        let key = cursor ?? ""
+        if pending { if attempts[key] == nil { attempts[key] = 0 } }
+        else { attempts.removeValue(forKey: key) }
+    }
+    mutating func beginAttempt(_ key: String) -> Bool {
+        guard let count = attempts[key], count < maximumAttempts else { return false }
+        attempts[key] = count + 1
+        return true
+    }
+    mutating func retry() { for key in attempts.keys { attempts[key] = 0 } }
+    mutating func clear() { attempts.removeAll() }
+}

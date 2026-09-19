@@ -56,6 +56,14 @@ Detaching an account updates the remaining device total, including zero when the
 last account is removed. The current account schema stores one device token per
 account; registering that account on another device replaces its previous token.
 
+Notification taps carry both `userId` and `messageId`. The native app buffers a
+cold-launch tap until navigation is attached and opens cached content immediately.
+For messages outside loaded feed pages, `GET /messages/:messageId/card` resolves
+the card in the authenticated mailbox (including read/archived mail); if metadata
+is missing locally, it fetches just that message from Gmail. This does not insert
+historical mail into the unread feed or start interpretation. Deleted/unavailable
+messages return an explicit failure so the app can offer retry feedback.
+
 Run isolated verification with `node --test server/tests/*.test.js`. These tests
 use generated test keys and mocked transports/stores, never real mailboxes. A
 physical-device acceptance pass still needs foreground, background, terminated,
