@@ -71,7 +71,8 @@ async function runMigrations() {
       ADD COLUMN IF NOT EXISTS all_mail_sync_completed_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS all_mail_sync_cursor TEXT,
       ADD COLUMN IF NOT EXISTS all_mail_sync_generation TEXT,
-      ADD COLUMN IF NOT EXISTS all_mail_sync_started_at TIMESTAMPTZ
+      ADD COLUMN IF NOT EXISTS all_mail_sync_started_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS all_mail_sync_revalidate BOOLEAN NOT NULL DEFAULT FALSE
   `);
   await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS all_mail_sync_generation TEXT

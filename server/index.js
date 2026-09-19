@@ -1838,7 +1838,6 @@ async function runUnsubscribeBackfill(userId) {
 
     console.log(`[backfill] ${messageIds.length} messages to check for unsubscribe URLs (user: ${userId.slice(0, 8)}…)`);
 
-    const accessToken = await userStore.getValidAccessToken(userId);
     const BATCH = 20;
     let found = 0;
 
@@ -1846,12 +1845,7 @@ async function runUnsubscribeBackfill(userId) {
       const slice = messageIds.slice(i, i + BATCH);
       await Promise.all(slice.map(async (messageId) => {
         try {
-          const res = await fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=metadata&metadataHeaders=List-Unsubscribe`,
-            { headers: { Authorization: `Bearer ${accessToken}` } }
-          );
-          if (!res.ok) return;
-          const msg = await res.json();
+          const msg = await gmailSync.fetchMessageMetadata(userId, messageId, { priority: 0 });
           const headers = msg.payload?.headers ?? [];
           const raw = headers.find(h => h.name.toLowerCase() === 'list-unsubscribe')?.value ?? '';
           const url = _extractUnsubscribeUrl(raw);
@@ -1893,8 +1887,8 @@ async function runImageBackfill(userId) {
       const slice = messageIds.slice(i, i + BATCH);
       await Promise.all(slice.map(async (messageId) => {
         try {
-          const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
-          const candidates = emailImage.pickCandidates(emailImage.extractHtml(rawMsg.payload));
+          const rawMsg = await gmailSync.fetchFullMessage(userId, messageId, { priority: 0 });
+          const candidates = emailImage.pickCandidates(emailImage.extractHtml(rawMsg.payload)) ?? [];
           const picture = await emailImage.resolveBest(candidates);
           await messageStore.setImageUrl(userId, messageId, picture ?? '');
           if (picture) found++;

@@ -39,7 +39,7 @@ async function processNext(userId) {
   _emitSSE(userId, { type: 'processing', messageId });
 
   try {
-    const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
+    const rawMsg = await gmailSync.fetchFullMessage(userId, messageId, { priority: 0 });
     const email  = cleanEmailForAI(rawMsg);
 
     // The email's own picture, taken from the HTML we already have. Stored,
@@ -50,7 +50,7 @@ async function processNext(userId) {
       // Ranked, then measured. The name of an image never says whether it is
       // a photograph or a 1280x102 masthead strip, so every candidate is
       // fetched and checked until one is actually a picture.
-      const candidates = emailImage.pickCandidates(emailImage.extractHtml(rawMsg.payload));
+      const candidates = emailImage.pickCandidates(emailImage.extractHtml(rawMsg.payload)) ?? [];
       const picture = await emailImage.resolveBest(candidates);
       if (picture) {
         await messageStore.setImageUrl(userId, messageId, picture);

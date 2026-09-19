@@ -1,6 +1,8 @@
 const userStore   = require('./userStore');
 const messageStore = require('./messageStore');
 const { createUnreadBacklog } = require('./unreadBacklog');
+const { createGmailReadTransport, gmailReadError } = require('./gmailReadTransport');
+const gmailRead = createGmailReadTransport();
 
 function decodeHtmlEntities(text) {
   return text
@@ -49,14 +51,14 @@ function metadataToRecord(msg, postCutoff = false) {
   };
 }
 
-async function authedFetch(url, accessToken) {
-  return fetch(url, { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(15000) });
+async function authedFetch(userId, url, accessToken, options) {
+  return gmailRead(userId, url, accessToken, options);
 }
 
-async function fetchMailboxProfile(accessToken) {
-  const res = await authedFetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', accessToken);
+async function fetchMailboxProfile(userId, accessToken) {
+  const res = await authedFetch(userId, 'https://gmail.googleapis.com/gmail/v1/users/me/profile', accessToken, { units: 1 });
   if (!res.ok) {
-    throw new Error(`fetchMailboxProfile failed: ${res.status}`);
+    throw gmailReadError(res, 'fetchMailboxProfile');
   }
   return res.json();
 }
@@ -65,11 +67,9 @@ async function fetchMailboxProfile(accessToken) {
 // stand in for the mailbox's unread count, especially during initial import.
 async function getUnreadCount(userId, { signal } = {}) {
   const accessToken = await userStore.getValidAccessToken(userId, { signal });
-  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: signal ?? AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`unread label fetch failed: ${res.status}`);
+  const res = await authedFetch(userId, 'https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD', accessToken,
+    { units: 1, priority: 3, signal: signal ?? AbortSignal.timeout(15000) });
+  if (!res.ok) throw gmailReadError(res, 'unread label fetch');
   const { messagesUnread } = await res.json();
   if (!Number.isSafeInteger(messagesUnread) || messagesUnread < 0) {
     throw new Error('Gmail returned an invalid unread count');
@@ -77,7 +77,7 @@ async function getUnreadCount(userId, { signal } = {}) {
   return messagesUnread;
 }
 
-async function listMessagesPage(accessToken, { pageToken = null, maxResults = 500, unread = false, folder = null } = {}) {
+async function listMessagesPage(userId, accessToken, { pageToken = null, maxResults = 500, unread = false, folder = null } = {}) {
   const params = new URLSearchParams({ maxResults: String(maxResults) });
   if (pageToken) params.set('pageToken', pageToken);
   if (unread) {
@@ -87,11 +87,12 @@ async function listMessagesPage(accessToken, { pageToken = null, maxResults = 50
   }
 
   const res = await authedFetch(
+    userId,
     `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`,
-    accessToken
+    accessToken, { units: 5, priority: 0 }
   );
   if (!res.ok) {
-    throw new Error(`listMessagesPage failed: ${res.status}`);
+    throw gmailReadError(res, 'listMessagesPage');
   }
 
   const data = await res.json();
@@ -101,36 +102,38 @@ async function listMessagesPage(accessToken, { pageToken = null, maxResults = 50
   };
 }
 
-async function fetchMetadataBatch(messageIds, accessToken) {
-  // Fetch in parallel groups of 20 to respect rate limits
+async function fetchMetadataBatch(userId, messageIds, accessToken, { priority = 0 } = {}) {
+  // Bound queued work; the shared mailbox transport controls actual pacing.
   const results = [];
   const BATCH = 20;
   for (let i = 0; i < messageIds.length; i += BATCH) {
     const slice = messageIds.slice(i, i + BATCH);
-    const msgs = await Promise.all(slice.map(async (id) => {
+    const settled = await Promise.allSettled(slice.map(async (id) => {
       const labelsObservedAt = new Date();
       const r = await authedFetch(
+        userId,
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata`,
-        accessToken
+        accessToken, { priority }
       );
       if (r.status === 404) return {}; // deleted between list and metadata
-      if (!r.ok) throw new Error(`metadata fetch failed: ${r.status}`);
+      if (!r.ok) throw gmailReadError(r, 'metadata fetch');
       return { ...await r.json(), labelsObservedAt };
     }));
-    results.push(...msgs.filter(m => m.id));
-    if (i + BATCH < messageIds.length) {
-      await new Promise(r => setTimeout(r, 100)); // brief pause between batches
-    }
+    // Wait for the bounded group before permitting an import retry. Otherwise
+    // failed Promise.all leaves sibling requests running behind a new import.
+    const failed = settled.find(result => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    results.push(...settled.map(result => result.value).filter(m => m.id));
   }
   return results;
 }
 
 async function syncMailboxHead(userId, { maxResults = 100 } = {}) {
   const accessToken = await userStore.getValidAccessToken(userId);
-  const { messageIds } = await listMessagesPage(accessToken, { maxResults });
+  const { messageIds } = await listMessagesPage(userId, accessToken, { maxResults });
   if (!messageIds.length) return [];
 
-  const msgs = await fetchMetadataBatch(messageIds, accessToken);
+  const msgs = await fetchMetadataBatch(userId, messageIds, accessToken);
   const records = msgs.map(m => metadataToRecord(m, false));
   await messageStore.upsertMessages(userId, records);
 
@@ -143,25 +146,36 @@ async function syncMailboxHead(userId, { maxResults = 100 } = {}) {
  * Non-blocking caller: fires and forgets after returning on first page.
  */
 const initialSyncs = new Map();
+const initialSyncFailures = new Map();
 function initialSync(userId) {
   if (initialSyncs.has(userId)) return initialSyncs.get(userId);
-  const job = runInitialSync(userId).finally(() => initialSyncs.delete(userId));
+  const failure = initialSyncFailures.get(userId);
+  if (failure && Date.now() < failure.retryAt) return Promise.resolve();
+  const job = runInitialSync(userId).then(() => initialSyncFailures.delete(userId)).catch(error => {
+    initialSyncFailures.set(userId, { retryAt: Date.now() + Math.max(60_000, error.retryAfterMs ?? 0) });
+    throw error;
+  }).finally(() => initialSyncs.delete(userId));
   initialSyncs.set(userId, job);
   return job;
 }
 async function runInitialSync(userId) {
-  const snapshot = await userStore.beginAllMailSync(userId);
-  try {
-    await importAllMail(userId, snapshot);
-    await messageStore.reconcileAllMail(userId, snapshot.generation, snapshot.startedAt);
-    await userStore.setAllMailSyncState(userId, 'complete');
-  } catch (error) {
-    await userStore.setAllMailSyncState(userId, 'failed');
-    throw error;
+  for (;;) {
+    const snapshot = await userStore.beginAllMailSync(userId);
+    try {
+      if (await importAllMail(userId, snapshot) === false) continue;
+      await messageStore.reconcileAllMail(userId, snapshot.generation, snapshot.startedAt);
+      if (await userStore.setAllMailSyncState(userId, 'complete', { generation: snapshot.generation })) return;
+      // An expired-history recovery invalidated the snapshot while it ran.
+      // The coalesced job owns the follow-up; no request is required to restart.
+    } catch (error) {
+      if (!await userStore.setAllMailSyncState(userId, 'failed', { generation: snapshot.generation })) continue;
+      if (error.status === 400) await userStore.setAllMailSyncState(userId, 'pending', { generation: snapshot.generation });
+      throw error;
+    }
   }
 }
 async function importAllMail(userId, snapshot) {
-  console.log(`[sync] initial sync started for user ${userId.slice(0, 8)}…`);
+  console.log(`[sync] initial sync ${snapshot.cursor ? 'resumed at saved page' : 'started'} for user ${userId.slice(0, 8)}…`);
   let pageToken   = snapshot.cursor ?? null;
   let pageCount   = 0;
   let total       = 0;
@@ -170,29 +184,40 @@ async function importAllMail(userId, snapshot) {
     const accessToken = await userStore.getValidAccessToken(userId); // refresh between pages if needed
     let listPage;
     try {
-      listPage = await listMessagesPage(accessToken, { pageToken, maxResults: 500 });
+      listPage = await listMessagesPage(userId, accessToken, { pageToken, maxResults: 500 });
     } catch (err) {
       console.error(`[sync] list failed (page ${pageCount}): ${err.message}`);
-      if (err.message === 'listMessagesPage failed: 400') await userStore.setAllMailSyncState(userId, 'pending');
       throw err;
     }
     const messageIds = listPage.messageIds;
     if (!messageIds.length) {
       pageToken = listPage.nextPageToken;
-      await userStore.setAllMailSyncCursor(userId, pageToken);
+      if (!await userStore.setAllMailSyncCursor(userId, pageToken, snapshot.generation)) return false;
       continue;
     }
 
-    const msgs    = await fetchMetadataBatch(messageIds, accessToken);
-    const records = msgs.map(m => metadataToRecord(m, false));
-    await messageStore.upsertMessages(userId, records);
-    await messageStore.markAllMailSeen(userId, records.map(record => record.messageId), snapshot.generation);
-
-    total += records.length;
+    const missing = snapshot.revalidate ? messageIds : await messageStore.archiveMetadataNeeded(userId, messageIds);
+    const missingSet = new Set(missing);
+    const known = messageIds.filter(id => !missingSet.has(id));
+    if (known.length) await messageStore.markAllMailSeen(userId, known, snapshot.generation);
+    let stored = known.length;
+    // Inventory must visit every provider ID. Known immutable metadata can be
+    // reused; current labels are maintained by history/unread reconciliation.
+    // Persist smaller pieces so a later throttled request does not erase work.
+    for (let offset = 0; offset < missing.length; offset += 20) {
+      const ids = missing.slice(offset, offset + 20);
+      const msgs = await fetchMetadataBatch(userId, ids, accessToken);
+      const records = msgs.map(m => metadataToRecord(m, false));
+      if (records.length) await messageStore.upsertMessages(userId, records);
+      const retained = records.map(record => record.messageId);
+      await messageStore.markAllMailSeen(userId, retained, snapshot.generation);
+      stored += retained.length;
+    }
+    total += stored;
     pageCount++;
     pageToken = listPage.nextPageToken;
-    await userStore.setAllMailSyncCursor(userId, pageToken);
-    console.log(`[sync] page ${pageCount}: ${records.length} messages (running total: ${total})`);
+    if (!await userStore.setAllMailSyncCursor(userId, pageToken, snapshot.generation)) return false;
+    console.log(`[sync] page ${pageCount}: ${stored} messages (running total: ${total})`);
   } while (pageToken);
 
   console.log(`[sync] initial sync complete: ${total} messages`);
@@ -200,10 +225,10 @@ async function importAllMail(userId, snapshot) {
 
 const unreadBacklog = createUnreadBacklog({
   userStore, messageStore, toRecord: metadataToRecord,
-  listPage: async (userId, pageToken, folder) => listMessagesPage(await userStore.getValidAccessToken(userId), {
+  listPage: async (userId, pageToken, folder) => listMessagesPage(userId, await userStore.getValidAccessToken(userId), {
     pageToken, unread: true, folder,
   }),
-  metadata: async (userId, ids) => fetchMetadataBatch(ids, await userStore.getValidAccessToken(userId)),
+  metadata: async (userId, ids) => fetchMetadataBatch(userId, ids, await userStore.getValidAccessToken(userId)),
 });
 
 const ensureUnreadSync = unreadBacklog.ensure;
@@ -229,18 +254,18 @@ async function incrementalSync(userId) {
     const params = new URLSearchParams({ startHistoryId: user.history_id });
     for (const kind of ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved']) params.append('historyTypes', kind);
     if (pageToken) params.set('pageToken', pageToken);
-    const res = await authedFetch(`https://gmail.googleapis.com/gmail/v1/users/me/history?${params}`, accessToken);
+    const res = await authedFetch(userId, `https://gmail.googleapis.com/gmail/v1/users/me/history?${params}`, accessToken, { units: 2 });
     if (!res.ok) {
       if (res.status === 404) {
         await userStore.setUnreadSyncState(userId, 'pending');
-        await userStore.setAllMailSyncState(userId, 'pending');
-        const profile = await fetchMailboxProfile(accessToken);
+        await userStore.setAllMailSyncState(userId, 'pending', { revalidate: true });
+        const profile = await fetchMailboxProfile(userId, accessToken);
         if (profile.historyId) await userStore.updateHistoryId(userId, profile.historyId);
         const headRecords = await syncMailboxHead(userId, { maxResults: 100 });
         initialSync(userId).catch(err => console.error('[sync] re-sync error:', err.message));
         return { newUnreadIds: headRecords.filter(record => record.labelIds.includes('UNREAD')).map(record => record.messageId) };
       }
-      throw new Error(`history list failed: ${res.status}`);
+      throw gmailReadError(res, 'history list');
     }
     const data = await res.json();
     for (const event of data.history ?? []) {
@@ -263,7 +288,7 @@ async function incrementalSync(userId) {
 
   const newUnreadIds = [];
   if (newMessageIds.size > 0) {
-    const msgs    = await fetchMetadataBatch([...newMessageIds], accessToken);
+    const msgs    = await fetchMetadataBatch(userId, [...newMessageIds], accessToken, { priority: 1 });
     const records = msgs.map(m => metadataToRecord(m, true)); // post-cutoff = true
     await messageStore.upsertMessages(userId, records);
     for (const r of records) {
@@ -308,7 +333,7 @@ async function incrementalSync(userId) {
  */
 async function reconcileRecent(userId, { window = 250 } = {}) {
   const accessToken = await userStore.getValidAccessToken(userId);
-  const { messageIds } = await listMessagesPage(accessToken, { maxResults: window });
+  const { messageIds } = await listMessagesPage(userId, accessToken, { maxResults: window });
   if (!messageIds.length) return { recovered: 0 };
 
   const missing = await messageStore.unreconciled(userId, messageIds);
@@ -320,7 +345,7 @@ async function reconcileRecent(userId, { window = 250 } = {}) {
   // belongs in the feed, whether or not we managed to notice it at the time.
   const connectedAt = user?.created_at ? new Date(user.created_at).getTime() : Infinity;
 
-  const msgs    = await fetchMetadataBatch(missing, accessToken);
+  const msgs    = await fetchMetadataBatch(userId, missing, accessToken);
   const records = msgs.map(m => {
     const record = metadataToRecord(m, false);
     record.postCutoff = record.internalDate >= connectedAt;
@@ -342,30 +367,39 @@ async function reconcileRecent(userId, { window = 250 } = {}) {
 /**
  * Fetch full message content for AI processing.
  */
-async function fetchFullMessage(userId, messageId) {
+async function fetchFullMessage(userId, messageId, { priority = 2 } = {}) {
   const accessToken = await userStore.getValidAccessToken(userId);
   const res = await authedFetch(
+    userId,
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`,
-    accessToken
+    accessToken, { priority }
   );
-  if (!res.ok) throw new Error(`fetchFullMessage failed: ${res.status}`);
+  if (!res.ok) throw gmailReadError(res, 'fetchFullMessage');
   return res.json();
+}
+
+async function fetchMessageMetadata(userId, messageId, { priority = 0 } = {}) {
+  const accessToken = await userStore.getValidAccessToken(userId);
+  const response = await authedFetch(userId,
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=metadata`, accessToken, { priority });
+  if (!response.ok) throw gmailReadError(response, 'metadata fetch');
+  return response.json();
 }
 
 async function listSenderMessagesPage(userId, { q, pageToken = null }) {
   const token = await userStore.getValidAccessToken(userId);
   const params = new URLSearchParams({ q, maxResults: '500', includeSpamTrash: 'false' });
   if (pageToken) params.set('pageToken', pageToken);
-  const response = await authedFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`, token);
-  if (!response.ok) throw new Error(`sender history list failed: ${response.status}`);
+  const response = await authedFetch(userId, `https://gmail.googleapis.com/gmail/v1/users/me/messages?${params}`, token, { units: 5 });
+  if (!response.ok) throw gmailReadError(response, 'sender history list');
   const data = await response.json();
   return { messageIds: (data.messages ?? []).map(message => message.id), nextPageToken: data.nextPageToken ?? null };
 }
 
 async function fetchSenderRecords(userId, ids) {
   const token = await userStore.getValidAccessToken(userId);
-  return (await fetchMetadataBatch(ids, token)).map(message => metadataToRecord(message, false));
+  return (await fetchMetadataBatch(userId, ids, token, { priority: 1 })).map(message => metadataToRecord(message, false));
 }
 
-module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage, getUnreadCount, ensureUnreadSync,
+module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage, fetchMessageMetadata, getUnreadCount, ensureUnreadSync,
   listSenderMessagesPage, fetchSenderRecords };

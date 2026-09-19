@@ -24,7 +24,7 @@ before(async () => {
   db = new PGlite();
   await db.exec(`CREATE TABLE users(user_id TEXT PRIMARY KEY, all_mail_sync_state TEXT DEFAULT 'pending',
     all_mail_sync_cursor TEXT, all_mail_sync_generation TEXT, all_mail_sync_started_at TIMESTAMPTZ,
-    all_mail_sync_completed_at TIMESTAMPTZ);
+    all_mail_sync_completed_at TIMESTAMPTZ, all_mail_sync_revalidate BOOLEAN NOT NULL DEFAULT FALSE);
     CREATE TABLE messages(user_id TEXT, message_id TEXT, label_ids TEXT[],
       first_synced_at TIMESTAMPTZ, labels_updated_at TIMESTAMPTZ, all_mail_sync_generation TEXT,
       PRIMARY KEY(user_id,message_id));`);
@@ -52,6 +52,7 @@ test('persisted inventory generation resumes failure, resets pending, and clears
 });
 
 test('complete inventory prunes only missing eligible old rows, protecting other accounts, excluded folders, and concurrent writes', async () => {
+  await db.query("UPDATE users SET all_mail_sync_generation='current' WHERE user_id='a'");
   await db.query(`INSERT INTO messages(user_id,message_id,label_ids,first_synced_at,labels_updated_at)
     SELECT 'a',id,labels,'2026-09-01','2026-09-01' FROM (VALUES
       ('present',ARRAY['UNREAD']),('deleted',ARRAY['INBOX']),('spam',ARRAY['SPAM','UNREAD']),
@@ -66,4 +67,21 @@ test('complete inventory prunes only missing eligible old rows, protecting other
   await messages.removeMessages('a', ['present']);
   assert.equal((await db.query("SELECT * FROM messages WHERE user_id='a' AND message_id='present'")).rows.length, 0);
   assert.equal((await db.query("SELECT * FROM messages WHERE user_id='b' AND message_id='deleted'")).rows.length, 1);
+});
+
+test('superseded generation cannot change a new cursor, clear recovery, mark inventory or prune rows', async () => {
+  await users.setAllMailSyncState('a', 'pending', { revalidate: true });
+  const fresh = await users.beginAllMailSync('a');
+  await users.setAllMailSyncCursor('a', 'fresh-page', fresh.generation);
+  assert.equal(await users.setAllMailSyncCursor('a', 'obsolete-page', 'current'), false);
+  assert.equal(await users.setAllMailSyncState('a', 'complete', { generation: 'current' }), false);
+  await messages.markAllMailSeen('a', ['changed'], 'current');
+  await messages.reconcileAllMail('a', 'current', '2027-01-01');
+  const row = (await db.query("SELECT * FROM users WHERE user_id='a'")).rows[0];
+  assert.equal(row.all_mail_sync_cursor, 'fresh-page');
+  assert.equal(row.all_mail_sync_revalidate, true);
+  assert.equal(row.all_mail_sync_state, 'syncing');
+  const protectedRow = (await db.query("SELECT * FROM messages WHERE user_id='a' AND message_id='changed'")).rows[0];
+  assert.ok(protectedRow);
+  assert.notEqual(protectedRow.all_mail_sync_generation, 'current');
 });

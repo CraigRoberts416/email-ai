@@ -65,12 +65,15 @@ async function setUnreadSyncState(userId, state) {
   `, [userId, state]);
 }
 
-async function setAllMailSyncState(userId, state) {
-  await query(`UPDATE users SET all_mail_sync_state = $2,
+async function setAllMailSyncState(userId, state, { revalidate = false, generation = null } = {}) {
+  const result = await query(`UPDATE users SET all_mail_sync_state = $2,
     all_mail_sync_cursor = CASE WHEN $2 IN ('pending', 'complete') THEN NULL ELSE all_mail_sync_cursor END,
     all_mail_sync_generation = CASE WHEN $2 = 'pending' THEN NULL ELSE all_mail_sync_generation END,
+    all_mail_sync_revalidate = CASE WHEN $2 = 'complete' THEN FALSE ELSE all_mail_sync_revalidate OR $3 END,
     all_mail_sync_completed_at = CASE WHEN $2 = 'complete' THEN NOW() ELSE all_mail_sync_completed_at END
-    WHERE user_id = $1`, [userId, state]);
+    WHERE user_id = $1 AND ($4::text IS NULL OR all_mail_sync_generation = $4)
+    RETURNING user_id`, [userId, state, revalidate, generation]);
+  return result.rows.length > 0;
 }
 
 async function beginAllMailSync(userId) {
@@ -83,13 +86,17 @@ async function beginAllMailSync(userId) {
       THEN all_mail_sync_cursor ELSE NULL END,
     all_mail_sync_state = 'syncing'
     WHERE user_id = $1 RETURNING all_mail_sync_generation AS generation,
-      all_mail_sync_started_at AS "startedAt", all_mail_sync_cursor AS cursor`, [userId, randomUUID()]);
+      all_mail_sync_started_at AS "startedAt", all_mail_sync_cursor AS cursor,
+      all_mail_sync_revalidate AS revalidate`, [userId, randomUUID()]);
   if (!rows[0]) throw new Error('Cannot sync an unknown account');
   return rows[0];
 }
 
-async function setAllMailSyncCursor(userId, cursor) {
-  await query('UPDATE users SET all_mail_sync_cursor = $2 WHERE user_id = $1', [userId, cursor]);
+async function setAllMailSyncCursor(userId, cursor, generation = null) {
+  const result = await query(`UPDATE users SET all_mail_sync_cursor = $2
+    WHERE user_id = $1 AND ($3::text IS NULL OR all_mail_sync_generation = $3)
+    RETURNING user_id`, [userId, cursor, generation]);
+  return result.rows.length > 0;
 }
 
 async function getValidAccessToken(userId, { signal } = {}) {

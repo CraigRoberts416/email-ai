@@ -322,6 +322,18 @@ async function unreconciled(userId, messageIds) {
   return rows.map(r => r.id);
 }
 
+async function archiveMetadataNeeded(userId, messageIds) {
+  if (!messageIds.length) return [];
+  const { rows } = await query(`
+    SELECT id FROM unnest($2::text[]) AS id WHERE NOT EXISTS (
+      SELECT 1 FROM messages m WHERE m.user_id = $1 AND m.message_id = id
+        AND m.participants IS NOT NULL AND COALESCE(m.from_email, '') <> ''
+        AND NOT (m.label_ids && ARRAY['SPAM','TRASH']::text[])
+    )
+  `, [userId, messageIds]);
+  return rows.map(row => row.id);
+}
+
 async function queueNotifications(userId, messageIds) {
   if (!messageIds.length) return;
   await query(`
@@ -369,6 +381,7 @@ async function finishNotification(userId, messageId, delivered) {
 }
 
 module.exports = {
+  archiveMetadataNeeded,
   upsertMessages, getMessage, getMessagesByIds, getHistoryPageRecords, saveProfileSource,
   getUnread, getUnreadPage, getUnreadCounts, getAll, unreconciled,
   unreadMetadataNeeded, reconcileUnreadLabels,
@@ -390,7 +403,9 @@ module.exports.removeMessages = removeMessages;
 
 async function markAllMailSeen(userId, ids, generation) {
   if (ids.length) await query(`UPDATE messages SET all_mail_sync_generation = $3
-    WHERE user_id = $1 AND message_id = ANY($2::text[])`, [userId, ids, generation], { mailboxWriteUserId: userId });
+    WHERE user_id = $1 AND message_id = ANY($2::text[])
+      AND EXISTS (SELECT 1 FROM users WHERE user_id = $1 AND all_mail_sync_generation = $3)`,
+  [userId, ids, generation], { mailboxWriteUserId: userId });
 }
 
 // Pruning runs only after every provider page has been imported successfully.
@@ -398,6 +413,7 @@ async function markAllMailSeen(userId, ids, generation) {
 // accounting. Concurrent arrivals or label changes also survive this snapshot.
 async function reconcileAllMail(userId, generation, startedAt) {
   await query(`DELETE FROM messages WHERE user_id = $1
+    AND EXISTS (SELECT 1 FROM users WHERE user_id = $1 AND all_mail_sync_generation = $2)
     AND all_mail_sync_generation IS DISTINCT FROM $2
     AND first_synced_at < $3 AND labels_updated_at < $3
     AND NOT (COALESCE(label_ids, '{}') && ARRAY['SPAM', 'TRASH']::text[])`,
