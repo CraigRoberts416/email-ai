@@ -1,6 +1,7 @@
 require('dotenv').config();
 const { Pool } = require('pg');
 const { createMailboxWriter } = require('./mailboxWrites');
+const { createMigrationQuery } = require('./migrationQuery');
 
 // Requires DATABASE_URL environment variable — e.g.:
 //   postgres://user:password@host:5432/dbname
@@ -18,6 +19,7 @@ pool.on('error', (err) => {
 });
 
 const mailboxWriter = createMailboxWriter({ pool });
+const migrationQuery = createMigrationQuery({ query: (sql, params) => pool.query(sql, params) });
 
 async function query(sql, params, { mailboxWriteUserId } = {}) {
   if (mailboxWriteUserId) return mailboxWriter.write(mailboxWriteUserId, sql, params);
@@ -36,38 +38,49 @@ async function runMigrations() {
   // be missing from a deployed database. sender_domain_assets was added to
   // the schema and to no migration, so it was never created in production —
   // and every /feed request 500'd on a table nobody had noticed was absent.
-  await pool.query(
+  await migrationQuery(
     require('fs').readFileSync(require('path').join(__dirname, 'schema.sql'), 'utf8')
   );
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS unsubscribe_url TEXT
   `);
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT
   `);
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   `);
-  await pool.query(`
+  // Separate statements commit between tables. Holding the users DDL lock
+  // while waiting on messages can deadlock the previous deployment's inserts,
+  // which need users for their foreign-key check after locking messages.
+  await migrationQuery(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS unread_sync_state TEXT NOT NULL DEFAULT 'pending',
-      ADD COLUMN IF NOT EXISTS unread_sync_completed_at TIMESTAMPTZ;
+      ADD COLUMN IF NOT EXISTS unread_sync_completed_at TIMESTAMPTZ
+  `);
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS first_synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      ADD COLUMN IF NOT EXISTS labels_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ADD COLUMN IF NOT EXISTS labels_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  `);
+  await migrationQuery(`
     CREATE INDEX IF NOT EXISTS idx_messages_unread_cursor
       ON messages(user_id, internal_date DESC, message_id COLLATE "C" DESC)
       WHERE 'UNREAD' = ANY(label_ids)
   `);
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS all_mail_sync_state TEXT NOT NULL DEFAULT 'pending',
       ADD COLUMN IF NOT EXISTS all_mail_sync_completed_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS all_mail_sync_cursor TEXT,
       ADD COLUMN IF NOT EXISTS all_mail_sync_generation TEXT,
-      ADD COLUMN IF NOT EXISTS all_mail_sync_started_at TIMESTAMPTZ;
-    ALTER TABLE messages ADD COLUMN IF NOT EXISTS all_mail_sync_generation TEXT;
+      ADD COLUMN IF NOT EXISTS all_mail_sync_started_at TIMESTAMPTZ
+  `);
+  await migrationQuery(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS all_mail_sync_generation TEXT
+  `);
+  await migrationQuery(`
     CREATE INDEX IF NOT EXISTS idx_messages_history_cursor
       ON messages(user_id, internal_date DESC, message_id COLLATE "C" DESC)
   `);
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS notification_pending BOOLEAN NOT NULL DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS notification_claimed_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS notification_sent_at TIMESTAMPTZ
@@ -78,10 +91,10 @@ async function runMigrations() {
   // Defaults to 'none': a database that has never been asked must not imply
   // that every message in it is clean-by-inspection, but it must also never
   // imply the opposite.
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS risk_level TEXT NOT NULL DEFAULT 'none'
   `);
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS risk_evidence JSONB
   `);
 
@@ -94,13 +107,13 @@ async function runMigrations() {
   // The counter is what makes retrying safe: without it, a message that fails
   // for its own reasons would be re-queued on every boot forever, and each
   // attempt is a paid model call.
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS ai_attempts INT NOT NULL DEFAULT 0
   `);
 
   // The sender's own picture for this message, extracted from its HTML. Held
   // as the original URL and only ever served through the proxy.
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS image_url TEXT
   `);
 
@@ -114,7 +127,7 @@ async function runMigrations() {
   // against the new prompt. The cutoff is a fixed instant rather than a flag,
   // which makes this self-limiting: after the first pass every surviving row
   // is newer than it, so re-running on every boot deletes nothing.
-  const dropped = await pool.query(`
+  const dropped = await migrationQuery(`
     DELETE FROM sender_domain_assets WHERE created_at < TIMESTAMPTZ '2026-09-15 12:45:00+00'
   `);
   if (dropped.rowCount) {
@@ -129,31 +142,35 @@ async function runMigrations() {
   // The files an email carried. JSONB rather than a join table: it is a
   // handful of rows read only alongside their message, and never queried
   // across messages.
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB
   `);
 
   // One line about who a sender is, generated alongside their hero and cached
   // per domain. Nullable on purpose: a missing sentence is a blank, and a
   // wrong one is the product asserting something false about a real company.
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE sender_domain_assets ADD COLUMN IF NOT EXISTS description TEXT
   `);
 
   // Everyone who was on a message besides the sender. A direct message is
   // identified by its participant set, so without this there is nothing to
   // group a conversation by.
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS participants JSONB
   `);
   // A People thread must find its participants before paging bodies, without
   // decoding the entire archive. Normalize legacy mixed-case address values
   // in the indexed expression used by conversations.js.
-  await pool.query(`
+  await migrationQuery(`
     CREATE INDEX IF NOT EXISTS idx_messages_user_sender
-      ON messages(user_id, lower(from_email));
+      ON messages(user_id, lower(from_email))
+  `);
+  await migrationQuery(`
     CREATE INDEX IF NOT EXISTS idx_messages_user_thread
-      ON messages(user_id, thread_id);
+      ON messages(user_id, thread_id)
+  `);
+  await migrationQuery(`
     CREATE INDEX IF NOT EXISTS idx_messages_participant_emails
       ON messages USING gin ((lower(participants::text)::jsonb) jsonb_path_ops)
   `);
@@ -165,10 +182,10 @@ async function runMigrations() {
   // chat bubble a fragment reads as the whole message, so every turn looked
   // truncated because it was. NULL means never fetched; '' means fetched and
   // there was nothing but quoted text.
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS body_text TEXT
   `);
-  await pool.query(`
+  await migrationQuery(`
     ALTER TABLE messages ADD COLUMN IF NOT EXISTS source_version INT NOT NULL DEFAULT 0
   `);
 
@@ -177,7 +194,7 @@ async function runMigrations() {
   // line, so these are cached with 70 characters of hex where the sender wrote
   // nothing. Clearing them re-asks Gmail on next open; NULL is the "never
   // fetched" state and costs one round trip, not a model call.
-  const stale = await pool.query(`
+  const stale = await migrationQuery(`
     UPDATE messages SET body_text = NULL
     WHERE body_text ~ '(^|\\n)[[:space:]]*[[<][[:space:]]*(https?://|mailto:)[^[:space:]]*[[:space:]]*[]>][[:space:]]*($|\\n)'
   `);
@@ -188,7 +205,7 @@ async function runMigrations() {
   // Bodies stored before a text/plain part was checked for actually being
   // text. Senders paste the HTML build into it, and one list row read
   // `<p>Hi CRAIG,</p><br><br>`.
-  const markup = await pool.query(`
+  const markup = await migrationQuery(`
     UPDATE messages SET body_text = NULL
     WHERE body_text ~* '</?(p|br|div|table|td|tr|span|img|h[1-6])[ />]'
   `);
@@ -197,7 +214,7 @@ async function runMigrations() {
   }
 
   // Bodies holding a tracker's angle-bracket rewrite of the URL before it.
-  const footnote = await pool.query(`
+  const footnote = await migrationQuery(`
     UPDATE messages SET body_text = NULL
     WHERE body_text ~ 'https?://[^[:space:]]+[[:space:]]*<[[:space:]]*(https?://|mailto:)'
   `);
@@ -208,7 +225,7 @@ async function runMigrations() {
   // Bodies stored with the sender's own line wrapping still in them. Hard
   // wraps at ~75 columns were right for a terminal and break mid-sentence in
   // a bubble 272 points wide.
-  const wrapped = await pool.query(`
+  const wrapped = await migrationQuery(`
     UPDATE messages SET body_text = NULL
     WHERE body_text ~ '[^[:space:]]{1}[^\n]{59,}\n[[:alnum:]]'
   `);
@@ -221,7 +238,7 @@ async function runMigrations() {
   // so an email whose first candidate measured as a masthead strip was written
   // off entirely — even when a real photograph sat three images below it. That
   // is most of the 173 empties in this mailbox.
-  const recheck = await pool.query(`
+  const recheck = await migrationQuery(`
     UPDATE messages SET image_url = NULL
     WHERE post_cutoff = TRUE
       AND (image_url = ''
@@ -236,7 +253,7 @@ async function runMigrations() {
   // pre-cutoff backlog going back to 2023 that the product deliberately does
   // not interpret, and re-queueing it would buy nothing and cost ~19,000
   // model calls.
-  const { rowCount } = await pool.query(`
+  const { rowCount } = await migrationQuery(`
     UPDATE messages SET ai_status = 'none'
     WHERE ai_status = 'error' AND post_cutoff = TRUE AND ai_attempts < 3
   `);
