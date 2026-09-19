@@ -630,11 +630,11 @@ Users should feel that they can process their inbox quickly and reach a clear en
 
 When the feed ends, the product reinforces completion.
 
-Example:
+Inbox zero is a core habit: the incoming feed clears as the user reviews it. A post is seen when the user scrolls past it, and it leaves the feed after moving above the viewport. There is no reading timer.
 
-Inbox Zero
+Clearing a post marks its email read; it does not delete, archive, reply, or resolve an obligation. The completion state means there is nothing left to review in the feed, not necessarily nothing left to do.
 
-You're caught up
+After the feed is clear, users may explicitly choose **See old posts**. This optional shortcut can be turned off. Previously read posts never automatically refill the incoming feed. Section 11.12 defines the behavior and recovery requirements.
 
 The system should encourage users to leave their inbox and return to the rest of their day.
 
@@ -5256,7 +5256,9 @@ Searchable
 
 Accessible
 
-Visible somewhere in the feed
+Visible in the incoming feed until reviewed, then available through old posts or All Mail
+
+Read-state clearing is an explicit product rule in both feed modes, not hidden relevance filtering. Ranking must not silently remove unseen mail.
 
 ---
 
@@ -5264,21 +5266,35 @@ Visible somewhere in the feed
 
 Unlike social media feeds, the inbox feed is **finite**.
 
-When the user reaches the end:
+**Confirmed requirement, September 18, 2026:** inbox zero remains a core habit. Scrolling past a post counts as seeing it; there is no dwell-time requirement.
 
-No more conversations appear
+### **Seen and cleared**
 
-The system may show a completion indicator.
+* A post is eligible to clear only after user scrolling carries the whole post above the viewport. Loading a card, an automatic layout change, or a brief appearance below the viewport does not count.
+* Keep the post visible while the user is reading or interacting with it. Apply the same behavior to the final post, with enough scroll space to move it above the viewport.
+* Clearing uses the email's read state. Remove the post after the server confirms the read update, preserve the reader's scroll position, and reconcile the feed on refresh or re-entry.
+* If the update fails or its result is unknown, retain the post and provide a clear recovery action. A failed save must not become a successful completion claim.
+* Clearing does not archive, delete, unsubscribe, reply, or change the status of a request inside the email. Previously read mail remains accessible. A new unread email in a conversation makes it eligible to appear again.
+* Opening a post also marks its email read. Reading and clearing are distinct from the explicit archive action; never use a delete icon to represent read state.
 
-Example:
+### **Completion and old posts**
 
-You're caught up
+* The current native feed loads at most 200 posts per account at a time. After the loaded window clears, verify the authoritative unread totals for the included mailboxes and fetch the next unread batch before declaring completion. Loading, incomplete synchronization, unavailable counts, and failed requests must remain distinct from confirmed completion. Excluded mailboxes may still contribute unread mail to the app badge.
+* Never automatically load old posts into a cleared feed. The user may leave the app with a stable sense of completion.
+* Offer **See old posts** only after completion. This opens a separate view of previously read posts with a clear return path to incoming mail. Opening it does not make those posts unread.
+* Provide a **See old posts** preference controlling that completion shortcut. Persist it on the device across launches for the native multi-account app. Turning it off hides the shortcut without deleting mail; Search remains available. The native history sheet reads previously read mail from the included mailboxes and has a Done action.
+* Incoming unread mail belongs to the incoming feed even while the user browses old posts; it must not be mixed into the old-posts view.
+* Completion describes reviewed mail and must not claim unfinished obligations are resolved. Current native copy is “Inbox zero.” with “You’ve seen every post in this feed. Your emails are still in your mailbox.” Operational labels and failure recovery use the narrow resilience exception in the zero-shot philosophy; interpretations remain generated from actual mail.
 
-This reinforces the product goal:
+### **Acceptance checks**
 
-Help users return to their lives
+1. A stationary visible card remains; scrolling it fully above the viewport clears it after a confirmed read update, including the last card.
+2. Refreshing or reopening does not restore successfully cleared posts. A failed read update retains the post with recovery available.
+3. Successful empty feed, loading feed, incomplete sync, and failed feed are visibly distinct.
+4. Old posts appear only by explicit choice; disabling the shortcut survives restart; Search stays available. Scrolling in the history sheet never changes read state.
+5. New unread mail resurfaces while previously read mail stays out of the incoming feed. Clearing it changes read state without deleting it or completing its requested action.
 
-rather than creating infinite engagement loops.
+The goal is to help users return to their lives, without an endless consumption loop.
 
 ---
 
@@ -5883,6 +5899,12 @@ new message arrives
 conversation status changes
 
 user actions occur
+
+### **Read state and completion preference**
+
+Feed visibility must reflect the provider's authoritative read/unread state and confirmed changes to that state. A seen card is not a deleted email or a resolved task. Incoming and old-post views must distinguish unread and previously read messages; a local loading or failed-update state must not overwrite the provider's state.
+
+For the native multi-account client, the preference to show the old-posts shortcut is persisted on the device. It affects the completion screen only, not message retention or provider labels.
 
 ---
 
@@ -6549,6 +6571,28 @@ card content
 feed ranking
 
 The UI refreshes automatically.
+
+---
+
+## **13.11.1 New-mail notifications and app icon unread count**
+
+**Confirmed requirement, September 18, 2026:** support new-mail notifications and display the unread email count on the app icon where the platform and granted permissions support it. The native implementation preserves the existing attention-only alert policy: only a new unread email whose completed interpretation requires an answer triggers a visible alert; other new unread mail updates the badge silently.
+
+* The badge sums the authoritative **unread email counts** across all connected accounts registered to that device, including mailboxes excluded from the feed. It is not the number of rendered cards or items that AI thinks require attention. The Gmail integration uses each provider UNREAD total. If any account total is unavailable, preserve the last confirmed badge instead of publishing a partial sum.
+* Refresh the count when registering the device, opening or refreshing the app, receiving new mail, marking mail read, and reconciling provider-side changes. Clear the badge when the confirmed unread count reaches zero.
+* An unavailable count is unknown, not zero. Preserve the last confirmed count until reconciliation succeeds; do not invent a precise count from a partial local feed.
+* Badge totals can exceed the loaded feed during initial synchronization. The interface must not claim inbox zero while unread mail is still being synchronized.
+* Visible alerts use the provider’s real sender and message context only after the model has completed interpretation and classified the new unread email as requiring attention. Receipts, promotions, and newsletters remain silent unless they satisfy that same established condition.
+* Suppress new-mail alerts for initial historical synchronization and for repeated delivery of the same arrival. Updating the badge does not itself require another interrupting alert.
+* Respect the operating system's notification and badge permissions, privacy settings, and delivery behavior. Denying permission must not block the inbox. Platform support and user settings determine whether a numbered badge, dot, sound, or banner appears; the app cannot guarantee presentation or delivery timing.
+
+### **Acceptance checks**
+
+1. On a supported physical device with permission granted and APNs credentials configured, a new unread email updates the app icon count. A visible alert follows only when its completed interpretation requires attention.
+2. Reading mail in the app and provider-side changes reconcile the badge; a confirmed zero removes it.
+3. Initial import and duplicate arrival events do not produce repeated historical alerts.
+4. Permission denial, unsupported badge presentation, offline fetches, and unknown counts preserve inbox use and never convert unknown state into a false zero.
+5. Test actual foreground and background delivery, reopening, and operating-system settings on supported devices. Local code tests alone do not verify native delivery or badge display.
 
 ---
 
@@ -9999,13 +10043,9 @@ Examples:
 
 Completion must feel real.
 
-Not:
+Inbox zero means no incoming posts remain to review. Reinforce that endpoint without implying that reading an email has completed the request inside it.
 
-* “Inbox zero”
-
-But:
-
-“Nothing is waiting on you”
+Generate completion language from the known feed state. Do not claim that nothing is waiting on the user merely because posts have been read. The optional old-posts shortcut must remain secondary and can be turned off.
 
 ---
 
@@ -10086,4 +10126,3 @@ she will open it.
 And if she opens it,
 
 everything else becomes solvable.
-

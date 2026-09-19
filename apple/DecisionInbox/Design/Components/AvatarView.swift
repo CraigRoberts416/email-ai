@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Sender identity. In a monochrome feed this is the only chroma, so shape
 /// carries the sender class and the logo carries the identity.
@@ -13,45 +14,30 @@ struct AvatarView: View {
     var dimmed: Bool = false
 
     @Environment(\.colorSchemeContrast) private var contrast
+    @State private var contactPhotos = ContactPhotoStore.shared
 
-    /// Everything is a circle.
-    ///
-    /// Brands used to get a rounded tile, for a real reason: a circle crops a
-    /// wide wordmark, and cropping somebody's logo is worse than using the
-    /// wrong shape. But a second shape is an expensive way to solve that — it
-    /// splits the feed's identity column into two silhouettes and makes
-    /// "brand or person" the loudest thing a row says about a sender.
-    ///
-    /// The cheaper answer is below: *contain* the mark instead of filling with
-    /// it. A wordmark then sits inside the circle at its own proportions with
-    /// nothing cut off, and the ground plus the hairline read as the avatar.
-    /// One shape, no crop, and the column scans as one system.
+    /// One circular identity shape for people and companies. The source
+    /// determines the image: an authorized contact photo, a supplied avatar,
+    /// then the sender's initial. Never invent a portrait from an address.
     private var corner: CGFloat { size / 2 }
+
+    private var contactImage: UIImage? {
+        contactPhotos.imageData(for: sender.address).flatMap(UIImage.init(data:))
+    }
 
     var body: some View {
         ZStack {
             shape.fill(Ink.surfaceTertiary)
 
-            if let url = sender.logoURL {
+            if let contactImage {
+                Image(uiImage: contactImage)
+                    .resizable()
+                    .scaledToFill()
+            } else if let url = sender.logoURL {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
-                        // Filled, for every sender class.
-                        //
-                        // Checked against the source rather than assumed:
-                        // every image logo.dev returns is 128 × 128, square,
-                        // and fully opaque — a favicon-style mark on its own
-                        // solid ground, never a transparent wordmark. Fitting
-                        // one inside a circle therefore draws the only thing it
-                        // can, which is a square sitting in a circle with the
-                        // ground showing at the corners.
-                        //
-                        // Filled, the mark's own background becomes the circle
-                        // and the crop takes nothing but the corners of it.
-                        // The "contain a wordmark" case this briefly assumed
-                        // does not exist here; if a source that has one is ever
-                        // added, this splits on the image's aspect ratio, which
-                        // is the real question — not on what the sender is.
+                        // Photo and square logo sources share the same crop.
                         image.resizable().scaledToFill()
                     default:
                         monogram
@@ -71,6 +57,9 @@ struct AvatarView: View {
         // Avatars stay at their token size and do not scale with Dynamic Type.
         // An avatar is an image, not text.
         .accessibilityHidden(true)
+        .task(id: sender.address.lowercased() + ":\(contactPhotos.authorizationVersion)") {
+            await contactPhotos.loadPhoto(for: sender.address)
+        }
     }
 
     private var shape: RoundedRectangle {

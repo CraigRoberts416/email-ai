@@ -308,10 +308,57 @@ async function unreconciled(userId, messageIds) {
   return rows.map(r => r.id);
 }
 
+async function queueNotifications(userId, messageIds) {
+  if (!messageIds.length) return;
+  await query(`
+    UPDATE messages m SET notification_pending = TRUE
+    FROM users u
+    WHERE m.user_id = $1 AND u.user_id = m.user_id
+      AND m.message_id = ANY($2::text[]) AND m.post_cutoff = TRUE
+      AND 'UNREAD' = ANY(m.label_ids) AND m.notification_sent_at IS NULL
+      AND m.internal_date >= EXTRACT(EPOCH FROM u.notifications_started_at) * 1000
+  `, [userId, messageIds]);
+}
+
+async function getPendingNotifications(userId) {
+  const { rows } = await query(`
+    SELECT m.* FROM messages m JOIN users u USING (user_id)
+    WHERE m.user_id = $1 AND m.notification_pending = TRUE
+      AND m.notification_sent_at IS NULL AND m.requires_attention = TRUE
+      AND m.ai_status = 'done' AND 'UNREAD' = ANY(m.label_ids)
+      AND m.internal_date >= EXTRACT(EPOCH FROM u.notifications_started_at) * 1000
+      AND m.internal_date >= EXTRACT(EPOCH FROM NOW() - INTERVAL '24 hours') * 1000
+    ORDER BY m.internal_date ASC LIMIT 50
+  `, [userId]);
+  return rows.map(rowToRecord);
+}
+
+async function claimNotification(userId, messageId) {
+  const { rows } = await query(`
+    UPDATE messages SET notification_claimed_at = NOW()
+    WHERE user_id = $1 AND message_id = $2 AND notification_pending = TRUE
+      AND notification_sent_at IS NULL AND requires_attention = TRUE
+      AND 'UNREAD' = ANY(label_ids)
+      AND (notification_claimed_at IS NULL OR notification_claimed_at < NOW() - INTERVAL '2 minutes')
+    RETURNING message_id
+  `, [userId, messageId]);
+  return rows.length > 0;
+}
+
+async function finishNotification(userId, messageId, delivered) {
+  await query(`
+    UPDATE messages SET notification_claimed_at = NULL,
+      notification_sent_at = CASE WHEN $3 THEN NOW() ELSE notification_sent_at END,
+      notification_pending = CASE WHEN $3 THEN FALSE ELSE notification_pending END
+    WHERE user_id = $1 AND message_id = $2
+  `, [userId, messageId, delivered]);
+}
+
 module.exports = {
   upsertMessages, getMessage, getUnread, getAll, unreconciled,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,
   setUnsubscribeUrl, setImageUrl, setAttachments, getMessageIdsNeedingUnsubscribeBackfill,
   getMessageIdsNeedingImageBackfill, getMessageOwners,
   setRiskVerdict,
+  queueNotifications, getPendingNotifications, claimNotification, finishNotification,
 };

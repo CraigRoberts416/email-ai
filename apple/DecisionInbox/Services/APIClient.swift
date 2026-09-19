@@ -15,6 +15,9 @@ struct APIClient {
     struct FeedResponse: Decodable {
         let cards: [Card]
         let recap: Recap?
+        /// Provider total, independent of the bounded card window. Older
+        /// servers may omit it; absence must never become a confirmed zero.
+        let unreadCount: Int?
 
         /// Decodes cards individually. A single unexpected field in one card
         /// used to throw for the whole response, which emptied the feed and
@@ -30,13 +33,15 @@ struct APIClient {
             }
         }
 
-        enum CodingKeys: String, CodingKey { case cards, recap }
+        enum CodingKeys: String, CodingKey { case cards, recap, unreadCount }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             let lossy = try container.decode([Lossy].self, forKey: .cards)
             cards = lossy.compactMap(\.card)
             recap = try? container.decodeIfPresent(Recap.self, forKey: .recap)
+            let count = try? container.decodeIfPresent(Int.self, forKey: .unreadCount)
+            unreadCount = count.flatMap { $0 >= 0 ? $0 : nil }
             if lossy.count != cards.count {
                 print("[feed] kept \(cards.count) of \(lossy.count) cards")
             }
@@ -168,11 +173,15 @@ struct APIClient {
         try await get(cursor.map { "/all-mail?cursor=\($0)" } ?? "/all-mail")
     }
 
+    func unregisterPushToken() async throws {
+        _ = try await send(path: "/auth/push-token", method: "DELETE", body: nil)
+    }
+
     func markRead(_ messageID: String) async throws {
         _ = try await send(path: "/messages/\(messageID)/read", method: "PATCH", body: nil)
     }
 
-    struct Body: Decodable {
+    struct Body: Codable {
         let plainText: String
         let htmlRaw: String
     }
@@ -296,12 +305,14 @@ enum APIError: LocalizedError {
     case transport
     case unauthorized
     case server(Int)
+    case sampleUnavailable
 
     var errorDescription: String? {
         switch self {
         case .transport: return "Could not reach the server."
         case .unauthorized: return "That mailbox needs reconnecting."
         case .server(let code): return "The server returned \(code)."
+        case .sampleUnavailable: return "Connect a mailbox to use this action."
         }
     }
 }

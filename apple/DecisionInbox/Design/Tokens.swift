@@ -480,7 +480,7 @@ enum Metric {
     static let gutterWide: CGFloat = Space.xl
     static let heroTopPad: CGFloat = 80
     /// The air above the greeting. Large on purpose — see `Masthead`.
-    static let mastheadTop: CGFloat = 120
+    static let mastheadTop: CGFloat = 56
     static let postPaddingY: CGFloat = Space.xl
     static let avatar: CGFloat = 40
     static let avatarCompact: CGFloat = 24

@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
   history_id            TEXT,
   onboarding_history_id TEXT,
   watch_expiry          TIMESTAMPTZ,
+  push_token            TEXT,
+  notifications_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at            TIMESTAMPTZ DEFAULT NOW(),
   updated_at            TIMESTAMPTZ DEFAULT NOW()
 );
@@ -31,6 +33,9 @@ CREATE TABLE IF NOT EXISTS messages (
   action_url          TEXT,
   requires_attention  BOOLEAN NOT NULL DEFAULT FALSE,
   unsubscribe_url     TEXT,
+  notification_pending BOOLEAN NOT NULL DEFAULT FALSE,
+  notification_claimed_at TIMESTAMPTZ,
+  notification_sent_at TIMESTAMPTZ,
   risk_level          TEXT NOT NULL DEFAULT 'none',
   risk_evidence       JSONB,
   PRIMARY KEY (user_id, message_id)

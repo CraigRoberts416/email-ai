@@ -15,6 +15,7 @@ struct SenderProfileView: View {
 
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lane: Lane = .emails
     @State private var open: Message?
     @State private var thread: Conversation?
@@ -23,9 +24,12 @@ struct SenderProfileView: View {
     /// `store.messages(from:)` — and somebody you only ever talk to has none
     /// of those. Her PDFs were in the thread the whole time.
     @State private var chatMessages: [ConversationMessage] = []
+    @State private var loadingConversation = false
     /// Opens a file from the Docs lane. A paperclip tab that opens the thread
     /// instead of the document makes the user find the file twice.
     @State private var opener = AttachmentOpener()
+    @State private var presentedImage: MediaEntry?
+    @State private var lastOpenedFile: Attachment?
 
     /// `emails`, not `messages`. This is a mail client — the thing on screen
     /// is an email, and calling it a message borrows a word from chat apps
@@ -49,8 +53,48 @@ struct SenderProfileView: View {
     private var all: [Message] { store.messages(from: sender.address) }
     private var threads: [Message] { all.filter { $0.threadCount > 1 } }
 
+    /// Both entry points use the same post component. Conversation messages
+    /// supply their original words; they do not receive invented summaries.
+    private var posts: [Message] {
+        var result = all
+        var ids = Set(all.map(\.id))
+        // Conversation loading is currently scoped to the first account.
+        // A newer feed post may belong to another connected mailbox.
+        let mailboxID = store.auth.accounts.first?.id ?? store.mailboxes.first?.id ?? ""
+        for message in chatMessages where !message.mine
+            && message.sender.address.caseInsensitiveCompare(sender.address) == .orderedSame {
+            guard ids.insert(message.id).inserted else { continue }
+            result.append(Message(
+                id: message.id,
+                threadID: nil,
+                mailboxID: mailboxID,
+                sender: message.sender,
+                subject: message.subject ?? "",
+                snippet: message.body,
+                receivedAt: message.receivedAt,
+                quote: message.body.isEmpty ? nil : message.body,
+                summary: nil,
+                actionLabel: nil,
+                actionURL: nil,
+                kicker: .notRead,
+                shape: .text,
+                heroImageURL: nil,
+                heroBackground: nil,
+                senderDescription: nil,
+                imageURL: nil,
+                attachments: message.attachments,
+                isRead: true,
+                threadCount: 1,
+                unsubscribeURL: nil,
+                isInterpreting: false
+            ))
+        }
+        return result.map { store.currentVersion(of: $0) }
+            .sorted { $0.receivedAt > $1.receivedAt }
+    }
+
     /// However many emails the EMAILS lane is showing.
-    private var emailCount: Int { all.isEmpty ? chatMessages.count : all.count }
+    private var emailCount: Int { posts.count }
 
     /// Their chat thread, which lives in the archive rather than the feed.
     private var chat: Conversation? { store.conversation(with: sender.address) }
@@ -60,29 +104,36 @@ struct SenderProfileView: View {
         let id: String
         let file: Attachment
         let receivedAt: Date
-        /// What tapping it should open.
-        let email: Message?
+    }
+
+    private struct MediaEntry: Identifiable {
+        let id: String
+        let url: URL
+        let filename: String?
+        let file: Attachment?
     }
     private var replies: [Message] { all.filter { $0.kicker == .waitingOnThem } }
 
     /// Every picture this sender has sent: the email's own image, plus any
     /// image they attached. Never the generated hero — it is not a photograph
     /// of anything that happened, and a grid is a claim that these are.
-    private var media: [URL] {
-        var found: [URL] = all.flatMap { message -> [URL] in
-            var urls: [URL] = []
-            if let picture = message.imageURL { urls.append(picture) }
+    private var media: [MediaEntry] {
+        var entries: [MediaEntry] = []
+        for message in posts {
+            var imageURLs = Set<URL>()
             for attachment in message.attachments {
-                if case .image(let url) = attachment.preview { urls.append(url) }
+                if case .image(let url) = attachment.preview {
+                    imageURLs.insert(url)
+                    entries.append(MediaEntry(id: "\(message.id)/\(attachment.id)", url: url,
+                                              filename: attachment.filename, file: attachment))
+                }
             }
-            return urls
-        }
-        for message in chatMessages {
-            for attachment in message.attachments {
-                if case .image(let url) = attachment.preview { found.append(url) }
+            if let picture = message.imageURL, !imageURLs.contains(picture) {
+                entries.append(MediaEntry(id: "\(message.id)/body-image", url: picture,
+                                          filename: nil, file: nil))
             }
         }
-        return found
+        return entries
     }
 
     /// Everything they attached that is not a picture.
@@ -90,19 +141,12 @@ struct SenderProfileView: View {
         let isDocument: (Attachment) -> Bool = {
             if case .document = $0.preview { return true } else { return false }
         }
-        let fromFeed = all.flatMap { message in
+        return posts.flatMap { message in
             message.attachments.filter(isDocument).map {
                 FileEntry(id: "\(message.id)/\($0.id)", file: $0,
-                          receivedAt: message.receivedAt, email: message)
+                          receivedAt: message.receivedAt)
             }
         }
-        let fromChat = chatMessages.flatMap { message in
-            message.attachments.filter(isDocument).map {
-                FileEntry(id: "\(message.id)/\($0.id)", file: $0,
-                          receivedAt: message.receivedAt, email: nil)
-            }
-        }
-        return (fromFeed + fromChat).sorted { $0.receivedAt > $1.receivedAt }
     }
 
     private var banner: URL? { all.compactMap(\.heroImageURL).first }
@@ -117,7 +161,7 @@ struct SenderProfileView: View {
 
                 switch lane {
                 case .media:   mediaGrid
-                case .docs:    docsList
+                case .docs:    docsGrid
                 case .emails:  emailList
                 }
             }
@@ -127,12 +171,49 @@ struct SenderProfileView: View {
         .ignoresSafeArea(edges: .top)
         .background(Ink.surface)
         .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
+        .sheet(item: $presentedImage) { entry in
+            NavigationStack {
+                ZStack {
+                    Ink.inverse.ignoresSafeArea()
+                    AsyncImage(url: entry.url) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFit()
+                        case .failure:
+                            Text("This picture could not be loaded.").foregroundStyle(Ink.onInverse)
+                        default: ProgressView().tint(Ink.onInverse)
+                        }
+                    }
+                    .accessibilityLabel(entry.filename ?? "Email image")
+                }
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { presentedImage = nil }
+                    }
+                }
+            }
+        }
+        .alert("Could not open file", isPresented: Binding(
+            get: { if case .failed = opener.state { return true }; return false },
+            set: { if !$0 { opener.state = .idle } }
+        )) {
+            if let lastOpenedFile {
+                Button("Try again") { openFile(lastOpenedFile) }
+            }
+            Button("Cancel", role: .cancel) { opener.state = .idle }
+        } message: {
+            if case .failed(let reason) = opener.state { Text(reason) }
+        }
         .task(id: chat?.id) {
             guard let chat else { return }
             // Disk first so the lanes are populated before the first frame,
             // then the network. Same order the thread itself uses.
             chatMessages = store.cachedMessages(in: chat)
-            chatMessages = await store.messages(in: chat)
+            loadingConversation = true
+            defer { loadingConversation = false }
+            let received = await store.messages(in: chat)
+            guard !Task.isCancelled else { return }
+            // Keep useful cached content when the network returns no records.
+            if !received.isEmpty || chatMessages.isEmpty { chatMessages = received }
         }
         .toolbar(.hidden, for: .navigationBar)
         // Same reason as the thread: this is a full-bleed screen carrying its
@@ -142,18 +223,11 @@ struct SenderProfileView: View {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(banner == nil ? Ink.primary : GlassInk.onScrim)
-                    .frame(width: 40, height: 40)
-                    // Glass over the banner, for the same reason as the
-                    // thread: the image underneath is different for every
-                    // sender, so a fixed disc is wrong for a bright one and
-                    // heavy on a dark one.
-                    .glassControl(fallback: banner == nil ? .clear : Ink.scrim, in: Circle())
-                    // The glass is a background layer and contributes no hit
-                    // shape of its own, so without this only the 15pt chevron
-                    // glyph was tappable — a target you have to aim at, inside
-                    // a control that looks 40pt wide. The flat scrim it
-                    // replaced was a real shape and had been doing this job.
+                    .foregroundStyle(Ink.primary)
+                    .frame(width: Metric.tapTarget, height: Metric.tapTarget)
+                    // A fixed light ground keeps the back arrow legible over
+                    // both dark fallback bands and arbitrary sender images.
+                    .background(Ink.surface, in: Circle())
                     .contentShape(.circle)
             }
             .buttonStyle(.plain)
@@ -198,7 +272,7 @@ struct SenderProfileView: View {
             // their colour is honest and still recognisably theirs.
             Group {
                 if let banner {
-                    AsyncImage(url: banner, transaction: Transaction(animation: Move.crossfade)) { phase in
+                    AsyncImage(url: banner, transaction: Transaction(animation: reduceMotion ? nil : Move.crossfade)) { phase in
                         if case .success(let image) = phase {
                             image.resizable().scaledToFill()
                         } else {
@@ -286,7 +360,7 @@ struct SenderProfileView: View {
     /// What Twitter fills with a location and a join date.
     private var metaRow: some View {
         HStack(spacing: Space.lg) {
-            if let first = all.last {
+            if let first = posts.last {
                 Label {
                     Text(first.receivedAt.formatted(.dateTime.month(.abbreviated).year()).uppercased())
                         .typeStyle(Style.monoMicro)
@@ -313,8 +387,10 @@ struct SenderProfileView: View {
     /// so the second slot is the one action that actually changes that.
     private var actions: some View {
         HStack(spacing: Space.md) {
-            Button { open = all.first } label: {
-                Text("Compose")
+            Button {
+                if let chat { thread = chat } else { open = posts.first }
+            } label: {
+                Text("Open conversation")
                     .typeStyle(Style.body)
                     .foregroundStyle(Ink.primary)
                     .frame(maxWidth: .infinity)
@@ -322,6 +398,7 @@ struct SenderProfileView: View {
                     .overlay(Capsule().strokeBorder(Ink.border, lineWidth: 1))
             }
             .buttonStyle(TapStyle())
+            .disabled(chat == nil && posts.isEmpty)
 
             if let promo = all.first(where: { $0.isPromotion }) {
                 Button { store.unsubscribe(from: promo) } label: {
@@ -339,178 +416,159 @@ struct SenderProfileView: View {
 
     // MARK: Lanes
 
-    /// Their mail, in the feed's own card.
+    /// People and companies share exactly the feed's post rendering and actions.
     @ViewBuilder private var emailList: some View {
-        if chat != nil, all.isEmpty, !chatMessages.isEmpty {
-            // Their side of the conversation, as cards. This was one summary
-            // row reading "4 messages" — a count of the thing instead of the
-            // thing, on a screen whose whole job is to show you what somebody
-            // sent you.
-            ForEach(chatMessages) { message in
-                chatCard(message)
-                Rule()
+        if posts.isEmpty {
+            if loadingConversation {
+                ProgressView("Loading emails…")
+                    .frame(maxWidth: .infinity, minHeight: 240)
+            } else {
+                EmptyStateView(headline: "Nothing from them.", detail: "NO EMAIL FROM THIS SENDER YET.")
+                    .frame(height: 240)
             }
-        } else if all.isEmpty {
-            EmptyStateView(headline: "Nothing from them.", detail: "NO EMAIL FROM THIS SENDER YET.")
-                .frame(height: 240)
         } else {
-            ForEach(all) { message in
+            ForEach(posts) { message in
                 PostView(
                     message: message,
-                    onOpen: { open = message },
-                    onReply: { open = message },
-                    onDiscuss: { open = message },
-                    onForward: { open = message },
+                    onOpen: { openPost(message) },
+                    onReply: { openPost(message) },
+                    onDiscuss: { openPost(message) },
+                    onForward: { openPost(message) },
                     onSave: { store.toggleSaved(message) },
                     onArchive: { store.archive(message) },
                     onUnsubscribe: { store.unsubscribe(from: message) },
+                    onProfile: {},
                     onReact: { store.react(message, $0) }
                 )
             }
         }
     }
 
-    /// One message from the conversation, in the feed's own grammar.
-    ///
-    /// Identity stacked on the left, the words below it, a hairline between —
-    /// the same shape a post has, minus the parts a chat message does not
-    /// have. Tapping opens the thread, which is where a reply lives.
-    ///
-    /// Presented as a sheet rather than pushed because this profile is reached
-    /// from both a navigation stack and a sheet, and only one of those can
-    /// push. The thread carries its own stack so its own destinations work.
-    private func chatCard(_ message: ConversationMessage) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Space.md) {
-                AvatarView(sender: message.mine ? .you : message.sender, size: Metric.avatar)
-                VStack(alignment: .leading, spacing: Space.xxs) {
-                    Text(message.mine ? "You" : message.sender.displayName)
-                        .typeStyle(Style.sender)
-                        .foregroundStyle(Ink.primary)
-                        .lineLimit(1)
-                    Text(message.receivedAt.feedStamp)
-                        .typeStyle(Style.meta)
-                        .foregroundStyle(Ink.tertiary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, Metric.gutter)
-
-            if let subject = message.subject, !subject.isEmpty {
-                Text(subject)
-                    .typeStyle(Style.kicker)
-                    .foregroundStyle(Ink.secondary)
-                    .padding(.horizontal, Metric.gutter)
-                    .padding(.top, Space.lg)
-            }
-
-            Text(message.body)
-                .typeStyle(Style.body)
-                .foregroundStyle(Ink.primary)
-                .fixedSize(horizontal: false, vertical: true)
-                .lineLimit(8)
-                .padding(.horizontal, Metric.gutter)
-                .padding(.top, Space.sm)
-
-            if !message.attachments.isEmpty {
-                AttachmentCarousel(attachments: message.attachments)
-                    .padding(.top, Space.lg)
-            }
+    private func openPost(_ message: Message) {
+        if let chat, chatMessages.contains(where: { $0.id == message.id }) {
+            thread = chat
+        } else {
+            open = message
         }
-        .padding(.vertical, Space.xl)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(.rect)
-        .onTapGesture { thread = chat }
     }
 
-    /// Every picture they have sent, three across.
-    ///
-    /// Built to `ProfileMediaGrid`. One-pixel gutters, edge to edge — the one
-    /// place the product drops its 16pt gutter entirely. At this size a
-    /// picture stops being evidence attached to a message and becomes
-    /// something you scan on shape and colour alone; a margin round each cell
-    /// would turn it back into a list of small pictures.
+    private var gridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 1), count: 3)
+    }
+
+    private var openingFile: Bool {
+        if case .loading = opener.state { return true }
+        return false
+    }
+
+    private func openFile(_ file: Attachment) {
+        guard !openingFile else { return }
+        lastOpenedFile = file
+        Task { await opener.open(file, authorization: nil) }
+    }
+
+    /// Photos and documents share a three-column, square, edge-to-edge grid.
+    /// Cropping belongs to this overview only; opening retains the original.
     @ViewBuilder private var mediaGrid: some View {
         if media.isEmpty {
             EmptyStateView(headline: "No pictures.", detail: "NOTHING THIS SENDER WROTE CARRIED ONE.")
                 .frame(height: 240)
         } else {
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 1), count: 3),
-                spacing: 1
-            ) {
-                ForEach(Array(media.enumerated()), id: \.offset) { _, url in
-                    // Square whatever the source ratio. Uniform crop is what
-                    // makes a grid readable as a grid; honouring each image
-                    // would produce a ragged wall.
-                    Color.clear
-                        .aspectRatio(1, contentMode: .fit)
-                        .overlay {
-                            AsyncImage(url: url, transaction: Transaction(animation: Move.crossfade)) { phase in
-                                if case .success(let image) = phase {
-                                    image.resizable().scaledToFill()
-                                } else {
-                                    Ink.surfaceTertiary
+            LazyVGrid(columns: gridColumns, spacing: 1) {
+                ForEach(media) { entry in
+                    Button {
+                        if let file = entry.file, file.fileURL != nil {
+                            openFile(file)
+                        } else {
+                            presentedImage = entry
+                        }
+                    } label: {
+                        Ink.surfaceTertiary
+                            .aspectRatio(1, contentMode: .fit)
+                            .overlay {
+                                GeometryReader { geometry in
+                                    AsyncImage(url: entry.url,
+                                               transaction: Transaction(animation: reduceMotion ? nil : Move.crossfade)) { phase in
+                                        if case .success(let image) = phase {
+                                            image.resizable().scaledToFill()
+                                        } else {
+                                            Image(systemName: "photo")
+                                                .foregroundStyle(Ink.secondary)
+                                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        }
+                                    }
+                                    .frame(width: geometry.size.width, height: geometry.size.height)
                                 }
                             }
-                        }
-                        .clipped()
+                            .overlay {
+                                if let file = entry.file, case .loading(file.id) = opener.state {
+                                    ProgressView().tint(Ink.primary)
+                                        .padding(Space.sm)
+                                        .background(Ink.surface, in: Circle())
+                                }
+                            }
+                            .clipped()
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(openingFile)
+                    .accessibilityLabel(entry.filename ?? "Email image")
+                    .accessibilityHint("Opens the full image")
                 }
             }
             .padding(.top, 1)
         }
     }
 
-    /// Everything they attached that is not a picture.
-    ///
-    /// Built to `ProfileDocsList`. A list rather than a grid: a document has
-    /// no thumbnail worth scanning, so a grid of them is a wall of identical
-    /// grey squares. The useful axes are name, type and date, and all three
-    /// are text.
-    @ViewBuilder private var docsList: some View {
+    /// File names and types are the covers. A document remains identifiable
+    /// without pretending a generated image is a preview of its contents.
+    @ViewBuilder private var docsGrid: some View {
         if docs.isEmpty {
             EmptyStateView(headline: "No files.", detail: "THIS SENDER HAS NOT ATTACHED ANYTHING.")
                 .frame(height: 240)
         } else {
-            ForEach(docs) { entry in
-                Button {
-                    Task { await opener.open(entry.file, authorization: nil) }
-                } label: {
-                    HStack(spacing: Space.md) {
-                        // The extension, set as type. A generic document glyph
-                        // says "file", which the reader already knows; the
-                        // extension says which file.
-                        Text(entry.file.filename.split(separator: ".").last.map { String($0).uppercased() } ?? "FILE")
-                            .typeStyle(Style.monoMicro)
-                            .foregroundStyle(Ink.secondary)
-                            .frame(width: 44, height: 44)
-                            .background(Ink.surfaceTertiary, in: RoundedRectangle(cornerRadius: Corner.sm, style: .continuous))
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.file.filename)
-                                .typeStyle(Style.monoCaption)
-                                .foregroundStyle(Ink.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text("\(entry.file.sizeLabel.uppercased()) \u{00B7} \(entry.receivedAt.feedStamp)")
-                                .typeStyle(Style.monoMicro)
-                                .foregroundStyle(Ink.tertiary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13))
-                            .foregroundStyle(Ink.tertiary)
+            LazyVGrid(columns: gridColumns, spacing: 1) {
+                ForEach(docs) { entry in
+                    Button { openFile(entry.file) } label: {
+                        Ink.surfaceTertiary
+                            .aspectRatio(1, contentMode: .fit)
+                            .overlay(alignment: .leading) {
+                                VStack(alignment: .leading, spacing: Space.xs) {
+                                    Image(systemName: "doc")
+                                        .font(.system(size: 24, weight: .regular))
+                                        .foregroundStyle(Ink.secondary)
+                                        .accessibilityHidden(true)
+                                    Spacer(minLength: Space.xs)
+                                    Text(entry.file.filename)
+                                        .typeStyle(Style.monoCaption)
+                                        .foregroundStyle(Ink.primary)
+                                        .lineLimit(2)
+                                        .truncationMode(.middle)
+                                        .multilineTextAlignment(.leading)
+                                    Text(entry.file.sizeLabel)
+                                        .typeStyle(Style.monoMicro)
+                                        .foregroundStyle(Ink.secondary)
+                                        .lineLimit(1)
+                                }
+                                .padding(Space.md)
+                            }
+                            .overlay {
+                                if case .loading(entry.file.id) = opener.state {
+                                    ProgressView().tint(Ink.primary)
+                                        .padding(Space.sm)
+                                        .background(Ink.surface, in: Circle())
+                                }
+                            }
+                            .clipped()
+                            .contentShape(.rect)
                     }
-                    .padding(.horizontal, Metric.gutter)
-                    .padding(.vertical, Space.md)
-                    .contentShape(.rect)
+                    .buttonStyle(.plain)
+                    .disabled(openingFile)
+                    .accessibilityLabel("\(entry.file.filename), \(entry.file.sizeLabel), \(entry.receivedAt.formatted(date: .abbreviated, time: .omitted))")
+                    .accessibilityHint("Opens the document")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(entry.file.filename), \(entry.file.sizeLabel)")
-
-                Rule()
             }
+            .padding(.top, 1)
         }
     }
 
@@ -560,7 +618,7 @@ struct SenderProfileView: View {
         HStack(spacing: 0) {
             ForEach(Lane.allCases) { option in
                 Button {
-                    withAnimation(Move.crisp) { lane = option }
+                    withAnimation(Move.resolved(Move.crisp, reduceMotion)) { lane = option }
                 } label: {
                     VStack(spacing: Space.sm + 2) {
                         HStack(spacing: Space.xs + 2) {
@@ -572,7 +630,7 @@ struct SenderProfileView: View {
                             }
                         }
                         .foregroundStyle(lane == option ? Ink.primary : Ink.tertiary)
-                        .frame(height: 22)
+                        .frame(minHeight: 22)
 
                         // Spans the tab, not the label: at full width an
                         // underline that hugs a word leaves the rest of the
@@ -581,7 +639,7 @@ struct SenderProfileView: View {
                             .fill(lane == option ? Ink.primary : .clear)
                             .frame(height: 2)
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: Metric.tapTarget)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)

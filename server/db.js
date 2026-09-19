@@ -41,6 +41,14 @@ async function runMigrations() {
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS push_token TEXT
   `);
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS notifications_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  `);
+  await pool.query(`
+    ALTER TABLE messages ADD COLUMN IF NOT EXISTS notification_pending BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS notification_claimed_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS notification_sent_at TIMESTAMPTZ
+  `);
   // The fraud verdict and the evidence behind it. Two columns, because the
   // card prints the verdict and the explainer screen prints the evidence —
   // and a verdict with nothing to show for it is a vibe, not a finding.

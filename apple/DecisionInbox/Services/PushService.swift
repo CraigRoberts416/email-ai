@@ -27,7 +27,7 @@ final class PushService: NSObject {
     func requestIfUndecided() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         guard settings.authorizationStatus == .notDetermined else {
-            if settings.authorizationStatus == .authorized { register() }
+            if [.authorized, .provisional, .ephemeral].contains(settings.authorizationStatus) { register() }
             return
         }
         let granted = (try? await UNUserNotificationCenter.current()
@@ -62,19 +62,43 @@ extension PushService: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        await AppDelegate.onMailboxUpdate?()
+        return [.banner, .sound, .badge, .list]
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let messageID = response.notification.request.content.userInfo["messageId"] as? String
+        await AppDelegate.onOpenMessage?(messageID)
     }
 }
 
 /// Bridges the two UIKit callbacks SwiftUI has no equivalent for.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     static var onToken: ((Data) -> Void)?
+    static var lastToken: Data?
+    static var onMailboxUpdate: (@MainActor () async -> Void)?
+    static var onOpenMessage: (@MainActor (String?) async -> Void)?
 
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
+        Self.lastToken = deviceToken
         Self.onToken?(deviceToken)
+    }
+
+    func application(_ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        Task { @MainActor in
+            guard let refresh = Self.onMailboxUpdate else { completionHandler(.noData); return }
+            await refresh()
+            completionHandler(.newData)
+        }
     }
 
     func application(

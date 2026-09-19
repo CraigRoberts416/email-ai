@@ -50,6 +50,13 @@ struct SettingsFeedView: View {
                 }
             }
 
+            SettingsGroup("INBOX ZERO", caption: "Posts leave the feed when you scroll past them. Your emails stay in your mailbox.")
+            Rule()
+            SettingsToggle(title: "See old posts", subtitle: "Offer a way back to older posts once the feed is clear.", isOn: Binding(
+                get: { store.showOldPosts }, set: { store.showOldPosts = $0 }
+            ))
+            Rule()
+
             SettingsGroup("ORDER AND SHAPE")
             SettingsParagraph("The feed runs newest first and groups by day. Neither of those is a setting yet, so neither is offered as one here.")
             SettingsParagraph("Every post carries the sender\u{2019}s own words in sans and ours in mono. That is not a preference either \u{2014} it is how you tell them apart.")

@@ -30,25 +30,17 @@ const crypto           = require('crypto');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const unsubscribeCopy  = require('./unsubscribeCopy');
 const { cleanEmailForAI, decodeEntities } = require('./emailCleaner');
+const { createAPNsTransport } = require('./apns');
+const { createMailNotifications } = require('./mailNotifications');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const { Expo } = require('expo-server-sdk');
 const expo = new Expo();
-
-async function sendSilentPush(pushToken) {
-  if (!pushToken || !Expo.isExpoPushToken(pushToken)) return;
-  try {
-    await expo.sendPushNotificationsAsync([{
-      to:               pushToken,
-      _contentAvailable: true,
-      data:             { type: 'new-mail' },
-      priority:         'high',
-    }]);
-  } catch (err) {
-    console.warn('[push] send failed:', err.message);
-  }
-}
+const mailNotifications = createMailNotifications({
+  apns: createAPNsTransport(), expo, isExpoPushToken: Expo.isExpoPushToken,
+  userStore, messageStore, gmailSync,
+});
 
 const app = express();
 
@@ -784,13 +776,37 @@ app.post('/auth/push-token', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
   const { pushToken } = req.body;
-  if (!pushToken) return res.status(400).json({ error: 'pushToken required' });
+  if (!pushToken || !mailNotifications.validToken(pushToken)) {
+    return res.status(400).json({ error: 'valid pushToken required' });
+  }
   try {
     await userStore.updatePushToken(userId, pushToken);
     res.json({ success: true });
+    mailNotifications.notifyMailbox(userId, [], { forceBadge: true })
+      .catch(err => console.warn('[push] registration badge failed:', err.message));
   } catch (err) {
     console.error('[push-token] error:', err.message);
     res.status(500).json({ error: 'failed to store push token' });
+  }
+});
+
+// A removed mailbox must no longer contribute to this phone's combined badge.
+app.delete('/auth/push-token', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const user = await userStore.getUser(userId);
+    const token = user?.push_token;
+    if (req.body?.pushToken && req.body.pushToken !== token) {
+      return res.json({ success: true }); // a newer token already replaced it
+    }
+    await userStore.updatePushToken(userId, null);
+    res.json({ success: true });
+    if (token) mailNotifications.refreshDetachedToken(token)
+      .catch(err => console.warn('[push] detached-account badge failed:', err.message));
+  } catch (err) {
+    console.error('[push-token] unregister failed:', err.message);
+    res.status(500).json({ error: 'failed to remove push token' });
   }
 });
 
@@ -800,7 +816,9 @@ app.get('/feed', async (req, res) => {
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
   try {
-    const messages = await messageStore.getUnread(userId);
+    const [messages, unreadCount] = await Promise.all([
+      messageStore.getUnread(userId), mailNotifications.unreadCount(userId),
+    ]);
 
     // Collect unique sender domains and look up cached hero assets in parallel.
     // Missing ones trigger fire-and-forget generation so the next /feed response
@@ -875,7 +893,7 @@ app.get('/feed', async (req, res) => {
       };
     });
 
-    res.json(stripLoneSurrogates({ cards }));
+    res.json(stripLoneSurrogates({ cards, unreadCount }));
   } catch (err) {
     console.error('[feed] error:', err.message);
     res.status(500).json({ error: 'feed failed' });
@@ -1354,7 +1372,7 @@ app.patch('/messages/:messageId/read', async (req, res) => {
 
     // Call Gmail API to remove UNREAD label
     const gmailRes = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/modify`,
       {
         method:  'POST',
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
@@ -1376,9 +1394,13 @@ app.patch('/messages/:messageId/read', async (req, res) => {
     }
 
     // Notify SSE clients
+    // Clear the card as soon as Gmail and our mirror confirm the write. The
+    // device refreshes its provider totals separately; counting every mailbox
+    // must not delay the scroll action that completed this one message.
     emitSSE(userId, { type: 'message-read', messageId });
-
     res.json({ success: true });
+    mailNotifications.notifyMailbox(userId)
+      .catch(err => console.warn('[push] read badge failed:', err.message));
   } catch (err) {
     console.error('[read] error:', err.message);
     res.status(500).json({ error: 'mark-read failed' });
@@ -1456,9 +1478,10 @@ app.post('/webhooks/gmail', async (req, res) => {
     // Wake the worker immediately for new unread mail
     if (newUnreadIds.length > 0) {
       processingWorker.wakeWorker(userId);
-      // Silent push to wake the app in background so the feed cache stays fresh
-      sendSilentPush(user.push_token);
     }
+    // Queue only arrivals, update the badge for any mailbox change, and let
+    // worker completion deliver an alert only after attention is established.
+    await mailNotifications.notifyMailbox(userId, newUnreadIds);
   } catch (err) {
     console.error('[webhook] processing error:', err.message);
   }
@@ -1950,6 +1973,7 @@ async function syncEveryone() {
         .catch(err => console.warn(`[bodies] ${user.user_id.slice(0, 8)}…: ${err.message}`));
 
       const announce = Array.from(new Set([...newUnreadIds, ...(swept.newUnreadIds ?? [])]));
+      await mailNotifications.notifyMailbox(user.user_id, announce);
       if (!announce.length) continue;
 
       console.log(`[poll] ${announce.length} new for ${user.user_id.slice(0, 8)}…`);
@@ -1985,7 +2009,10 @@ async function syncEveryone() {
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────
 
-processingWorker.init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE });
+processingWorker.init({
+  streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE,
+  onMessageReady: userId => mailNotifications.notifyMailbox(userId),
+});
 watchManager.startWatchRenewalCron();
 
 const PORT = process.env.PORT || 3001;

@@ -11,6 +11,8 @@ import SwiftUI
 struct SettingsPrivacyView: View {
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Off, and off is the honest default.
     ///
@@ -21,6 +23,8 @@ struct SettingsPrivacyView: View {
     /// theirs to switch on knowingly rather than ours to switch on quietly.
     @AppStorage("links.richPreviews") private var richPreviews = false
 
+    @State private var contactPhotos = ContactPhotoStore.shared
+    @State private var contactPermissionDenied = false
     @State private var showingStorage = false
     @State private var exporting: ExportFile?
 
@@ -33,6 +37,26 @@ struct SettingsPrivacyView: View {
                 subtitle: "WHAT LEAVES YOUR PHONE, AND WHAT STAYS",
                 action: { showingStorage = true }
             )
+            Rule()
+
+            SettingsGroup("PERSONAL PHOTOS")
+            Rule()
+            SettingsToggle(
+                title: "Contact photos",
+                subtitle: "MATCH PEOPLE BY THEIR EMAIL ADDRESS",
+                isOn: Binding(get: { contactPhotos.enabled && contactPhotos.permitted }, set: { enabled in
+                    Task {
+                        let allowed = await contactPhotos.setEnabled(enabled)
+                        contactPermissionDenied = enabled && !allowed
+                    }
+                })
+            )
+            SettingsParagraph("Use photos from the contacts you allow. Your address book stays on this phone. People without a photo keep their initials or existing avatar.")
+            if contactPermissionDenied {
+                SettingsLink(title: "Allow contacts in iOS Settings", action: {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                })
+            }
             Rule()
 
             SettingsGroup("CONTROLS")
@@ -52,7 +76,7 @@ struct SettingsPrivacyView: View {
             Rule()
             ConsequenceRow(
                 title: "Clear what we\u{2019}ve interpreted here",
-                sentence: "Your mail is untouched. This drops every card, quote and summary held on this phone, and they rebuild on the next sync.",
+                sentence: "Your mail is untouched. This removes cached posts and opened messages from this phone. They load again when you next open or refresh them.",
                 confirmTitle: "Tap again to clear",
                 destructive: true,
                 action: clear
@@ -62,6 +86,9 @@ struct SettingsPrivacyView: View {
             SettingsGroup("MODEL TRAINING")
             SettingsParagraph("We don\u{2019}t use your mail to train anything, and that isn\u{2019}t a setting because it isn\u{2019}t negotiable.")
             SettingsParagraph("The model that writes your summaries is run by someone else, so what they do with it is their promise rather than ours \u{2014} the one thing on this screen you are taking on trust.")
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { contactPhotos.refreshAuthorization() }
         }
         .navigationDestination(isPresented: $showingStorage) { StorageView() }
         .sheet(item: $exporting) { file in
@@ -116,13 +143,7 @@ struct SettingsPrivacyView: View {
     // provider's server and is not touched by anything here.
 
     private func clear() {
-        withAnimation(Move.layout) {
-            store.messages.removeAll()
-            store.pending.removeAll()
-            store.unsubscribes.removeAll()
-            store.recap = nil
-            store.tally = FeedStore.Tally()
-        }
+        withAnimation(Move.layout) { store.clearCachedContent() }
     }
 }
 
@@ -138,7 +159,7 @@ struct StorageView: View {
     private let facts: [(String, String)] = [
         (
             "YOUR MAIL",
-            "Subject, sender and a short snippet are stored so the feed can exist offline. Full bodies are fetched when you open one and are not kept."
+            "Subject, sender, snippets, and opened message bodies are cached on this device for up to 7 days so previously opened mail can appear without waiting. Clearing local data removes these copies; disconnecting a mailbox removes its copies."
         ),
         (
             "WHAT THE MODEL READS",

@@ -23,7 +23,10 @@ async function upsertUser(userId, { email, accessToken, refreshToken, tokenExpir
 
 async function updatePushToken(userId, pushToken) {
   await query(
-    'UPDATE users SET push_token = $2, updated_at = NOW() WHERE user_id = $1',
+    `UPDATE users SET push_token = $2, updated_at = NOW(),
+      notifications_started_at = CASE WHEN push_token IS NULL AND $2::text IS NOT NULL
+        THEN NOW() ELSE notifications_started_at END
+      WHERE user_id = $1`,
     [userId, pushToken]
   );
 }
@@ -92,4 +95,10 @@ async function getAllUsers() {
   return rows;
 }
 
-module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken };
+async function getUsersByPushToken(pushToken) {
+  if (!pushToken) return [];
+  const { rows } = await query('SELECT * FROM users WHERE push_token = $1', [pushToken]);
+  return rows;
+}
+
+module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, getUsersByPushToken, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken };

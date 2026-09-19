@@ -9,12 +9,14 @@ let _streamInterpretEmail     = null;
 let _streamDecideActionSurface = null;
 let _detectRiskSignals        = null;
 let _emitSSE                  = null;
+let _onMessageReady           = null;
 
-function init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE }) {
+function init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSignals, emitSSE, onMessageReady }) {
   _streamInterpretEmail      = streamInterpretEmail;
   _streamDecideActionSurface = streamDecideActionSurface;
   _detectRiskSignals         = detectRiskSignals;
   _emitSSE                   = emitSSE;
+  _onMessageReady            = onMessageReady;
 }
 
 // Per-user active worker flag and wake-up mechanism
@@ -113,6 +115,10 @@ async function processNext(userId) {
     });
 
     _emitSSE(userId, { type: 'message-ready', messageId });
+    // Push delivery cannot turn successful interpretation into an AI failure.
+    // Its durable queue retries separately from the paid processing pipeline.
+    if (_onMessageReady) Promise.resolve().then(() => _onMessageReady(userId, messageId))
+      .catch(err => console.warn('[worker] push handoff failed:', err.message));
     console.log(`[worker] done: ${messageId} (user: ${userId.slice(0, 8)}…)`);
   } catch (err) {
     console.error(`[worker] error on ${messageId}:`, err.message);

@@ -36,7 +36,8 @@ struct SettingsNotificationsView: View {
 
             SettingsGroup("WHAT WE SEND")
             SettingsParagraph("We push a message only when the model has already decided it needs an answer from you. Receipts, promotions and newsletters stay silent.")
-            SettingsParagraph("That is not a setting. A notification for a receipt is how an inbox app teaches people to turn notifications off, and we would rather send you two a day that you read.")
+            SettingsGroup("APP ICON")
+            SettingsParagraph("The badge counts unread email across all connected mailboxes, including mail outside the feed. Reading a message lowers it; zero clears it. You can turn badges on or off separately in iOS Settings.")
         }
         .task { state = await NotificationState.current() }
         .onChange(of: scenePhase) { _, phase in

@@ -13,6 +13,8 @@ struct DirectMessagesView: View {
     @Environment(FeedStore.self) private var store
     @State private var open: Conversation?
     @State private var profile: Sender?
+    @State private var contactPhotos = ContactPhotoStore.shared
+    @AppStorage("people.dismissPhotoPrompt") private var dismissPhotoPrompt = false
 
     private var waiting: Int {
         store.conversations.count { $0.unread }
@@ -23,6 +25,27 @@ struct DirectMessagesView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: []) {
                     masthead
+                    if !contactPhotos.enabled && !dismissPhotoPrompt {
+                        HStack(spacing: Space.sm) {
+                            Button {
+                                Task {
+                                    _ = await contactPhotos.setEnabled(true)
+                                    dismissPhotoPrompt = true
+                                }
+                            } label: {
+                                Label("Add personal contact photos", systemImage: "person.crop.circle")
+                                    .typeStyle(Style.body)
+                            }
+                            Spacer()
+                            Button { dismissPhotoPrompt = true } label: {
+                                Image(systemName: "xmark").frame(width: Metric.tapTarget, height: Metric.tapTarget)
+                            }
+                            .accessibilityLabel("Dismiss contact photo suggestion")
+                        }
+                        .padding(.horizontal, Metric.gutter)
+                        .foregroundStyle(Ink.secondary)
+                        Rule()
+                    }
 
                     if store.conversations.isEmpty {
                         EmptyStateView(

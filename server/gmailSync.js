@@ -59,6 +59,22 @@ async function fetchMailboxProfile(accessToken) {
   return res.json();
 }
 
+// The native feed intentionally loads a bounded window. Its card count cannot
+// stand in for the mailbox's unread count, especially during initial import.
+async function getUnreadCount(userId) {
+  const accessToken = await userStore.getValidAccessToken(userId);
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`unread label fetch failed: ${res.status}`);
+  const { messagesUnread } = await res.json();
+  if (!Number.isSafeInteger(messagesUnread) || messagesUnread < 0) {
+    throw new Error('Gmail returned an invalid unread count');
+  }
+  return messagesUnread;
+}
+
 async function listMessagesPage(accessToken, { pageToken = null, maxResults = 500 } = {}) {
   const params = new URLSearchParams({ maxResults: String(maxResults) });
   if (pageToken) params.set('pageToken', pageToken);
@@ -308,4 +324,4 @@ async function fetchFullMessage(userId, messageId) {
   return res.json();
 }
 
-module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage };
+module.exports = { initialSync, incrementalSync, reconcileRecent, fetchFullMessage, getUnreadCount };

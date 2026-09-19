@@ -26,6 +26,15 @@ struct ThreadView: View {
     @State private var compose: ComposeView.Intent?
     @State private var discuss = DiscussModel()
 
+    init(message: Message) {
+        self.message = message
+        // Seed the first frame. Loading this in the async task would briefly
+        // replace mail already on the device with a loading state again.
+        _body_ = State(initialValue: FeedCache.loadBody(
+            account: message.mailboxID, message: message.id
+        ))
+    }
+
     private let heroHeight: CGFloat = 320
     /// How much of the hero is shown untouched before the fade begins. Sits
     /// below the status bar and the back-button row, so what it buys is a band
@@ -390,7 +399,14 @@ struct ThreadView: View {
 
     private func load() async {
         failed = false
-        do { body_ = try await store.body(of: message) } catch { failed = true }
+        do {
+            let refreshed = try await store.body(of: message)
+            guard !Task.isCancelled else { return }
+            body_ = refreshed
+        } catch {
+            // A failed refresh must not replace an already readable message.
+            if !Task.isCancelled { failed = body_ == nil }
+        }
     }
 }
 

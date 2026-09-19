@@ -22,6 +22,19 @@ struct GmailClient {
         var inReplyTo: String?
     }
 
+    func unreadCount() async throws -> Int {
+        var request = URLRequest(url: URL(string: "https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD")!)
+        request.setValue("Bearer \(try await auth.validAccessToken(for: accountID))", forHTTPHeaderField: "Authorization")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 15
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw APIError.transport }
+        struct Label: Decodable { let messagesUnread: Int }
+        let count = try JSONDecoder().decode(Label.self, from: data).messagesUnread
+        guard count >= 0 else { throw APIError.transport }
+        return count
+    }
+
     func send(_ draft: Draft) async throws {
         var headers = [
             "To: \(draft.to.joined(separator: ", "))",
