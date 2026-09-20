@@ -107,7 +107,8 @@ struct FeedReadIntent: Codable {
 }
 
 /// A display baseline, never authority for inbox zero or the application badge.
-/// Date bands can be rolled forward exactly; a time-zone change needs a recount.
+/// Keep it only while its date bands still mean the same thing. A session can
+/// span midnight, so aggregate buckets cannot safely be split into new days.
 struct FeedProgressSnapshot: Codable {
     let date: Date
     let timeZone: String
@@ -115,14 +116,7 @@ struct FeedProgressSnapshot: Codable {
 
     func rebased(at date: Date, calendar: Calendar = .current) -> [String: FeedSectionCounts] {
         guard calendar.timeZone.identifier == timeZone,
-              let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: self.date),
-                                                 to: calendar.startOfDay(for: date)).day,
-              (0...7).contains(days) else { return [:] }
-        return sections.filter { $0.value.isValid }.mapValues { counts in
-            if days == 0 { return counts }
-            if days == 1 { return FeedSectionCounts(today: 0, yesterday: counts.today,
-                                                    earlier: counts.yesterday + counts.earlier) }
-            return FeedSectionCounts(today: 0, yesterday: 0, earlier: counts.total)
-        }
+              calendar.isDate(self.date, inSameDayAs: date) else { return [:] }
+        return sections.filter { $0.value.isValid }
     }
 }

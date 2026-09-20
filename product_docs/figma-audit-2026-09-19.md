@@ -99,7 +99,7 @@ The implementation task subsequently verified the 1136 Debug original-email scre
 ## September 20 feed regression follow-up
 
 The existing session board (`341:780`) now documents durable read delivery across
-navigation/relaunch, retained verified display counts with midnight rebucketing,
+navigation/relaunch, retained verified display counts within the same day/time zone,
 and admitting a new-mail batch before returning to the updated feed's top.
 Updated text nodes: `341:1071`, `341:1085`, `341:1086`. The whole board was rendered
 again and checked for clipping; countdown specimens and visual styling remain.

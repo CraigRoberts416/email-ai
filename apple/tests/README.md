@@ -23,8 +23,8 @@ Coverage includes:
 - Read cards retained during the visit and removed at the next session boundary.
 - Durable scroll-read delivery across session changes, serial provider writes,
   failure rollback and replay after cold launch.
-- Persisted display counts across tab changes and cold starts, exact midnight
-  bucket rollover, and invalidation when the time zone changes.
+- Persisted display counts across same-day tab changes and cold starts, and
+  safe invalidation when the day or time zone changes.
 - Cached cards, external reads beyond the first 200 IDs, complete and failed
   reconciliation batches, and counts for unloaded historical mail.
 - Duplicate-only pages, overlapping old/new pagination generations, and globally

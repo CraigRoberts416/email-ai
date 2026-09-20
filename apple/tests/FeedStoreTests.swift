@@ -364,9 +364,8 @@ import Foundation
               "Cold start keeps historical baseline without asserting live verification")
         let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now)!
         restored.beginFeedSession(at: tomorrow)
-        check(restored.progressRemaining(in: "TODAY") == 0 && restored.progressRemaining(in: "YESTERDAY") == 10
-              && restored.progressRemaining(in: "EARLIER") == 22_222,
-              "Midnight rolls known buckets forward instead of losing the total")
+        check(restored.progressRemaining(in: "TODAY") == nil && restored.progressRemaining(in: "EARLIER") == nil,
+              "A new calendar day recounts buckets instead of misplacing arrivals from a session that spanned midnight")
         var moved = Calendar.current
         moved.timeZone = TimeZone(secondsFromGMT: Calendar.current.timeZone.secondsFromGMT() == 0 ? 3600 : 0)!
         restored.beginFeedSession(at: tomorrow, calendar: moved)
