@@ -81,7 +81,10 @@ The final archive succeeded and upload completed at 18:05:23 Eastern. The
 exported distribution payload has `CFBundleVersion=2609201801`,
 `aps-environment=production`, `get-task-allow=false`, and signing team
 `48X38356RX`. Its Release executable does not contain the DEBUG navigation probe.
-Apple processing and Internal-group eligibility are being verified.
+Upload is confirmed. Final Apple processing and Internal-group Testing status
+remain unverified: Chrome reports an open extension panel blocking browser
+control. The user has been asked to dismiss it so that final check can resume.
+The existing group and its tester membership were not changed.
 
 An earlier local archive, 2609201756, was superseded before upload. Its export
 stopped before contacting Apple because a temporary export-options file was
