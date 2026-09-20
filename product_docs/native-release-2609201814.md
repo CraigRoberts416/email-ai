@@ -8,4 +8,4 @@ Validation: 141 production FeedStore integration checks passed, including eight 
 
 Spec and canonical tabbed Figma screens updated. This release retains the prior feed-read/count/navigation fixes from 2609201801 and excludes unrelated app-interaction-craft work.
 
-Release archive/upload status will be recorded after completion. TestFlight group availability remains a separate verification; the earlier Chrome extension-panel blocker has not yet been cleared by the user.
+Release source: 94bc125. Release archive passed. App Store Connect upload succeeded at 18:17:21 Eastern on September 20, 2026; export reported EXPORT SUCCEEDED and package processing. The exported payload has build 2609201814, production APNs entitlement, get-task-allow false, and signing team 48X38356RX. TestFlight group availability remains unverified; the earlier Chrome extension-panel blocker has not yet been cleared by the user.
