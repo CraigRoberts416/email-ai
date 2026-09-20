@@ -70,7 +70,11 @@ struct DirectMessagesView: View {
                         .frame(height: 320)
                     } else {
                         ForEach(store.conversations) { conversation in
-                            Button { open = conversation } label: {
+                            Button {
+                                var scoped = conversation
+                                scoped.mailboxID = store.auth.accounts.first?.id
+                                open = scoped
+                            } label: {
                                 ConversationRow(conversation: conversation,
                                                 onProfile: { profile = $0 })
                             }
@@ -127,9 +131,20 @@ struct DirectMessagesView: View {
 
     private var masthead: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
+            HStack {
             Text("PEOPLE")
                 .typeStyle(Style.sectionHeader)
                 .foregroundStyle(Ink.tertiary)
+            Spacer()
+            ActivityToolbarButton()
+            }
+            if let mailbox = store.auth.accounts.first?.id {
+                Text("MAILBOX · \(mailbox)").typeStyle(Style.monoMicro).foregroundStyle(Ink.secondary)
+                if store.auth.accounts.count > 1 {
+                    Text("People currently shows this mailbox. Feed and Search include your other mailboxes.")
+                        .typeStyle(Style.bodySmall).foregroundStyle(Ink.secondary)
+                }
+            }
 
             HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                 // An em dash until the list has loaded. A zero here is an

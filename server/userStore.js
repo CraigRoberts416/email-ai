@@ -1,7 +1,16 @@
 const { query } = require('./db');
 const { randomUUID } = require('node:crypto');
+const accountAccess = require('./accountAccess');
 
-async function upsertUser(userId, { email, accessToken, refreshToken, tokenExpiry, onboardingHistoryId, pushToken }) {
+async function upsertUser(userId, fields) {
+  const connectionVersion = fields.connectionVersion ?? accountAccess.version();
+  return accountAccess.withLifecycle(userId, () => accountAccess.mutate(userId, () => {
+    accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
+    return upsertConnectedUser(userId, fields, connectionVersion);
+  }));
+}
+
+async function upsertConnectedUser(userId, { email, accessToken, refreshToken, tokenExpiry, onboardingHistoryId, pushToken }, connectionVersion) {
   await query(`
     INSERT INTO users (user_id, email, access_token, refresh_token, token_expiry, onboarding_history_id, updated_at)
     VALUES ($1, $2, $3, $4, $5, $6, NOW())
@@ -13,6 +22,8 @@ async function upsertUser(userId, { email, accessToken, refreshToken, tokenExpir
       onboarding_history_id = COALESCE(users.onboarding_history_id, EXCLUDED.onboarding_history_id),
       updated_at            = NOW()
   `, [userId, email ?? null, accessToken, refreshToken ?? null, new Date(tokenExpiry), onboardingHistoryId ?? null]);
+  accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
+  accountAccess.activate(userId);
 
   if (pushToken) {
     await query(
@@ -27,7 +38,7 @@ async function updatePushToken(userId, pushToken) {
     `UPDATE users SET push_token = $2, updated_at = NOW(),
       notifications_started_at = CASE WHEN push_token IS NULL AND $2::text IS NOT NULL
         THEN NOW() ELSE notifications_started_at END
-      WHERE user_id = $1`,
+      WHERE user_id = $1 AND ($2::text IS NULL OR (access_token <> '' AND refresh_token <> ''))`,
     [userId, pushToken]
   );
 }
@@ -44,7 +55,7 @@ async function getUserByEmail(email) {
 
 async function updateTokens(userId, { accessToken, tokenExpiry }) {
   await query(
-    'UPDATE users SET access_token = $2, token_expiry = $3, updated_at = NOW() WHERE user_id = $1',
+    "UPDATE users SET access_token = $2, token_expiry = $3, updated_at = NOW() WHERE user_id = $1 AND refresh_token <> ''",
     [userId, accessToken, new Date(tokenExpiry)]
   );
 }
@@ -100,9 +111,12 @@ async function setAllMailSyncCursor(userId, cursor, generation = null) {
 }
 
 async function getValidAccessToken(userId, { signal } = {}) {
+  const accessSignal = accountAccess.signal(userId);
+  accountAccess.assertActive(userId);
   const user = await getUser(userId);
+  accessSignal.throwIfAborted();
   signal?.throwIfAborted();
-  if (!user) throw new Error(`User not found: ${userId}`);
+  if (!user?.access_token || !user?.refresh_token) throw new Error('Mailbox disconnected or unavailable');
 
   const expiryMs = new Date(user.token_expiry).getTime();
   if (expiryMs - Date.now() > 5 * 60 * 1000) {
@@ -121,7 +135,7 @@ async function getValidAccessToken(userId, { signal } = {}) {
     method:  'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body:    body.toString(),
-    signal,
+    signal: AbortSignal.any([accessSignal, signal ?? AbortSignal.timeout(30000)]),
   });
 
   if (!res.ok) {
@@ -130,20 +144,33 @@ async function getValidAccessToken(userId, { signal } = {}) {
   }
 
   const data = await res.json();
+  accessSignal.throwIfAborted();
   const newExpiry = Date.now() + data.expires_in * 1000;
   await updateTokens(userId, { accessToken: data.access_token, tokenExpiry: newExpiry });
+  accessSignal.throwIfAborted();
+  signal?.throwIfAborted();
   return data.access_token;
 }
 
 async function getAllUsers() {
-  const { rows } = await query('SELECT * FROM users');
+  const { rows } = await query("SELECT * FROM users WHERE access_token <> '' AND refresh_token <> ''");
   return rows;
+}
+
+async function disconnectUser(userId) {
+  await accountAccess.mutate(userId, () => query(`UPDATE users SET access_token = '', refresh_token = '',
+    token_expiry = to_timestamp(0), push_token = NULL, watch_expiry = NULL,
+    updated_at = NOW() WHERE user_id = $1`, [userId]));
+}
+
+async function resetInterruptedProcessing(userId) {
+  await query("UPDATE messages SET ai_status = 'queued' WHERE user_id = $1 AND ai_status = 'processing'", [userId]);
 }
 
 async function getUsersByPushToken(pushToken) {
   if (!pushToken) return [];
-  const { rows } = await query('SELECT * FROM users WHERE push_token = $1', [pushToken]);
+  const { rows } = await query("SELECT * FROM users WHERE push_token = $1 AND access_token <> '' AND refresh_token <> ''", [pushToken]);
   return rows;
 }
 
-module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, getUsersByPushToken, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken, setUnreadSyncState, setAllMailSyncState, setAllMailSyncCursor, beginAllMailSync };
+module.exports = { upsertUser, getUser, getUserByEmail, getAllUsers, getUsersByPushToken, updateTokens, updateHistoryId, updateWatchExpiry, getValidAccessToken, updatePushToken, setUnreadSyncState, setAllMailSyncState, setAllMailSyncCursor, beginAllMailSync, disconnectUser, resetInterruptedProcessing };

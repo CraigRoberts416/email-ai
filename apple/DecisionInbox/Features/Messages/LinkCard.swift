@@ -30,6 +30,7 @@ struct LinkCard: View {
     @AppStorage("links.richPreviews") private var richPreviews = false
     @State private var metadata: LPLinkMetadata?
     @State private var resolved = false
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         Group {
@@ -37,7 +38,9 @@ struct LinkCard: View {
                 LinkPreview(metadata: metadata)
                     .frame(maxWidth: 272)
             } else {
-                offline
+                Button { openURL(url) } label: { offline }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(url.absoluteString)")
             }
         }
         .task {

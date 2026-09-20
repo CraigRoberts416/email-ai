@@ -40,6 +40,7 @@ function harness(respond) {
         json: async () => result.body ?? {} };
     },
     require: name => {
+      if (name === './accountAccess') return require(name);
       if (name === './userStore') return users;
       if (name === './messageStore') return messages;
       if (name === './unreadBacklog') return { createUnreadBacklog: () => ({ ensure() {} }) };

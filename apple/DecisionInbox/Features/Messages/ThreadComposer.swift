@@ -18,10 +18,15 @@ struct ThreadComposer: View {
     /// answering and an In-Reply-To pointing at it, which is what keeps this
     /// in the same correspondence in every other mail client too.
     var replyingTo: ConversationMessage?
-    var onSent: () -> Void = {}
 
     @Environment(FeedStore.self) private var store
     @State private var text = ""
+    @State private var loaded = false
+    @State private var draftSaved = true
+    @State private var sendProblem: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var mailboxID: String { conversation.mailboxID ?? store.auth.accounts.first?.id ?? "" }
+    private var draftKey: String { "people:\(mailboxID):\(conversation.id)" }
     @FocusState private var writing: Bool
 
     private var canSend: Bool {
@@ -29,6 +34,10 @@ struct ThreadComposer: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+        if let sendProblem { Text(sendProblem).typeStyle(Style.bodySmall).padding(.horizontal, Metric.gutter) }
+        if !draftSaved { Text("Couldn’t save this draft. Keep this screen open.").typeStyle(Style.bodySmall).padding(.horizontal, Metric.gutter) }
+        Text("FROM \(mailboxID)").typeStyle(Style.monoMicro).foregroundStyle(Ink.secondary).padding(.horizontal, Metric.gutter)
         HStack(alignment: .bottom, spacing: Space.sm) {
             TextField("Message", text: $text, axis: .vertical)
                 .typeStyle(Style.body)
@@ -45,7 +54,7 @@ struct ThreadComposer: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(canSend ? Ink.surface : Ink.tertiary)
-                    .frame(width: 32, height: 32)
+                    .frame(width: Metric.tapTarget, height: Metric.tapTarget)
                     .background(
                         canSend ? Ink.primary : Ink.surfaceTertiary,
                         in: Circle()
@@ -54,7 +63,7 @@ struct ThreadComposer: View {
             }
             .buttonStyle(.plain)
             .disabled(!canSend)
-            .animation(Move.crisp, value: canSend)
+            .animation(Move.resolved(Move.crisp, reduceMotion), value: canSend)
             .padding(.trailing, Space.xs + 2)
             .padding(.bottom, Space.xs + 2)
             .accessibilityLabel("Send")
@@ -69,6 +78,16 @@ struct ThreadComposer: View {
         .padding(.horizontal, Metric.gutter)
         .padding(.top, Space.sm)
         .padding(.bottom, Space.sm)
+        }
+        .task {
+            guard !loaded else { return }; loaded = true
+            text = MailDraftStore.draft(draftKey)?.draft.body ?? ""
+        }
+        .onChange(of: text) {
+            guard loaded, store.auth.accounts.contains(where: { $0.id == mailboxID }) else { return }
+            draftSaved = MailDraftStore.save(.init(id: draftKey, mailboxID: mailboxID, draft: .init(
+                to: conversation.participants.map(\.address), subject: replySubject, body: text, threadID: nil, inReplyTo: nil)))
+        }
         .background {
             // The system blur, masked to fade in — not a colour gradient
             // painted over the thread. Same treatment as the email sheet's
@@ -95,17 +114,17 @@ struct ThreadComposer: View {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
 
-        store.queueSend(.init(
+        guard store.queueSend(.init(
             to: conversation.participants.map(\.address),
             subject: replySubject,
             body: body,
             threadID: nil,
-            inReplyTo: replyingTo?.id
-        ))
+            inReplyTo: nil
+        ), from: mailboxID, draftKey: draftKey) != nil else { sendProblem = "Couldn’t queue this email. Your words are still here."; return }
+        sendProblem = nil
 
         text = ""
-        writing = false
-        onSent()
+        // The thread observes confirmed send jobs before refreshing mail.
     }
 
     /// The subject of the thing being answered, prefixed once.

@@ -4,10 +4,13 @@ import Foundation
 // APIClient (including decoding/mapping), FeedSession, and pagination lifecycle.
 // Every URL is intercepted; a missing fixture is a test failure, never a request
 // to a real mailbox. Preferences, disk caches, badges, and Gmail are in memory.
-@MainActor final class UserDefaults {
+final class UserDefaults {
     static let standard = UserDefaults()
     private var values: [String: Any] = [:]
     func object(forKey key: String) -> Any? { values[key] }
+    func data(forKey key: String) -> Data? { values[key] as? Data }
+    func bool(forKey key: String) -> Bool { values[key] as? Bool ?? false }
+    func removeObject(forKey key: String) { values[key] = nil }
     func stringArray(forKey key: String) -> [String]? { values[key] as? [String] }
     func set(_ value: Any?, forKey key: String) { values[key] = value }
 }
@@ -20,7 +23,8 @@ final class AuthService {
     func validAccessToken(for id: String) async throws -> String { id }
     func refreshToken(for id: String) -> String? { "fixture-refresh" }
     func expiresAt(for id: String) -> Double { Date().timeIntervalSince1970 + 3600 }
-    func connect() async -> Account? { nil }
+    var lastError: String?
+    func connect(expectedAccountID: String? = nil, includeGooglePhotos: Bool = false) async -> Account? { nil }
     func disconnect(_ id: String) { accounts.removeAll { $0.id == id } }
     func rename(_ id: String, tag: String) {
         if let index = accounts.firstIndex(where: { $0.id == id }) { accounts[index].tag = tag }
@@ -28,14 +32,36 @@ final class AuthService {
 }
 
 @MainActor struct GmailClient {
-    struct Draft { var to: [String] = [] }
+    struct Draft: Codable, Equatable, Sendable {
+        var to: [String] = []
+        var cc: [String] = []
+        var subject: String = ""
+        var body: String = ""
+        var threadID: String?
+        var inReplyTo: String?
+        var attachments: [FileAttachment] = []
+    }
+    struct FileAttachment: Codable, Equatable, Sendable {
+        var filename: String
+        var mimeType: String
+        var data: Data
+    }
     let auth: AuthService
     let accountID: String
     func unreadCount() async throws -> Int { HarnessTransport.accounts[accountID]?.badge ?? 0 }
     func archive(messageID: String) async throws {
         HarnessTransport.accounts[accountID]?.archives.append(messageID)
     }
-    func send(_ draft: Draft) async throws {}
+    func send(_ draft: Draft) async throws {
+        guard let account = HarnessTransport.accounts[accountID] else { throw HarnessFailure(message: "No send fixture") }
+        account.sentDrafts.append(draft)
+        try await account.send(draft)
+    }
+}
+
+@MainActor final class PushDeliveryStatus {
+    static let shared = PushDeliveryStatus()
+    var registeredAccounts: Set<String> = []
 }
 
 @MainActor final class UNUserNotificationCenter {
@@ -83,18 +109,7 @@ enum Move { static let undoWindow = 0.02; static let sendUndoWindow = 0.02 }
         case messageReady(String)
         case unsubscribeStatus(UnsubscribeStatus)
     }
-    struct UnsubscribeStatus {
-        let messageId: String
-        let senderName: String?
-        let status: String
-        let message: String?
-        let index: Int?
-        let total: Int?
-        let fieldIndex: Int?
-        let fieldTotal: Int?
-        enum Step { case done, working }
-        var step: Step { .working }
-    }
+    typealias UnsubscribeStatus = UnsubscribeRun
     let accountID: String
     init(baseURL: URL, auth: AuthService, accountID: String) { self.accountID = accountID }
     func connect(_ handler: @escaping @Sendable (Event) async -> Void) async {
@@ -110,6 +125,12 @@ struct HarnessReply {
 
 @MainActor final class HarnessAccount {
     var badge = 0
+    var sentDrafts: [GmailClient.Draft] = []
+    var send: (GmailClient.Draft) async throws -> Void = { _ in }
+    var unsubscribe: (URLRequest) async throws -> HarnessReply = { _ in HarnessReply(json: ["success": true]) }
+    var unsubscribeRuns: () async throws -> HarnessReply = { HarnessReply(json: ["runs": []]) }
+    var unsubscribeReceipt: (String) async throws -> HarnessReply = { _ in HarnessReply(json: ["success": true]) }
+    var disconnect: () async throws -> HarnessReply = { HarnessReply(json: ["disconnected": true]) }
     var archives: [String] = []
     var requests: [URLRequest] = []
     var onEvent: (@Sendable (SSEClient.Event) async -> Void)?
@@ -157,10 +178,16 @@ struct HarnessFailure: Error, CustomStringConvertible {
         switch url.path {
         case "/feed": return try await account.feed(query("cursor"), known)
         case "/feed/counts": return try await account.counts(known)
+        case "/unsubscribe/runs": return try await account.unsubscribeRuns()
+        case "/unsubscribe": return try await account.unsubscribe(request)
+        case "/auth/account": return try await account.disconnect()
         case "/conversations": return try await account.conversations(query("cursor"))
         case "/auth/register", "/auth/push-token": return HarnessReply(json: ["success": true])
         case "/session-recap": return HarnessReply(json: ["recap": [:]])
         default:
+            if url.path.hasPrefix("/unsubscribe/"), url.path.hasSuffix("/receipt") {
+                return try await account.unsubscribeReceipt(String(url.path.dropFirst(13).dropLast(8)))
+            }
             if url.path.hasPrefix("/messages/"), url.path.hasSuffix("/card") {
                 return try await account.messageCard(String(url.path.dropFirst(10).dropLast(5)))
             }

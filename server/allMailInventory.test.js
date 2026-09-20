@@ -13,6 +13,7 @@ function load(name) {
     if (name === './db') return { query: (sql, params) => db.query(sql, params) };
     if (name === './feedStorage') return { CARD_COLUMNS: [], createFeedStorage: () => ({}) };
     if (name === 'node:crypto') return require(name);
+    if (name === './accountAccess') return require(name);
     throw Error(`Unexpected dependency ${name}`);
   };
   isolated._compile(fs.readFileSync(filename, 'utf8'), filename);

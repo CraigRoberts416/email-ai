@@ -1,0 +1,201 @@
+{
+  "status": "PASS",
+  "checkedOn": "2026-09-20",
+  "stillTimesSeconds": [
+    0,
+    0.12,
+    1
+  ],
+  "nativeLayerCount": 5,
+  "animatedPropertyCount": 5,
+  "keyframeCount": 10,
+  "tracks": [
+    {
+      "layer": "Editable check",
+      "property": "Opacity",
+      "keys": [
+        {
+          "time": 0,
+          "value": 0,
+          "inInterp": 6612,
+          "outInterp": 6612
+        },
+        {
+          "time": 0.72001953125,
+          "value": 100,
+          "inInterp": 6612,
+          "outInterp": 6612
+        }
+      ]
+    },
+    {
+      "layer": "Editable receipt detail",
+      "property": "Opacity",
+      "keys": [
+        {
+          "time": 0,
+          "value": 0,
+          "inInterp": 6612,
+          "outInterp": 6612
+        },
+        {
+          "time": 0.72001953125,
+          "value": 100,
+          "inInterp": 6612,
+          "outInterp": 6612
+        }
+      ]
+    },
+    {
+      "layer": "Editable receipt title",
+      "property": "Opacity",
+      "keys": [
+        {
+          "time": 0,
+          "value": 0,
+          "inInterp": 6612,
+          "outInterp": 6612
+        },
+        {
+          "time": 0.72001953125,
+          "value": 100,
+          "inInterp": 6612,
+          "outInterp": 6612
+        }
+      ]
+    },
+    {
+      "layer": "Save receipt",
+      "property": "Position",
+      "keys": [
+        {
+          "time": 0,
+          "value": [
+            320,
+            238,
+            0
+          ],
+          "inInterp": 6612,
+          "outInterp": 6612
+        },
+        {
+          "time": 0.72001953125,
+          "value": [
+            320,
+            216,
+            0
+          ],
+          "inInterp": 6612,
+          "outInterp": 6612
+        }
+      ]
+    },
+    {
+      "layer": "Save receipt",
+      "property": "Opacity",
+      "keys": [
+        {
+          "time": 0,
+          "value": 0,
+          "inInterp": 6612,
+          "outInterp": 6612
+        },
+        {
+          "time": 0.72001953125,
+          "value": 100,
+          "inInterp": 6612,
+          "outInterp": 6612
+        }
+      ]
+    }
+  ],
+  "interpolationEnum": 6612,
+  "expressionOperationsAuthored": 0,
+  "reportedExpressionErrors": [],
+  "effectsAndMasks": 0,
+  "sequences": [
+    {
+      "directory": "frames-240",
+      "frames": 60,
+      "size": [
+        640,
+        360
+      ],
+      "bytes": 518240,
+      "decodePassed": true
+    },
+    {
+      "directory": "frames-720",
+      "frames": 60,
+      "size": [
+        640,
+        360
+      ],
+      "bytes": 501561,
+      "decodePassed": true
+    }
+  ],
+  "pixelComparisons": [
+    {
+      "left": "240-start.png",
+      "right": "720-start.png",
+      "changedPixels": 0,
+      "bounds": null
+    },
+    {
+      "left": "240-middle.png",
+      "right": "720-middle.png",
+      "changedPixels": 44510,
+      "bounds": [
+        120,
+        175,
+        520,
+        287
+      ]
+    },
+    {
+      "left": "240-settled.png",
+      "right": "720-settled.png",
+      "changedPixels": 0,
+      "bounds": null
+    },
+    {
+      "left": "240-settled.png",
+      "right": "content-edit.png",
+      "changedPixels": 823,
+      "bounds": [
+        313,
+        187,
+        424,
+        206
+      ]
+    }
+  ],
+  "preview": {
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1280,
+        "height": 360,
+        "pix_fmt": "yuv420p",
+        "r_frame_rate": "30/1",
+        "duration": "2.000000",
+        "nb_frames": "60"
+      }
+    ],
+    "format": {
+      "duration": "2.000000",
+      "size": "22475"
+    }
+  },
+  "previewLayout": "240 ms left; 720 ms right",
+  "checksums": {
+    "receipt-study.aep": "4561bd1ef7573a67d003c407acd94d4ced0562bb93be56ab18eceb7bd584045e",
+    "before-fixture.aep": "a383be081f2c189dc893e7a11727a85a5883365a7b443dc4b781dbc35596bbc8",
+    "receipt-comparison.mp4": "de0fac6be8b9d171e8ed7676f45a9458bcabc2d91100cdaa8c6b1ed35503b2be",
+    "executed-native-receipt.json": "2d9e9707b8ece7bc15238644bed9c93698a76a7170bfd068cc3ca6bfc5fa88a1",
+    "verification.json": "ef39a0048a565700c3b0d102e2dad896ac882689118694a017ad06cd57fc678a"
+  }
+}

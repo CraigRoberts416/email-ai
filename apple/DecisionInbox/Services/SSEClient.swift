@@ -25,19 +25,7 @@ actor SSEClient {
     /// so it has to be deterministic — the model is never allowed to invent
     /// one. `message` is written fresh from what was actually found on the
     /// page, so the words stay alive across runs.
-    struct UnsubscribeStatus: Decodable, Sendable {
-        let messageId: String
-        let senderName: String?
-        let status: String
-        let message: String?
-        /// Which sender of the batch, and how many there are.
-        let index: Int?
-        let total: Int?
-        /// Which form field, while filling. The counter switches from sites to
-        /// fields there because that is what is visibly happening.
-        let fieldIndex: Int?
-        let fieldTotal: Int?
-    }
+    typealias UnsubscribeStatus = UnsubscribeRun
 
     private let baseURL: URL
     private let auth: AuthService

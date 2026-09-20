@@ -33,10 +33,11 @@ final class AuthService: NSObject {
         return "com.googleusercontent.apps.\(reversed):/oauth2redirect"
     }
 
-    private static let scopes = [
-        "openid", "profile", "email", "https://mail.google.com/",
-        GooglePeoplePhotos.contactsScope, GooglePeoplePhotos.otherContactsScope,
-    ].joined(separator: " ")
+    static func requestedScopes(includeGooglePhotos: Bool) -> String {
+        AccountConnectionPolicy.scopes(includeGooglePhotos: includeGooglePhotos)
+    }
+
+    enum ConnectionStage { case idle, waitingForGoogle, finishingConnection }
 
     private enum Key {
         static let index = "google.accounts"
@@ -50,11 +51,14 @@ final class AuthService: NSObject {
     var accounts: [Account] = []
     var lastError: String?
     var isConnecting = false
+    var connectionStage: ConnectionStage = .idle
     var photoAuthorizationVersion = 0
 
     var isAuthenticated: Bool { !accounts.isEmpty }
 
     private var session: ASWebAuthenticationSession?
+    private var authorizationContinuation: CheckedContinuation<URL, Error>?
+    private var connectionAttempt: UUID?
 
     override init() {
         super.init()
@@ -69,18 +73,30 @@ final class AuthService: NSObject {
     /// second mailbox is the same call as adding the first.
     @MainActor
     @discardableResult
-    func connect() async -> Account? {
+    func connect(expectedAccountID: String? = nil, includeGooglePhotos: Bool = false) async -> Account? {
+        guard !isConnecting else { return nil }
         lastError = nil
         isConnecting = true
-        defer { isConnecting = false }
+        connectionStage = .waitingForGoogle
+        let attempt = UUID()
+        connectionAttempt = attempt
+        defer {
+            isConnecting = false
+            connectionStage = .idle
+            connectionAttempt = nil
+            session = nil
+        }
 
         let verifier = Self.randomVerifier()
+        let state = UUID().uuidString
         var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
         components.queryItems = [
             .init(name: "client_id", value: Self.clientID),
             .init(name: "redirect_uri", value: Self.redirectURI),
             .init(name: "response_type", value: "code"),
-            .init(name: "scope", value: Self.scopes),
+            .init(name: "scope", value: Self.requestedScopes(includeGooglePhotos: includeGooglePhotos)),
+            .init(name: "state", value: state),
+            .init(name: "include_granted_scopes", value: "true"),
             .init(name: "code_challenge", value: Self.challenge(for: verifier)),
             .init(name: "code_challenge_method", value: "S256"),
             // Without these Google returns no refresh token on repeat consent,
@@ -88,19 +104,26 @@ final class AuthService: NSObject {
             .init(name: "access_type", value: "offline"),
             .init(name: "prompt", value: "consent select_account"),
         ]
+        if let expectedAccountID {
+            components.queryItems?.append(.init(name: "login_hint", value: expectedAccountID))
+        }
 
         guard let url = components.url else { return nil }
         let scheme = String(Self.redirectURI.split(separator: ":").first ?? "")
 
         do {
             let callback: URL = try await withCheckedThrowingContinuation { continuation in
+                self.authorizationContinuation = continuation
                 let session = ASWebAuthenticationSession(
                     url: url, callbackURLScheme: scheme
                 ) { callbackURL, error in
-                    if let callbackURL {
-                        continuation.resume(returning: callbackURL)
-                    } else {
-                        continuation.resume(throwing: error ?? AuthError.cancelled)
+                    Task { @MainActor in
+                        guard self.connectionAttempt == attempt else { return }
+                        if let callbackURL {
+                            self.finishAuthorization(.success(callbackURL))
+                        } else {
+                            self.finishAuthorization(.failure(error ?? AuthError.cancelled))
+                        }
                     }
                 }
                 session.presentationContextProvider = self
@@ -109,13 +132,18 @@ final class AuthService: NSObject {
                 // a password the app must never see.
                 session.prefersEphemeralWebBrowserSession = false
                 self.session = session
-                session.start()
+                if !session.start() { self.finishAuthorization(.failure(AuthError.couldNotStart)) }
             }
 
-            guard let code = URLComponents(url: callback, resolvingAgainstBaseURL: false)?
-                .queryItems?.first(where: { $0.name == "code" })?.value else {
+            guard connectionAttempt == attempt else { throw AuthError.cancelled }
+            let query = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            guard query.first(where: { $0.name == "state" })?.value == state else {
+                throw AuthError.invalidCallback
+            }
+            guard let code = query.first(where: { $0.name == "code" })?.value else {
                 throw AuthError.noCode
             }
+            connectionStage = .finishingConnection
 
             let token = try await postForm([
                 "client_id": Self.clientID,
@@ -128,7 +156,12 @@ final class AuthService: NSObject {
 
             // The address has to be resolved before anything is stored, because
             // it *is* the key everything else is filed under.
-            let address = try await Self.email(for: token.accessToken)
+            let resolvedAddress = try await Self.email(for: token.accessToken)
+            guard connectionAttempt == attempt, !Task.isCancelled else { throw AuthError.cancelled }
+            try Self.validateAccount(resolvedAddress, expected: expectedAccountID)
+            let address = expectedAccountID
+                ?? accounts.first(where: { $0.id.caseInsensitiveCompare(resolvedAddress) == .orderedSame })?.id
+                ?? resolvedAddress
             store(token, for: address, keepingRefresh: refresh)
 
             // Confirm the credential survived the write. Without this a failed
@@ -158,6 +191,31 @@ final class AuthService: NSObject {
         }
     }
 
+    @MainActor
+    private func finishAuthorization(_ result: Result<URL, Error>) {
+        guard let continuation = authorizationContinuation else { return }
+        authorizationContinuation = nil
+        continuation.resume(with: result)
+    }
+
+    @MainActor
+    func cancelConnection() {
+        connectionAttempt = nil
+        session?.cancel()
+        finishAuthorization(.failure(AuthError.cancelled))
+    }
+
+    static func validateAccount(_ address: String, expected: String?) throws {
+        guard let expected else { return }
+        guard AccountConnectionPolicy.matches(address, expected: expected) else {
+            throw AuthError.wrongAccount(expected)
+        }
+    }
+
+    static func normalizedTag(_ tag: String) -> String {
+        AccountConnectionPolicy.normalizedTag(tag)
+    }
+
     func disconnect(_ id: String) {
         [Key.accessToken(id), Key.refreshToken(id), Key.expiresAt(id), Key.tag(id), Key.scopes(id)]
             .forEach(Keychain.remove)
@@ -168,8 +226,9 @@ final class AuthService: NSObject {
 
     func rename(_ id: String, tag: String) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
-        let cleaned = String(tag.uppercased().prefix(4)).trimmingCharacters(in: .whitespaces)
-        guard !cleaned.isEmpty else { return }
+        let cleaned = Self.normalizedTag(tag)
+        guard (2...4).contains(cleaned.count),
+              !accounts.contains(where: { $0.id != id && $0.tag == cleaned }) else { return }
         accounts[i].tag = cleaned
         Keychain.set(cleaned, for: Key.tag(id))
     }
@@ -191,6 +250,7 @@ final class AuthService: NSObject {
             "grant_type": "refresh_token",
             "refresh_token": refresh,
         ])
+        guard accounts.contains(where: { $0.id == id }) else { throw AuthError.signedOut }
         store(token, for: id, keepingRefresh: refresh)
         return token.accessToken
     }
@@ -226,6 +286,7 @@ final class AuthService: NSObject {
 
     private func postForm(_ fields: [String: String]) async throws -> TokenResponse {
         var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
+        request.timeoutInterval = 30
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data(
@@ -242,6 +303,7 @@ final class AuthService: NSObject {
 
     private static func email(for accessToken: String) async throws -> String {
         var request = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!)
+        request.timeoutInterval = 30
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         let (data, _) = try await URLSession.shared.data(for: request)
         struct Info: Decodable { let email: String? }
@@ -254,26 +316,30 @@ final class AuthService: NSObject {
     // MARK: Tags
 
     private static func defaultTag(for address: String) -> String {
-        let local = address.prefix(while: { $0 != "@" })
-        return String(local.prefix(2)).uppercased()
+        let cleaned = normalizedTag(String(address.prefix(while: { $0 != "@" })))
+        return cleaned.count >= 2 ? String(cleaned.prefix(2)) : "ME"
     }
 
     /// Collisions are resolved at creation rather than at render, so a tag
     /// never changes meaning once the user has learned it.
     private func uniqueTag(for address: String) -> String {
         let taken = Set(accounts.map(\.tag))
-        let local = String(address.prefix(while: { $0 != "@" })).uppercased()
-        let domain = String(address.drop(while: { $0 != "@" }).dropFirst().prefix(while: { $0 != "." })).uppercased()
+        let local = Self.normalizedTag(String(address.prefix(while: { $0 != "@" })))
+        let domain = Self.normalizedTag(String(address.drop(while: { $0 != "@" }).dropFirst().prefix(while: { $0 != "." })))
 
         for candidate in [
             String(local.prefix(2)), String(local.prefix(3)), String(local.prefix(4)),
             String(domain.prefix(3)), String(domain.prefix(4)),
-        ] where !candidate.isEmpty && !taken.contains(candidate) {
+        ] where (2...4).contains(candidate.count) && !taken.contains(candidate) {
             return candidate
         }
         var n = 2
-        while taken.contains("\(local.prefix(2))\(n)") { n += 1 }
-        return "\(local.prefix(2))\(n)"
+        while true {
+            let suffix = String(n, radix: 36).uppercased()
+            let candidate = String((local.isEmpty ? "M" : local).prefix(max(0, 4 - suffix.count))) + suffix
+            if (2...4).contains(candidate.count), !taken.contains(candidate) { return candidate }
+            n += 1
+        }
     }
 
     // MARK: Index
@@ -323,21 +389,30 @@ enum AuthError: LocalizedError {
     case keychainUnavailable
     case signedOut
     case tokenEndpoint(String)
+    case couldNotStart
+    case invalidCallback
+    case wrongAccount(String)
 
     var errorDescription: String? {
         switch self {
         case .cancelled, .noCode:
-            return "You didn\u{2019}t finish connecting. Nothing was shared and nothing was stored."
+            return "The connection did not finish. You can try again when you are ready."
+        case .couldNotStart:
+            return "The Google sign-in window could not open. Try again."
+        case .invalidCallback:
+            return "We could not verify this sign-in response. Please start again."
+        case .wrongAccount(let expected):
+            return "Choose \(expected) in Google to reconnect this mailbox. The other account was not added."
         case .noRefreshToken:
             return "Google didn\u{2019}t return a refresh token, so the session would expire in an hour. Try connecting again."
         case .noEmail:
             return "Google didn\u{2019}t say which address that was. Try connecting again."
         case .keychainUnavailable:
-            return "This device wouldn\u{2019}t store the credential, so the connection could not be kept. Nothing was saved."
+            return "The credential could not be verified in this device's Keychain. Try connecting again."
         case .signedOut:
             return "That mailbox needs reconnecting."
-        case .tokenEndpoint(let detail):
-            return detail
+        case .tokenEndpoint:
+            return "Google could not finish the connection. Check your connection and try again."
         }
     }
 }

@@ -32,39 +32,63 @@ final class AttachmentOpener {
         let url: URL
     }
 
-    /// Downloads to a file named the way the sender named it. QuickLook picks
-    /// its renderer off the path extension, so a PDF saved as `tmp.dat` opens
-    /// as nothing at all.
+    private var operation: Task<Void, Never>?
+    private var requestID: UUID?
+    private var lastRequest: (Attachment, String?)?
+
+    func cancel() {
+        operation?.cancel()
+        operation = nil
+        requestID = nil
+        state = .idle
+    }
+
+    func retry() async {
+        guard let (attachment, authorization) = lastRequest else { return }
+        await open(attachment, authorization: authorization)
+    }
+
+    /// A new selection cancels the previous download. Only its request identity
+    /// may publish a preview; identical sender filenames never share a file.
     func open(_ attachment: Attachment, authorization: String?) async {
+        cancel()
+        lastRequest = (attachment, authorization)
         guard let source = attachment.fileURL else {
             state = .failed("This file has no download link.")
             return
         }
+        let id = UUID()
+        requestID = id
         state = .loading(attachment.id)
-
-        do {
-            var request = URLRequest(url: source)
-            request.timeoutInterval = 60
-            if let authorization {
-                request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                var request = URLRequest(url: source)
+                request.timeoutInterval = 60
+                if let authorization { request.setValue(authorization, forHTTPHeaderField: "Authorization") }
+                let (temporary, response) = try await URLSession.shared.download(for: request)
+                try Task.checkCancellation()
+                guard self.requestID == id else { return }
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                    self.state = .failed("Couldn’t fetch this file. Try again.")
+                    return
+                }
+                let folder = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("Attachments/\(id.uuidString)", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let destination = folder.appendingPathComponent(self.safeName(for: attachment))
+                try FileManager.default.moveItem(at: temporary, to: destination)
+                guard !Task.isCancelled, self.requestID == id else { return }
+                self.state = .idle
+                self.previewing = PreviewItem(id: id.uuidString, url: destination)
+            } catch {
+                guard !Task.isCancelled, self.requestID == id else { return }
+                self.state = .failed("Couldn’t open this file. Your place in the email is kept.")
             }
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                state = .failed("Could not fetch this file (\(http.statusCode)).")
-                return
-            }
-
-            let folder = FileManager.default.temporaryDirectory
-                .appending(path: "Attachments", directoryHint: .isDirectory)
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let destination = folder.appending(path: safeName(for: attachment))
-            try data.write(to: destination, options: .atomic)
-
-            state = .idle
-            previewing = PreviewItem(id: attachment.id, url: destination)
-        } catch {
-            state = .failed("Could not open this file.")
         }
+        operation = task
+        await task.value
+        if requestID == id { operation = nil }
     }
 
     /// A filename safe for the filesystem that keeps the extension, because the
@@ -73,7 +97,7 @@ final class AttachmentOpener {
         let cleaned = attachment.filename
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        let name = cleaned.isEmpty ? "attachment" : cleaned
+        let name = cleaned.isEmpty || cleaned == "." || cleaned == ".." ? "attachment" : cleaned
         if URL(fileURLWithPath: name).pathExtension.isEmpty,
            let type = attachment.mimeType.flatMap({ UTType(mimeType: $0) }),
            let ext = type.preferredFilenameExtension {

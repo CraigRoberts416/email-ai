@@ -21,7 +21,11 @@ struct Caret: View {
     var tint: Color = Ink.primary
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.motionIsActive) private var motionIsActive
     @State private var on = false
+    @State private var visible = true
+    private var animating: Bool { !reduceMotion && motionIsActive && visible && scenePhase == .active }
 
     var body: some View {
         Rectangle()
@@ -31,12 +35,16 @@ struct Caret: View {
             // A static 55% bar still marks the position a machine is writing
             // at; the sentence beside it ("Reading this one…", "Filling it
             // out…") carries the rest.
-            .opacity(reduceMotion ? 0.55 : (on ? 1 : 0.25))
-            .task(id: reduceMotion) {
-                guard !reduceMotion else { return }
+            .opacity(animating ? (on ? 1 : 0.25) : 0.55)
+            .onAppear { visible = true }
+            .onDisappear { visible = false }
+            .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
+            .task(id: animating) {
+                guard animating else { return }
                 while !Task.isCancelled {
                     withAnimation(Move.caretRamp) { on.toggle() }
-                    try? await Task.sleep(for: .seconds(Move.caretHold))
+                    do { try await Task.sleep(for: .seconds(Move.caretHold)) }
+                    catch { return }
                 }
             }
             .accessibilityHidden(true)
@@ -69,4 +77,17 @@ struct CaretLine: View {
         Caret(height: 14)
     }
     .padding()
+}
+
+
+/// Ancestors can suspend decorative motion behind sheets or inactive tabs.
+private struct MotionIsActiveKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var motionIsActive: Bool {
+        get { self[MotionIsActiveKey.self] }
+        set { self[MotionIsActiveKey.self] = newValue }
+    }
 }

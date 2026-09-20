@@ -5,6 +5,11 @@ test_binary="$(mktemp -t decision-inbox-feed-store)"
 trap 'rm -f "$test_binary"' EXIT
 swiftc -swift-version 5 -parse-as-library \
   "$project_root/apple/DecisionInbox/Model/Message.swift" \
+  "$project_root/apple/DecisionInbox/Model/UnsubscribeRun.swift" \
+  "$project_root/apple/DecisionInbox/Services/InteractionArchive.swift" \
+  "$project_root/apple/DecisionInbox/Services/MailDraftStore.swift" \
+  "$project_root/apple/DecisionInbox/Services/DiscussionStore.swift" \
+  "$project_root/apple/DecisionInbox/Services/AccountConnectionPolicy.swift" \
   "$project_root/apple/DecisionInbox/Model/Conversation.swift" \
   "$project_root/apple/DecisionInbox/Model/FeedSession.swift" \
   "$project_root/apple/DecisionInbox/Model/FeedPaginationLifecycle.swift" \

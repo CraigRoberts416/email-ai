@@ -21,6 +21,9 @@ struct OnboardingFlow: View {
     }
 
     @State private var step: Step = .premise
+    @State private var includeGooglePhotos = false
+    @State private var longWait = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -66,6 +69,7 @@ struct OnboardingFlow: View {
 
     private var providers: some View {
         hero {
+            backButton(to: .premise)
             Text("Where does your mail live?")
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
@@ -112,6 +116,7 @@ struct OnboardingFlow: View {
 
     private func primer(_ provider: Provider) -> some View {
         hero {
+            backButton(to: .provider)
             Text("Google is about to ask for a lot. Here is exactly what for.")
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
@@ -119,12 +124,14 @@ struct OnboardingFlow: View {
 
             VStack(alignment: .leading, spacing: Space.lg) {
                 scope("READ YOUR MAIL", "There is no card without the message behind it.")
-                scope("SEND AS YOU", "Only when you tap send. Never on its own, never to another AI.")
-                scope("CHANGE LABELS", "So archiving here archives in Gmail too.")
-                scope("CONTACT PHOTOS", "Read-only access to saved contacts and Other Contacts lets this phone match real photos by email address. Your address book is not sent to our server.")
+                scope("SEND AS YOU", "When you choose to send a message or submit an unsubscribe request. The app does not send independent messages.")
+                scope("MANAGE YOUR MAIL", "Google’s mailbox permission includes reading, sending, changing labels and permanently deleting mail. The app uses it to show your mail and carry out actions you choose; it does not independently delete messages.")
+
             }
 
-            Text("Contact photos are optional. We never ask for your calendar or your password.")
+            Toggle("Also connect Google contact photos", isOn: $includeGooglePhotos)
+                .tint(Ink.primary)
+            Text("Optional and off by default. This adds read-only access to Google contacts and Other Contacts for exact-address photo matching on this phone. You can connect photos later in Privacy. We never ask for your calendar or your password.")
                 .typeStyle(Style.body)
                 .foregroundStyle(Ink.primary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -134,7 +141,7 @@ struct OnboardingFlow: View {
             PrimaryButton(label: "Continue to \(provider.name)") {
                 step = .connecting
                 Task {
-                    await auth.connect()
+                    await auth.connect(includeGooglePhotos: includeGooglePhotos)
                     // `connect` returns nil when the user backed out of the
                     // system sheet, which is a choice rather than a failure.
                     if !auth.isAuthenticated { step = .cancelled }
@@ -177,30 +184,42 @@ struct OnboardingFlow: View {
     /// seconds of Google's own sheet, and a spinner would be the app claiming
     /// to be busy while it waits on somebody else.
     private var connecting: some View {
-        VStack(spacing: Space.lg) {
-            Text("Connecting \(Provider.google.name)")
+        hero {
+            Text(auth.connectionStage == .waitingForGoogle ? "Continue in Google" : "Finishing the connection")
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
-            if let address = auth.accounts.first?.id {
-                Text(address.uppercased())
-                    .typeStyle(Style.kickerSmall)
-                    .foregroundStyle(Ink.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(auth.connectionStage == .waitingForGoogle
+                 ? "Choose the mailbox and review Google's permissions in the sign-in window."
+                 : "Checking which mailbox you connected and saving its credentials on this device.")
+                .typeStyle(Style.body)
+                .foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if longWait {
+                Text("Still waiting. If Google is no longer open or your connection has stalled, cancel and try again. No completion has been confirmed.")
+                    .typeStyle(Style.bodySmall)
+                    .foregroundStyle(Ink.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            GhostButton(label: "Cancel connection") { auth.cancelConnection() }
+                .keyboardShortcut(.cancelAction)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.bottom, Space.xxl)
+        .task {
+            longWait = false
+            do { try await Task.sleep(for: .seconds(10)); longWait = true } catch {}
+        }
     }
 
     // MARK: 05 · Cancelled
 
     private var cancelled: some View {
         hero {
-            Text("You didn\u{2019}t finish connecting.")
+            Text(auth.lastError == nil ? "Connection cancelled." : "Connection could not finish.")
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(auth.lastError ?? "Nothing was shared and nothing was stored. You can pick up where you left off, or use a different mailbox.")
+            Text(auth.lastError ?? "This mailbox was not added. You can try again when you are ready. Any permissions already granted can be managed in your Google Account.")
                 .typeStyle(Style.body)
                 .foregroundStyle(Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -210,7 +229,7 @@ struct OnboardingFlow: View {
             PrimaryButton(label: "Try again") {
                 step = .connecting
                 Task {
-                    await auth.connect()
+                    await auth.connect(includeGooglePhotos: includeGooglePhotos)
                     if !auth.isAuthenticated { step = .cancelled }
                 }
             }
@@ -222,14 +241,27 @@ struct OnboardingFlow: View {
 
     /// 80pt of air above, 24 either side. Hero screens breathe wider than
     /// lists do, and the top pad is what stops them reading as a form.
-    private func hero<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: Space.xl) {
-            content()
+    private func backButton(to destination: Step) -> some View {
+        Button { step = destination } label: {
+            Label("Back", systemImage: "chevron.left")
+                .typeStyle(Style.bodyMedium)
+                .frame(minHeight: 44)
         }
-        .padding(.top, Metric.heroTopPad)
-        .padding(.horizontal, Metric.gutterWide)
-        .padding(.bottom, Space.xxl)
+        .buttonStyle(.plain)
     }
+
+    private func hero<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Space.xl) { content() }
+                .frame(maxWidth: 560, alignment: .leading)
+                .padding(.top, Space.xxl)
+                .padding(.horizontal, Metric.gutterWide)
+                .padding(.bottom, Space.xxl)
+                .frame(maxWidth: .infinity)
+        }
+        .scrollIndicators(.hidden)
+    }
+
 }
 
 // MARK: - Providers
@@ -288,51 +320,87 @@ private struct ProviderMark: View {
 /// specimen being shown to someone who has never seen one, not a post in a
 /// feed — and the border is what says so.
 private struct ExamplePost: View {
+    @State private var showingMeaning = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            HStack(spacing: Space.md) {
-                Text("D")
-                    .typeStyle(Style.sender)
-                    .foregroundStyle(Ink.primary)
-                    .frame(width: Metric.avatar, height: Metric.avatar)
-                    .background(
-                        RoundedRectangle(cornerRadius: Metric.avatar * 0.25, style: .continuous)
-                            .fill(Ink.surfaceTertiary)
-                    )
-                Text("Delta Air Lines")
-                    .typeStyle(Style.sender)
-                    .foregroundStyle(Ink.primary)
-                Spacer(minLength: 0)
-                Text("2h")
-                    .typeStyle(Style.meta)
-                    .foregroundStyle(Ink.tertiary)
-            }
-
-            VStack(alignment: .leading, spacing: Space.sm) {
-                Text(Kicker.fyi.rawValue)
-                    .typeStyle(Style.kicker)
-                    .foregroundStyle(Ink.primary)
-                Text("\u{201C}Departure moved to 8:15 AM\u{201D}")
-                    .typeStyle(Style.display)
-                    .foregroundStyle(Ink.primary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Text("DL204 now leaves 55 minutes earlier than booked. Check in before you head out.")
-                .typeStyle(Style.ai)
+            Text("SYNTHETIC EXAMPLE · NOT YOUR MAIL")
+                .typeStyle(Style.monoMicro)
+                .foregroundStyle(Ink.tertiary)
+            Text("Delta Air Lines")
+                .typeStyle(Style.sender)
                 .foregroundStyle(Ink.primary)
+            if typeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    specimenButton("Original email", meaning: false)
+                    specimenButton("What it means", meaning: true)
+                }
+            } else {
+                HStack(spacing: Space.md) {
+                    specimenButton("Original email", meaning: false)
+                    specimenButton("What it means", meaning: true)
+                }
+            }
+            Group {
+                if showingMeaning {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        Text("FROM THE EMAIL")
+                            .typeStyle(Style.kickerSmall)
+                        Text("“Departure moved to 8:15 AM”")
+                            .typeStyle(Style.bodyMedium)
+                        Rule()
+                        Text("OUR INTERPRETATION")
+                            .typeStyle(Style.kickerSmall)
+                        Text("Your flight leaves 55 minutes earlier. Leave time to check in before heading out.")
+                            .typeStyle(Style.ai)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        Text("Schedule update for DL204")
+                            .typeStyle(Style.bodyMedium)
+                        Text("Departure moved to 8:15 AM. Your original departure time was 9:10 AM. Please check in before arriving at the airport.")
+                            .typeStyle(Style.body)
+                    }
+                }
+            }
+            .foregroundStyle(Ink.primary)
+            .fixedSize(horizontal: false, vertical: true)
+            .transition(.opacity)
+            Text("The quote is the sender's wording. The interpretation can be wrong; the original stays available.")
+                .typeStyle(Style.bodySmall)
+                .foregroundStyle(Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, Space.md)
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(Ink.border).frame(width: 1)
+        }
+        .padding(Space.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: Corner.md).strokeBorder(Ink.border, lineWidth: 1))
+    }
+
+    private func specimenButton(_ title: String, meaning: Bool) -> some View {
+        Button {
+            withAnimation(Move.resolved(Move.layout, reduceMotion)) { showingMeaning = meaning }
+        } label: {
+            Text(title)
+                .typeStyle(Style.bodySmall)
+                .foregroundStyle(showingMeaning == meaning ? Ink.onInverse : Ink.primary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, typeSize.isAccessibilitySize ? Space.sm : 0)
+                .frame(maxWidth: typeSize.isAccessibilitySize ? .infinity : nil, alignment: .leading)
+                .frame(minHeight: 44)
+                .background {
+                    if typeSize.isAccessibilitySize {
+                        RoundedRectangle(cornerRadius: Corner.md)
+                            .fill(showingMeaning == meaning ? Ink.inverse : Ink.surfaceTertiary)
+                    } else {
+                        Capsule().fill(showingMeaning == meaning ? Ink.inverse : Ink.surfaceTertiary)
+                    }
                 }
         }
-        .padding(.horizontal, Space.lg)
-        .padding(.vertical, Space.xl)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(
-            RoundedRectangle(cornerRadius: Corner.md, style: .continuous)
-                .strokeBorder(Ink.border, lineWidth: 1)
-        )
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(showingMeaning == meaning ? .isSelected : [])
     }
 }

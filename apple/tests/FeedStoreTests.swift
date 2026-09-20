@@ -476,6 +476,72 @@ import Foundation
         f.stop()
     }
 
+    static func disconnectPeopleLifecycle() async {
+        let f = fixture(2), a = f.accounts[0], b = f.accounts[1]
+        func directory(_ id: String) -> HarnessReply {
+            HarnessReply(json: ["conversations": [["id": id, "participants": [["email": "person@example.invalid"]],
+                "lastAt": 100, "unread": true, "messageCount": 1]], "historyComplete": true,
+                "historySyncState": "complete", "totalConversations": 1, "unreadConversations": 1])
+        }
+        a.conversations = { _ in directory("first-account-person") }
+        b.conversations = { _ in directory("remaining-account-person") }
+        let savedA = wire(card("saved-a")).asMessage(mailboxID: f.ids[0])
+        let savedB = wire(card("saved-b")).asMessage(mailboxID: f.ids[1])
+        f.store.toggleSaved(savedA); f.store.toggleSaved(savedB)
+        await f.store.loadConversations()
+        a.disconnect = { HarnessReply(status: 503, json: [:]) }
+        do { try await f.store.remove(f.ids[0]); check(false, "Unconfirmed disconnect must throw") }
+        catch { check(true, "Unconfirmed disconnect remains retryable") }
+        check(f.store.auth.accounts.count == 2 && f.store.saved.count == 2,
+              "Unconfirmed server cleanup preserves credentials and local explicit work")
+        check(f.store.conversations.map(\.id) == ["first-account-person"],
+              "Failed disconnect preserves the visible People directory")
+        let gate = HarnessGate()
+        a.conversations = { _ in await gate.wait() }
+        let late = Task { await f.store.loadConversations(preservingLoaded: true) }
+        await until("People response delayed across disconnect", { gate.waiting })
+        a.disconnect = { HarnessReply(json: ["disconnected": true]) }
+        do { try await f.store.remove(f.ids[0]) }
+        catch { check(false, "Confirmed synthetic disconnect should succeed") }
+        check(f.store.auth.accounts.map(\.id) == [f.ids[1]], "Only the disconnected identity is removed")
+        check(f.store.saved.map(\.feedKey) == [savedB.feedKey], "Disconnect removes its saved data and preserves another account")
+        await until("People switched to the remaining mailbox", { f.store.conversations.map(\.id) == ["remaining-account-person"] })
+        gate.finish(directory("late-removed-account-person")); await late.value
+        check(f.store.conversations.map(\.id) == ["remaining-account-person"],
+              "A delayed removed-account response cannot restore old People rows")
+        check(!f.store.disconnectingMailboxes.contains(f.ids[0]), "Disconnect releases its pending state")
+        f.stop()
+    }
+
+    static func readQueueDuringDisconnect() async {
+        let f = fixture(), a = f.accounts[0], gate = HarnessGate()
+        a.feed = { _, _ in page([card("first"), card("second", age: 60)], total: 2) }
+        await f.store.start()
+        let messages = f.store.sessionMessages
+        a.disconnect = { await gate.wait() }
+        let removing = Task { do { try await f.store.remove(f.ids[0]) } catch {} }
+        await until("disconnect suspended while read evidence arrives", { gate.waiting })
+        f.store.recordSeen(messages)
+        check(f.store.progressRemaining(in: "TODAY") == 2,
+              "Disconnecting account does not accept a new provisional read")
+        check(a.requests.filter { $0.url!.path.hasSuffix("/read") }.isEmpty,
+              "Read queue submits no work during account shutdown")
+        gate.finish(HarnessReply(status: 503, json: [:]))
+        await removing.value
+        f.store.recordSeen([messages[0]])
+        await until("failed disconnect restores read delivery", { f.store.hasSeen(messages[0]) })
+        a.disconnect = { HarnessReply(json: ["disconnected": true]) }
+        do { try await f.store.remove(f.ids[0]) }
+        catch { check(false, "Confirmed disconnect should succeed") }
+        let count = a.requests.filter { $0.url!.path.hasSuffix("/read") }.count
+        f.store.recordSeen([messages[1]])
+        await f.store.markSeen(messages[1])
+        check(a.requests.filter { $0.url!.path.hasSuffix("/read") }.count == count,
+              "Late read evidence cannot restart requests for a removed account")
+        check(!f.store.hasSeen(messages[1]), "Removed account does not acquire new local read state")
+        f.stop()
+    }
+
     static func missedInterpretationCompletion() async {
         var interpreting = card("working", age: 60)
         interpreting["aiStatus"] = "pending"
@@ -584,6 +650,10 @@ import Foundation
     }
 
     static func main() async {
+        let drafts = FileManager.default.temporaryDirectory.appendingPathComponent("send-fixture-\(UUID().uuidString)")
+        MailDraftStore.directoryOverride = drafts
+        DiscussionStore.directoryOverride = drafts
+        defer { try? FileManager.default.removeItem(at: drafts) }
         check(URLProtocol.registerClass(HarnessURLProtocol.self), "Transport interception installed")
         await readRaceAndSession()
         await alreadyReadAndFailure()
@@ -599,6 +669,8 @@ import Foundation
         await excludedAccountBadge()
         await peopleTabBadge()
         await progressivePeopleDirectory()
+        await disconnectPeopleLifecycle()
+        await readQueueDuringDisconnect()
         await missedInterpretationCompletion()
         await falseZeroAndDecodeFailure()
         await notificationLookup()

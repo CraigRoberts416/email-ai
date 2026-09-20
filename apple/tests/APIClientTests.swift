@@ -193,6 +193,18 @@ final class ClientURLProtocol: URLProtocol {
         ClientURLProtocol.respond = { _ in (500, try data(["error": "server unavailable"])) }
         do { _ = try await client.allMail(); throw Failed(description: "500 must fail") }
         catch APIError.server(500) { checks += 1 }
+        ClientURLProtocol.respond = { request in
+            try check(request.httpMethod == "DELETE" && request.url?.path == "/auth/account", "Disconnect uses account lifecycle route")
+            try check(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-token-mailbox-one", "Disconnect authenticates the selected mailbox")
+            return (200, try data(["disconnected": true, "storedMailDeleted": false]))
+        }
+        try await client.disconnectAccount()
+        ClientURLProtocol.respond = { _ in (200, try data(["disconnected": false])) }
+        do { try await client.disconnectAccount(); throw Failed(description: "An unconfirmed response cannot remove local credentials") }
+        catch APIError.transport { checks += 1 }
+        ClientURLProtocol.respond = { _ in (503, try data(["error": "retry"])) }
+        do { try await client.disconnectAccount(); throw Failed(description: "Failed disconnect must remain retryable") }
+        catch APIError.server(503) { checks += 1 }
         print("\(checks) production API transport/decoding checks passed; no live network used")
     }
 }

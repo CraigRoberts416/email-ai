@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Sender
 
-struct Sender: Identifiable, Hashable {
-    enum Kind: Hashable {
+struct Sender: Identifiable, Hashable, Codable {
+    enum Kind: Hashable, Codable {
         /// A person. Circle avatar.
         case person
         /// A brand or service. Rounded-rect tile, because circles crop logos badly.
@@ -32,7 +32,7 @@ struct Sender: Identifiable, Hashable {
 
 /// What the AI decided this message wants from you. Rendered as an uppercase
 /// mono kicker above the quote — this is what stands in for an accent colour.
-enum Kicker: String, Hashable {
+enum Kicker: String, Hashable, Codable {
     case original = "EMAIL"
     case needsYou = "NEEDS YOU"
     case waitingOnThem = "WAITING ON THEM"
@@ -51,7 +51,7 @@ enum Kicker: String, Hashable {
 /// Which card shape the message gets. Resolved first-match-wins, and the
 /// underlying question is who did the design work: if the sender already
 /// designed it we show theirs, if only the AI understands it we show ours.
-enum PostShape: Hashable {
+enum PostShape: Hashable, Codable {
     case html(URL)            // bulk sender with a usable HTML body → their 1:1 section
     case media([URL])         // a human sender whose images carry the meaning
     case carousel([Attachment])
@@ -60,8 +60,8 @@ enum PostShape: Hashable {
     case degraded             // interpretation failed; quote suppressed, never guessed
 }
 
-struct Attachment: Identifiable, Hashable {
-    enum Preview: Hashable {
+struct Attachment: Identifiable, Hashable, Codable {
+    enum Preview: Hashable, Codable {
         case image(URL)
         case document(pages: Int)
     }
@@ -81,7 +81,7 @@ struct Attachment: Identifiable, Hashable {
     }
 }
 
-struct QuotedMessage: Hashable {
+struct QuotedMessage: Hashable, Codable {
     var sender: Sender
     var body: String
     var receivedAt: Date
@@ -90,7 +90,7 @@ struct QuotedMessage: Hashable {
 
 // MARK: - Message
 
-struct Message: Identifiable, Hashable {
+struct Message: Identifiable, Hashable, Codable {
     let id: String
     var threadID: String?
     var mailboxID: String

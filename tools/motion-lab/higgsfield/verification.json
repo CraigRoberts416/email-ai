@@ -1,0 +1,148 @@
+{
+  "verifiedAt": "2026-09-19",
+  "status": "rendered_retimed_visually_reviewed",
+  "toolchain": {
+    "package": "@fable/headless",
+    "version": "0.14.0",
+    "higgseditNode": "22.22.1",
+    "shellNode": "20.9.0",
+    "ffmpeg": "5.1.9-0+deb12u1"
+  },
+  "render": {
+    "variants": [
+      {
+        "name": "baseline",
+        "entranceSeconds": 0.24,
+        "frameReports": [
+          {
+            "time": 0,
+            "out": "renders/early.png",
+            "byteSize": 19559,
+            "width": 640,
+            "height": 360,
+            "renderMs": 69.89330700000002,
+            "diagnostics": []
+          },
+          {
+            "time": 0.16,
+            "out": "renders/middle.png",
+            "byteSize": 25647,
+            "width": 640,
+            "height": 360,
+            "renderMs": 17.850257999999997,
+            "diagnostics": []
+          },
+          {
+            "time": 1,
+            "out": "renders/settled.png",
+            "byteSize": 25634,
+            "width": 640,
+            "height": 360,
+            "renderMs": 14.015972000000005,
+            "diagnostics": []
+          }
+        ],
+        "renderReport": {
+          "ok": true,
+          "path": "renders/proof.mp4",
+          "frames": 60,
+          "durationSeconds": 2,
+          "diagnostics": [],
+          "fallbacks": [],
+          "backend": "cpu"
+        }
+      },
+      {
+        "name": "retimed",
+        "entranceSeconds": 0.72,
+        "frameReports": [
+          {
+            "time": 0,
+            "out": "renders/early.png",
+            "byteSize": 19559,
+            "width": 640,
+            "height": 360,
+            "renderMs": 12.543407000000002,
+            "diagnostics": []
+          },
+          {
+            "time": 0.16,
+            "out": "renders/middle.png",
+            "byteSize": 25168,
+            "width": 640,
+            "height": 360,
+            "renderMs": 14.839046999999937,
+            "diagnostics": []
+          },
+          {
+            "time": 1,
+            "out": "renders/settled.png",
+            "byteSize": 25634,
+            "width": 640,
+            "height": 360,
+            "renderMs": 13.56572499999993,
+            "diagnostics": []
+          }
+        ],
+        "renderReport": null
+      }
+    ]
+  },
+  "pixelComparison": {
+    "sampledTimes": [
+      0.16,
+      1
+    ],
+    "middle": {
+      "changedPixels": 44948,
+      "totalPixels": 230400,
+      "meanAbsoluteRGBDifference": 3.386537905092593
+    },
+    "settled": {
+      "changedPixels": 0,
+      "totalPixels": 230400
+    }
+  },
+  "ffprobe": {
+    "codec": "h264",
+    "width": 640,
+    "height": 360,
+    "fps": 30,
+    "decodedFrames": 60,
+    "duration": 2
+  },
+  "artifacts": [
+    {
+      "kind": "settled",
+      "mediaId": "ddbc1bc7-1859-441d-9c52-f9408d110cd1",
+      "url": "https://d2ol7oe51mr4n9.cloudfront.net/user_323dKzyVF2jNYrzw32C6S1yxhSf/ddbc1bc7-1859-441d-9c52-f9408d110cd1.png",
+      "httpPutStatus": 200,
+      "confirmation": "uploaded"
+    },
+    {
+      "kind": "comparison",
+      "mediaId": "f9ff94eb-8a95-4988-9457-da13a8b978c1",
+      "url": "https://d2ol7oe51mr4n9.cloudfront.net/user_323dKzyVF2jNYrzw32C6S1yxhSf/f9ff94eb-8a95-4988-9457-da13a8b978c1.png",
+      "httpPutStatus": 200,
+      "confirmation": "uploaded"
+    },
+    {
+      "kind": "video",
+      "mediaId": "75a0bc11-027d-4349-a7d5-1046f33d5dd5",
+      "url": "https://d2ol7oe51mr4n9.cloudfront.net/user_323dKzyVF2jNYrzw32C6S1yxhSf/75a0bc11-027d-4349-a7d5-1046f33d5dd5.mp4",
+      "httpPutStatus": 200,
+      "confirmation": "uploaded"
+    },
+    {
+      "kind": "editableProjectZip",
+      "mediaId": "914bc251-d2c3-4390-a399-39cf6f4f12c4",
+      "url": "https://d2ol7oe51mr4n9.cloudfront.net/user_323dKzyVF2jNYrzw32C6S1yxhSf/914bc251-d2c3-4390-a399-39cf6f4f12c4.zip",
+      "httpPutStatus": 200,
+      "confirmation": "uploaded"
+    }
+  ],
+  "visualReview": {
+    "method": "Browser screenshot of durable comparison PNG",
+    "observed": "Both variants legible; slower variant lower/fainter at0.16s. Static heading and footer unchanged."
+  }
+}

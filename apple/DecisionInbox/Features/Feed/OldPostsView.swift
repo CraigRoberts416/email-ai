@@ -11,6 +11,8 @@ struct OldPostsView: View {
     @State private var failed = false
     @State private var open: Message?
     @State private var profile: Sender?
+    @State private var initialComposeIntent: ComposeView.Intent?
+    @State private var focusDiscussion = false
 
     var body: some View {
         NavigationStack {
@@ -19,8 +21,8 @@ struct OldPostsView: View {
                     ForEach(posts, id: \.feedKey) { message in
                         PostView(message: store.currentVersion(of: message),
                             tag: store.showsMailboxTags ? store.mailbox(message.mailboxID)?.tag : nil,
-                            onOpen: { open = message }, onReply: { open = message },
-                            onDiscuss: { open = message }, onForward: { open = message },
+                            onOpen: { openMessage(message) }, onReply: { openMessage(message, intent: .reply) },
+                            onDiscuss: { openMessage(message, discuss: true) }, onForward: { openMessage(message, intent: .forward) },
                             onSave: { store.toggleSaved(message) },
                             onArchive: { store.archive(message) },
                             onUnsubscribe: { store.unsubscribe(from: message) },
@@ -41,27 +43,26 @@ struct OldPostsView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if let receipt = store.receipt {
-                    ToastView(message: receipt.message, detail: receipt.detail,
-                        actionLabel: receipt.undo == nil ? nil : "Undo",
-                        action: {
-                            switch receipt.undo {
-                            case .archive(let message, let index): store.undoArchive(message, at: index)
-                            case .send: store.undoSend()
-                            case .none: break
-                            }
-                        }, onDismiss: { store.dismissReceipt() })
-                }
-            }
             .background(Ink.surface)
             .navigationTitle("Old posts")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { ActivityToolbarButton() }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
             .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
-            .sheet(item: $open) { ThreadView(message: $0).presentationDetents([.large]) }
+            .sheet(item: $open) {
+                ThreadView(message: $0, initialComposeIntent: initialComposeIntent, focusDiscussion: focusDiscussion)
+                    .presentationDetents([.large])
+            }
             .task { if !loaded { await loadMore() } }
         }
+    }
+
+    private func openMessage(_ message: Message, intent: ComposeView.Intent? = nil, discuss: Bool = false) {
+        initialComposeIntent = intent
+        focusDiscussion = discuss
+        open = message
     }
 
     private func loadMore() async {
@@ -73,12 +74,15 @@ struct OldPostsView: View {
         do {
             for mailbox in mailboxes where !loaded || cursors[mailbox.id] != nil {
                 let result = try await store.oldPosts(accountID: mailbox.id, cursor: cursors[mailbox.id])
+                guard !Task.isCancelled else { return }
                 let known = Set(posts.map { $0.mailboxID + ":" + $0.id })
                 posts.append(contentsOf: result.posts.filter { !known.contains($0.mailboxID + ":" + $0.id) })
                 cursors[mailbox.id] = result.cursor
             }
             posts.sort { $0.receivedAt > $1.receivedAt }
             loaded = true
-        } catch { failed = true }
+        } catch {
+            if !Task.isCancelled { failed = true }
+        }
     }
 }

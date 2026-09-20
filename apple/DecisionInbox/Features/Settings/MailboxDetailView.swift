@@ -1,17 +1,7 @@
 import SwiftUI
 
-/// One mailbox.
-///
-/// Facts first, then the one behaviour that is really a behaviour, then the
-/// irreversible thing last. The order is deliberate, and so is the treatment
-/// of the last one: no red, a weight step on the title, a second tap to
-/// commit, and the sentence about what actually happens set in sentence case
-/// where it can be read.
-///
-/// That sentence — "Nothing is deleted. Your mail stays where it is" — is the
-/// highest-stakes fact in the product. It used to be 10pt upper-case mono,
-/// which is this system's mark for a machine label or a count, not for a human
-/// reassurance about an irreversible choice.
+/// Facts and preferences precede connection recovery and disconnect.
+/// The confirmation explains exactly which access and data are removed.
 struct MailboxDetailView: View {
     let mailbox: Mailbox
 
@@ -19,6 +9,9 @@ struct MailboxDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var tag: String
+    @State private var disconnecting = false
+    @State private var disconnectError: String?
+    @State private var tagFeedback: String?
     @FocusState private var editingTag: Bool
 
     init(mailbox: Mailbox) {
@@ -58,22 +51,32 @@ struct MailboxDetailView: View {
             Rule()
             if case .needsReconnect = live.status {
                 ConsequenceRow(
-                    title: "Reconnect this mailbox",
-                    sentence: "The connection to this mailbox expired. Reconnecting takes one tap, and your other mailboxes keep working through it.",
+                    title: store.auth.isConnecting ? "Reconnecting…" : "Reconnect this mailbox",
+                    sentence: "Choose this address in Google to restore its connection. Your other mailboxes keep working.",
                     action: { Task { await store.reconnect(mailbox.id) } }
                 )
+                .disabled(store.auth.isConnecting || disconnecting)
                 Rule()
             }
             ConsequenceRow(
-                title: "Disconnect this mailbox",
-                sentence: "Nothing is deleted. Your mail stays where it is \u{2014} this only ends our access to it.",
-                confirmTitle: "Tap again to disconnect",
+                title: disconnecting ? "Disconnecting…" : "Disconnect this mailbox",
+                sentence: "Stop syncing this mailbox on our server and remove its credentials and local data. Your Gmail messages remain. Stored mail records on our server are retained. This does not revoke Google's account grant.",
+                confirmTitle: "Disconnect mailbox",
                 destructive: true,
                 action: {
-                    store.remove(mailbox.id)
-                    dismiss()
+                    disconnecting = true
+                    disconnectError = nil
+                    Task {
+                        defer { disconnecting = false }
+                        do { try await store.remove(mailbox.id); dismiss() }
+                        catch { disconnectError = "Disconnect was not confirmed. Your local account is still here so you can retry. Server access may already have stopped." }
+                    }
                 }
             )
+            .disabled(disconnecting || store.auth.isConnecting)
+            if disconnecting { SettingsParagraph("Stopping access and finishing work already in progress. You can leave this screen; this does not cancel the request.") }
+            if let disconnectError { SettingsParagraph(disconnectError) }
+            ConnectionFeedback(auth: store.auth)
             Rule()
         }
         .onChange(of: editingTag) { _, focused in
@@ -91,7 +94,7 @@ struct MailboxDetailView: View {
     // thing the tag exists to prevent.
 
     private var normalised: String {
-        String(tag.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(4))
+        AuthService.normalizedTag(tag)
     }
 
     private var collision: Mailbox? {
@@ -101,31 +104,16 @@ struct MailboxDetailView: View {
 
     private var suggestions: [String] {
         guard collision != nil else { return [] }
-        // Drawn from the address itself rather than invented: a tag the user
-        // cannot trace back to the mailbox is no better than a counter.
-        let parts = live.address.split(separator: "@", maxSplits: 1)
-        let local = (parts.first.map(String.init) ?? "").uppercased()
-            .filter { $0.isLetter || $0.isNumber }
-        let domain = (parts.count > 1 ? String(parts[1]) : "").uppercased()
-            .filter { $0.isLetter || $0.isNumber }
         let taken = Set(store.mailboxes.filter { $0.id != mailbox.id }.map(\.tag))
-        let candidates = [
-            normalised + "2",
-            String(local.prefix(4)),
-            String(domain.prefix(4)),
-        ]
-        var seen: Set<String> = []
-        return candidates.filter { candidate in
-            guard candidate.count >= 2, !taken.contains(candidate),
-                  candidate != normalised, seen.insert(candidate).inserted
-            else { return false }
-            return true
-        }
+        return AccountConnectionPolicy.tagSuggestions(normalised, address: live.address, taken: taken)
     }
 
     private func commitTag() {
-        guard normalised.count >= 2, collision == nil, normalised != live.tag else { return }
+        guard normalised.count >= 2 else { tagFeedback = "Use two to four letters or numbers. Your previous tag is unchanged."; return }
+        guard collision == nil else { tagFeedback = "Choose a tag another mailbox is not using."; return }
+        guard normalised != live.tag else { return }
         store.rename(mailbox.id, tag: normalised)
+        tagFeedback = "Tag saved."
     }
 
     private var tagEditor: some View {
@@ -147,9 +135,10 @@ struct MailboxDetailView: View {
                     .textInputAutocapitalization(.characters)
                     .autocorrectionDisabled()
                     .focused($editingTag)
-                    .accessibilityLabel("Mailbox tag, two to four letters")
+                    .accessibilityLabel("Mailbox tag, two to four letters or numbers")
                     .onChange(of: tag) { _, new in
-                        let clean = String(new.uppercased().filter { $0.isLetter || $0.isNumber }.prefix(4))
+                        tagFeedback = nil
+                        let clean = AuthService.normalizedTag(new)
                         if clean != new { tag = clean }
                     }
                     .onSubmit { commitTag() }
@@ -168,6 +157,10 @@ struct MailboxDetailView: View {
                     .strokeBorder(Ink.primary, lineWidth: collision == nil ? 1 : 2)
                     .opacity(collision == nil ? 0.15 : 1)
             )
+            Text(tagFeedback ?? "Use two to four letters or numbers. Changes save when you finish editing.")
+                .typeStyle(Style.bodySmall)
+                .foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if let collision {
                 VStack(alignment: .leading, spacing: Space.xs + 2) {
@@ -186,12 +179,13 @@ struct MailboxDetailView: View {
 
                 HStack(spacing: Space.sm) {
                     ForEach(suggestions, id: \.self) { suggestion in
-                        Button { tag = suggestion } label: {
+                        Button { tag = suggestion; commitTag() } label: {
                             Text(suggestion)
                                 .typeStyle(Style.tagChip)
                                 .foregroundStyle(Ink.primary)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, Space.sm)
+                                .frame(minHeight: 44)
                                 .overlay(Capsule().strokeBorder(Ink.primary, lineWidth: 1))
                         }
                         .buttonStyle(.plain)

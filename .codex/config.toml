@@ -1,0 +1,11 @@
+[mcp_servers.motion]
+type = "http"
+url = "https://mcp.motion.dev"
+
+[mcp_servers.motion-plus]
+type = "http"
+url = "https://mcp.motion.dev/plus"
+
+[mcp_servers.xcode]
+command = "/usr/bin/xcrun"
+args = ["mcpbridge"]

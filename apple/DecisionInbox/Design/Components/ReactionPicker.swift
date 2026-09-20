@@ -39,6 +39,9 @@ struct ReactionPicker: View {
     let reactions: [Reaction]
     /// Index under the finger, or nil while the finger is off the row.
     let focus: Int?
+    var selected: String? = nil
+    var showsLabels = false
+    var onSelect: (String) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -66,6 +69,7 @@ struct ReactionPicker: View {
     /// falling off with distance. Returns nil below the threshold where a
     /// choice would be a guess.
     static func focus(at x: CGFloat, count: Int) -> Int? {
+        guard count > 0, x >= 0, x <= width(count) else { return nil }
         var best: (index: Int, weight: CGFloat)?
         for index in 0..<count {
             let weight = pull(x, centre(of: index))
@@ -81,21 +85,52 @@ struct ReactionPicker: View {
     }
 
     var body: some View {
-        HStack(spacing: Self.gap) {
-            ForEach(Array(reactions.enumerated()), id: \.element.id) { index, reaction in
+        Group {
+            if showsLabels {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: Space.sm)], spacing: Space.sm) {
+                    ForEach(Array(reactions.enumerated()), id: \.element.id) { index, reaction in
+                        choice(reaction, index: index)
+                    }
+                }
+            } else {
+                HStack(spacing: Self.gap) {
+                    ForEach(Array(reactions.enumerated()), id: \.element.id) { index, reaction in
+                        choice(reaction, index: index)
+                    }
+                }
+                .padding(.horizontal, Self.padH)
+                .padding(.vertical, Self.padV)
+                .glassControl()
+                .overlay(alignment: .topLeading) { caption }
+            }
+        }
+        .animation(reduceMotion ? nil : Move.crisp, value: focus)
+    }
+
+    private func choice(_ reaction: Reaction, index: Int) -> some View {
+        Button { onSelect(reaction.emoji) } label: {
+            VStack(spacing: Space.xs) {
                 Text(reaction.emoji)
                     .font(.system(size: 26))
                     .frame(width: Self.item, height: Self.item)
-                    .scaleEffect(scale(index), anchor: .bottom)
-                    .offset(y: lift(index))
-                    .accessibilityLabel(reaction.label)
+                    .scaleEffect(showsLabels ? 1 : scale(index), anchor: .bottom)
+                    .offset(y: showsLabels ? 0 : lift(index))
+                if showsLabels {
+                    Text(reaction.label)
+                        .typeStyle(Style.bodySmall)
+                        .foregroundStyle(Ink.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .frame(maxWidth: showsLabels ? .infinity : nil, minHeight: Metric.tapTarget)
+            .padding(.vertical, showsLabels ? Space.sm : 0)
+            .background(selected == reaction.emoji && showsLabels ? Ink.surfaceTertiary : .clear,
+                        in: RoundedRectangle(cornerRadius: Corner.md))
+            .contentShape(.rect)
         }
-        .padding(.horizontal, Self.padH)
-        .padding(.vertical, Self.padV)
-        .glassControl()
-        .overlay(alignment: .topLeading) { caption }
-        .animation(reduceMotion ? nil : Move.crisp, value: focus)
+        .buttonStyle(TapStyle())
+        .accessibilityLabel(reaction.label)
+        .accessibilityAddTraits(selected == reaction.emoji ? .isSelected : [])
     }
 
     /// The word for whatever is under the finger.
@@ -120,6 +155,6 @@ struct ReactionPicker: View {
         return Self.pull(Self.centre(of: focus), Self.centre(of: index))
     }
 
-    private func scale(_ index: Int) -> CGFloat { 1 + 0.78 * weight(index) }
-    private func lift(_ index: Int) -> CGFloat { -22 * weight(index) }
+    private func scale(_ index: Int) -> CGFloat { 1 + 0.22 * weight(index) }
+    private func lift(_ index: Int) -> CGFloat { -8 * weight(index) }
 }

@@ -16,36 +16,74 @@ struct SettingsNotificationsView: View {
 
     @State private var state: NotificationState = .unknown
 
+    @State private var permissionError: String?
+    @State private var requesting = false
+    @State private var delivery = PushDeliveryStatus.shared
+    @State private var alerts = "CHECKING"
+    @State private var badges = "CHECKING"
+
     var body: some View {
         SettingsScreen(title: "Notifications", onBack: { dismiss() }) {
-            SettingsGroup("ON THIS PHONE")
+            SettingsGroup("ON THIS DEVICE")
             Rule()
-            if state == .authorized {
-                SettingsFact(title: "Notifications", value: "ON")
-                Rule()
-                SettingsLink(title: "Change this in iOS Settings", action: openSystemSettings)
-                Rule()
+            SettingsFact(title: "Permission", value: state.label ?? "CHECKING")
+            if state == .notAsked {
+                ConsequenceRow(title: requesting ? "Requesting permission…" : "Allow notifications",
+                    sentence: "Ask iOS to allow alerts, sounds and badges for mail that needs your attention.",
+                    action: requestPermission)
+                    .disabled(requesting)
+            } else if state == .unknown {
+                SettingsParagraph(state.sentence)
+                SettingsLink(title: "Check permission again", action: { Task { await refresh() } })
             } else {
-                ConsequenceRow(
-                    title: "Turn notifications on",
-                    sentence: state.sentence,
-                    action: openSystemSettings
-                )
-                Rule()
+                SettingsParagraph(state.sentence)
+                SettingsFact(title: "Alerts", value: alerts)
+                SettingsFact(title: "Badges", value: badges)
+                SettingsLink(title: "Change this in iOS Settings", action: openSystemSettings)
             }
-
+            if let permissionError { SettingsParagraph(permissionError) }
+            Rule()
+            SettingsGroup("DEVICE REGISTRATION")
+            if let error = delivery.registrationError {
+                SettingsParagraph(error)
+                SettingsLink(title: "Try device registration again", action: {
+                    UIApplication.shared.registerForRemoteNotifications()
+                })
+            } else {
+                SettingsParagraph(delivery.isRegistering ? "Registering this device…"
+                    : delivery.registeredAccounts.isEmpty ? "No device registration has been confirmed in this session."
+                    : "This device is registered for \(delivery.registeredAccounts.count) \(delivery.registeredAccounts.count == 1 ? "mailbox" : "mailboxes"). Permission and registration do not confirm delivery; Focus and notification summaries can still affect alerts.")
+            }
             SettingsGroup("WHAT WE SEND")
-            SettingsParagraph("We push a message only when the model has already decided it needs an answer from you. Receipts, promotions and newsletters stay silent.")
+            SettingsParagraph("Alerts are considered after a message is interpreted and identified as needing your attention. Messages without that signal remain silent. Delivery also depends on your system settings and connection.")
             SettingsGroup("APP ICON")
-            SettingsParagraph("The badge counts unread email across all connected mailboxes, including mail outside the feed. Reading a message lowers it; zero clears it. You can turn badges on or off separately in iOS Settings.")
+            SettingsParagraph("The badge counts unread email across all connected mailboxes, including mail outside the feed. Reading a message lowers it; zero clears it. Badges can be changed separately in iOS Settings.")
         }
-        .task { state = await NotificationState.current() }
+        .task { await refresh() }
         .onChange(of: scenePhase) { _, phase in
-            // Coming back from iOS Settings is the one moment this can change
-            // under us, and a stale "off" here would be a lie about the thing
-            // the user just went and fixed.
-            guard phase == .active else { return }
-            Task { state = await NotificationState.current() }
+            if phase == .active { Task { await refresh() } }
+        }
+    }
+
+    private func refresh() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        state = NotificationState.from(settings.authorizationStatus)
+        alerts = settings.alertSetting == .enabled ? "ALLOWED" : "OFF"
+        badges = settings.badgeSetting == .enabled ? "ALLOWED" : "OFF"
+    }
+
+    private func requestPermission() {
+        guard !requesting else { return }
+        requesting = true
+        permissionError = nil
+        Task {
+            defer { requesting = false }
+            do {
+                let allowed = try await UNUserNotificationCenter.current()
+                    .requestAuthorization(options: [.alert, .sound, .badge])
+                if allowed { UIApplication.shared.registerForRemoteNotifications() }
+            } catch { permissionError = "iOS could not complete this request. Try again." }
+            await refresh()
         }
     }
 
@@ -63,13 +101,21 @@ enum NotificationState: Equatable {
     case notAsked
     case authorized
     case denied
+    case provisional
+    case ephemeral
 
     static func current() async -> NotificationState {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        switch settings.authorizationStatus {
+        return from(settings.authorizationStatus)
+    }
+
+    static func from(_ status: UNAuthorizationStatus) -> NotificationState {
+        switch status {
         case .notDetermined: return .notAsked
         case .denied: return .denied
-        case .authorized, .provisional, .ephemeral: return .authorized
+        case .authorized: return .authorized
+        case .provisional: return .provisional
+        case .ephemeral: return .ephemeral
         @unknown default: return .unknown
         }
     }
@@ -79,21 +125,24 @@ enum NotificationState: Equatable {
         switch self {
         case .unknown: return nil
         case .notAsked: return "NOT ASKED"
-        case .authorized: return "ON"
+        case .authorized: return "ALLOWED"
+        case .provisional: return "QUIETLY ALLOWED"
+        case .ephemeral: return "TEMPORARILY ALLOWED"
         case .denied: return "OFF"
         }
     }
 
     var sentence: String {
         switch self {
-        case .authorized:
-            return "iOS is letting notifications through."
-        case .denied:
-            return "iOS is holding them back, so nothing we send reaches you. This opens the Decision Inbox page in iOS Settings, where you can let them through."
-        case .notAsked, .unknown:
-            return "You haven\u{2019}t been asked yet. This opens the Decision Inbox page in iOS Settings, where you can let them through."
+        case .authorized: return "iOS allows notifications. Individual alert, sound and badge settings still apply."
+        case .provisional: return "iOS allows quiet notifications. Change this in Settings if you want prominent alerts."
+        case .ephemeral: return "iOS has granted temporary notification permission."
+        case .denied: return "Notifications are off in iOS. You can change this in Settings."
+        case .notAsked: return "You have not been asked for notification permission yet."
+        case .unknown: return "Notification permission has not been checked yet."
         }
     }
+
 }
 
 #Preview {

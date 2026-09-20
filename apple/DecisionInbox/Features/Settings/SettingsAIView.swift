@@ -23,7 +23,7 @@ struct SettingsAIView: View {
                 caption: "A model interprets feed posts on our server. Older email history can appear as original text before interpretation, so you can read it without waiting."
             )
             Rule()
-            SettingsFact(title: "Posts in your feed", value: "\(visible.count)")
+            SettingsFact(title: "Posts in this feed session", value: "\(visible.count)")
             Rule()
             SettingsFact(title: "Read by the model", value: "\(read)")
             Rule()
@@ -33,6 +33,8 @@ struct SettingsAIView: View {
             }
             SettingsFact(title: "We couldn\u{2019}t read", value: "\(unread)")
             Rule()
+
+            SettingsParagraph("These counts describe the current feed session, not the whole mailbox. Older original-text messages may not have been interpreted.")
 
             SettingsGroup("WHAT IT IS ALLOWED TO DO")
             SettingsParagraph("It writes the quote and the summary on a card, and it drafts a reply when you ask for one. A draft is a draft: every email that leaves this app is one you pressed send on.")

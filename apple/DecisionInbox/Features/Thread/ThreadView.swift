@@ -11,6 +11,10 @@ import SwiftUI
 /// looking at, rather than about mail in the abstract.
 struct ThreadView: View {
     let message: Message
+    let initialComposeIntent: ComposeView.Intent?
+    let focusDiscussion: Bool
+    @State private var openedIntent = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -24,8 +28,10 @@ struct ThreadView: View {
     @State private var compose: ComposeView.Intent?
     @State private var discuss = DiscussModel()
 
-    init(message: Message) {
+    init(message: Message, initialComposeIntent: ComposeView.Intent? = nil, focusDiscussion: Bool = false) {
         self.message = message
+        self.initialComposeIntent = initialComposeIntent
+        self.focusDiscussion = focusDiscussion
         // Seed the first frame. Loading this in the async task would briefly
         // replace mail already on the device with a loading state again.
         _body_ = State(initialValue: FeedCache.loadBody(
@@ -49,12 +55,18 @@ struct ThreadView: View {
     }
 
     private var threadContent: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 masthead
                 messageCard
-                DiscussSection(model: discuss)
+                DiscussSection(model: discuss, message: message)
+                Color.clear.frame(height: 1).id("discussion-bottom")
             }
+        }
+        .onChange(of: discuss.scrollRequested) {
+            withAnimation(Move.resolved(Move.layout, reduceMotion)) { proxy.scrollTo("discussion-bottom", anchor: .bottom) }
+        }
         }
         .ignoresSafeArea(edges: .top)
         .scrollIndicators(.hidden)
@@ -71,9 +83,16 @@ struct ThreadView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) { askBar }
         .background(sheetColor)
         .backNavigation { dismiss() }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { moreActions } }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { HStack { ActivityToolbarButton(); moreActions } } }
         .toolbar(.hidden, for: .tabBar)
         .task {
+            discuss.restore(for: message)
+            if !openedIntent {
+                openedIntent = true
+                compose = initialComposeIntent
+                discuss.focusRequested = focusDiscussion
+                if focusDiscussion { discuss.scrollRequested += 1 }
+            }
             store.markRead(message)
             await load()
         }
@@ -103,7 +122,7 @@ struct ThreadView: View {
                     .typeStyle(Style.body)
                     .foregroundStyle(Ink.onSheet)
                 Spacer(minLength: Space.md)
-                if let url = message.actionURL ?? message.unsubscribeURL {
+                if let url = message.actionURL {
                     Button { UIApplication.shared.open(url) } label: {
                         Text(message.actionLabel ?? "Go to page")
                             .typeStyle(Style.chip)
@@ -189,7 +208,7 @@ struct ThreadView: View {
     }
 
     private var threadLabel: String {
-        message.threadCount == 1 ? "1 email in thread" : "\(message.threadCount) emails in thread"
+        message.threadCount == 1 ? "1 email" : "Showing this email · thread contains \(message.threadCount)"
     }
 
     // MARK: The message itself, on its own white card
@@ -220,12 +239,14 @@ struct ThreadView: View {
             Rule()
 
             ActionRow(
-                message: message,
+                message: store.currentVersion(of: message),
                 onReply: { compose = .reply },
+                onDiscuss: { discuss.focusRequested = true; discuss.scrollRequested += 1 },
                 onForward: { compose = .forward },
                 onSave: { store.toggleSaved(message) },
                 onArchive: { store.archive(message); dismiss() },
-                onUnsubscribe: { store.unsubscribe(from: message); dismiss() }
+                onUnsubscribe: { store.unsubscribe(from: message); dismiss() },
+                onReact: { store.react(message, $0) }
             )
         }
         .padding(Space.lg)
@@ -278,7 +299,7 @@ struct ThreadView: View {
     /// the only honest position for a product that reads your mail for you.
     private var remoteContentNotice: some View {
         HStack(spacing: Space.md) {
-            Text("IMAGES BLOCKED \u{2014} THEY TELL THE SENDER YOU OPENED THIS")
+            Text("REMOTE CONTENT BLOCKED · LOADING CAN TELL THE SENDER YOU OPENED THIS")
                 .typeStyle(Style.chip)
                 .foregroundStyle(Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -295,7 +316,7 @@ struct ThreadView: View {
 
     private var moreActions: some View {
         Menu {
-            Button("Save", systemImage: message.isSaved ? "bookmark.fill" : "bookmark") {
+            Button("Save", systemImage: store.currentVersion(of: message).isSaved ? "bookmark.fill" : "bookmark") {
                 store.toggleSaved(message)
             }
             Button("Archive", systemImage: "archivebox") {
@@ -314,7 +335,13 @@ struct ThreadView: View {
     }
 
     private var askBar: some View {
+        VStack(spacing: Space.xs) {
+            if !discuss.turns.isEmpty {
+                Button(discuss.isAsking ? "View question" : "View latest answer") { discuss.scrollRequested += 1 }
+                    .typeStyle(Style.bodySmall).foregroundStyle(Ink.onSheet)
+            }
         DiscussInput(message: message, model: discuss, sheetColor: sheetColor)
+        }
             .padding(.horizontal, Space.lg)
             // Room above and below. It was landing in the home-indicator
             // strip, which is why it read as jammed against the bezel.

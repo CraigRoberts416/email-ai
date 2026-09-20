@@ -29,6 +29,11 @@ const conversations    = require('./conversations');
 const crypto           = require('crypto');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
 const unsubscribeCopy  = require('./unsubscribeCopy');
+const { createUnsubscribeJournal, recordStatus, reconciledStatus, safePageURL } = require('./unsubscribeJournal');
+const unsubscribeJournal = createUnsubscribeJournal({ query: (...args) => require('./db').query(...args) });
+const unsubscribeWorkers = new Map();
+const unsubscribeWrites = new Map();
+const unsubscribeStopped = new Set();
 const { cleanEmailForAI, decodeEntities } = require('./emailCleaner');
 const { createAPNsTransport } = require('./apns');
 const { createMailNotifications } = require('./mailNotifications');
@@ -185,7 +190,7 @@ function extractStreamingField(accum, fieldName, alreadySent) {
 const sseClients = new Map(); // userId → Set<res>
 const unsubscribeStatuses = new Map(); // userId → Map<messageId, status>
 const SSE_KEEPALIVE_MS = 25_000;
-const TERMINAL_UNSUBSCRIBE_STATUS_TTL_MS = 30_000;
+const TERMINAL_UNSUBSCRIBE_STATUS_TTL_MS = 24 * 60 * 60 * 1000;
 
 function getSseClients(userId) {
   if (!sseClients.has(userId)) sseClients.set(userId, new Set());
@@ -310,6 +315,7 @@ function emitUnsubscribeStatus(userId, data) {
   const payload = {
     // Ties every event of one batch together in the run log.
     runId:      data.runId ?? runId,
+    attemptId:  data.attemptId ?? null,
     messageId:  data.messageId,
     senderName: data.senderName ?? null,
     // `status` is the key the shipped client decodes; `step` is what the
@@ -324,12 +330,22 @@ function emitUnsubscribeStatus(userId, data) {
     elapsedMs:  data.elapsedMs ?? elapsedMs,
     // What it saw. Shown in the run log, never in the tray.
     evidence:   data.evidence ?? null,
+    sourceURL:  data.sourceURL ?? null,
+    handoffURL: data.handoffURL ?? null,
+    outcome:    data.outcome ?? null,
   };
 
+  if (unsubscribeStopped.has(userId)) return Promise.resolve();
   const statuses = getUnsubscribeStatuses(userId);
-  statuses.set(payload.messageId, { ...payload, updatedAt: Date.now() });
+  const record = recordStatus(statuses.get(payload.messageId), payload);
+  statuses.set(payload.messageId, record);
   pruneUnsubscribeStatuses(userId);
-  emitSSE(userId, { type: 'unsubscribe-status', ...payload });
+  emitSSE(userId, { type: 'unsubscribe-status', ...record });
+  const key = `${userId}:${payload.messageId}`;
+  const write = (unsubscribeWrites.get(key) || Promise.resolve()).catch(() => {}).then(() => unsubscribeJournal.save(userId, record));
+  unsubscribeWrites.set(key, write);
+  write.catch(err => console.error('[unsubscribe] receipt persistence failed:', err.message));
+  return write;
 }
 
 let playwrightInstallPromise = null;
@@ -658,6 +674,8 @@ async function resolveUserProfile(req) {
 
 // Register user — stores tokens, starts initial sync + worker + watch
 app.post('/auth/register', async (req, res) => {
+  const accountAccess = require('./accountAccess');
+  const connectionVersion = accountAccess.version();
   const auth        = req.headers['authorization'] ?? '';
   const accessToken = auth.startsWith('Bearer ') ? auth.slice(7) : null;
   if (!accessToken) return res.status(401).json({ error: 'unauthorized' });
@@ -672,11 +690,13 @@ app.post('/auth/register', async (req, res) => {
     });
     if (!userinfoRes.ok) return res.status(401).json({ error: 'invalid token' });
     const { sub: userId, email } = await userinfoRes.json();
+    accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
 
     // Check before upsert — presence of onboarding_history_id means this user
     // has already been through first-time bootstrap.
     const existingUser = await userStore.getUser(userId);
     const isNewUser = !existingUser?.onboarding_history_id;
+    accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
 
     // Get current Gmail historyId for the onboarding cutoff (only needed for new users,
     // but we fetch it regardless so we always have a fresh historyId to store as onboarding anchor)
@@ -688,12 +708,14 @@ app.post('/auth/register', async (req, res) => {
 
     // Store user + tokens in DB (upsert preserves existing onboarding_history_id via COALESCE)
     await userStore.upsertUser(userId, {
+      connectionVersion,
       email,
       accessToken,
       refreshToken,
       tokenExpiry: expiresAt ?? (Date.now() + 3600_000),
       onboardingHistoryId,
     });
+    accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
     mailNotifications.invalidateUnreadCount(userId);
 
     // Set history_id as incremental sync starting point, only if not already set
@@ -704,6 +726,7 @@ app.post('/auth/register', async (req, res) => {
         [userId, onboardingHistoryId]
       );
     }
+    accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
 
     if (isNewUser) {
       // First-time bootstrap: pull backlog and register Gmail push watch.
@@ -725,10 +748,12 @@ app.post('/auth/register', async (req, res) => {
       } catch (syncErr) {
         console.error('[register] incrementalSync error:', syncErr.message);
       }
+      accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
       mailNotifications.invalidateUnreadCount(userId);
 
       if (newUnreadIds.length > 0) {
         const records = await Promise.all(newUnreadIds.map(messageId => messageStore.getMessage(userId, messageId)));
+        accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
         for (const record of records) {
           if (!record) continue;
           emitSSE(userId, {
@@ -758,6 +783,7 @@ app.post('/auth/register', async (req, res) => {
 
     // Always ensure the worker is running. startWorker is a no-op if the worker
     // is already active for this user (guarded by the in-memory activeWorkers Map).
+    accountAccess.assertNotDisconnectedSince(userId, connectionVersion);
     processingWorker.startWorker(userId);
 
     res.json({ success: true, userId });
@@ -784,6 +810,22 @@ app.post('/auth/push-token', async (req, res) => {
     console.error('[push-token] error:', err.message);
     res.status(500).json({ error: 'failed to store push token' });
   }
+});
+
+// Disconnect is distinct from merely unregistering this device's badge.
+const { createAccountDisconnect, registerAccountDisconnectRoute } = require('./accountDisconnect');
+registerAccountDisconnectRoute(app, {
+  resolveUserId,
+  disconnect: createAccountDisconnect({
+    userStore, processingWorker, stopWatch: watchManager.stopWatch,
+    onDisconnect: async userId => {
+      await cancelUnsubscribeWork(userId);
+      for (const client of sseClients.get(userId) ?? []) client.end();
+      sseClients.delete(userId);
+      mailNotifications.invalidateUnreadCount(userId);
+    },
+    refreshDetachedToken: token => mailNotifications.refreshDetachedToken(token),
+  }),
 });
 
 // A removed mailbox must no longer contribute to this phone's combined badge.
@@ -1090,12 +1132,15 @@ app.get('/messages/:messageId/attachments/:attachmentId', async (req, res) => {
       }) ?? null;
     }
     if (!userId) return res.status(401).end();
+    const accountSignal = require('./accountAccess').signal(userId);
+    accountSignal.throwIfAborted();
 
     const accessToken = await userStore.getValidAccessToken(userId);
+    accountSignal.throwIfAborted();
     const upstream = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}`
         + `/attachments/${encodeURIComponent(attachmentId)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(12000) }
+      { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.any([accountSignal, AbortSignal.timeout(12000)]) }
     );
     if (!upstream.ok) return res.status(404).end();
 
@@ -1116,6 +1161,7 @@ app.get('/messages/:messageId/attachments/:attachmentId', async (req, res) => {
       console.warn(`[attachment] resize failed for ${attachmentId}: ${err.message}`);
     }
 
+    accountSignal.throwIfAborted();
     res.setHeader('Content-Type', mime);
     res.setHeader('Cache-Control', 'private, max-age=86400');
     res.send(bytes);
@@ -1150,6 +1196,8 @@ app.get('/messages/:messageId/attachments/:attachmentId/file', async (req, res) 
       }) ?? null;
     }
     if (!userId) return res.status(401).end();
+    const accountSignal = require('./accountAccess').signal(userId);
+    accountSignal.throwIfAborted();
 
     // The type and name come from what we recorded when the message was read,
     // not from the wire — Gmail's attachment endpoint returns bytes and
@@ -1158,10 +1206,11 @@ app.get('/messages/:messageId/attachments/:attachmentId/file', async (req, res) 
     const meta = (record?.attachments ?? []).find(a => a.id === attachmentId);
 
     const accessToken = await userStore.getValidAccessToken(userId);
+    accountSignal.throwIfAborted();
     const upstream = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}`
         + `/attachments/${encodeURIComponent(attachmentId)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(30000) }
+      { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.any([accountSignal, AbortSignal.timeout(30000)]) }
     );
     if (!upstream.ok) return res.status(404).end();
 
@@ -1170,6 +1219,7 @@ app.get('/messages/:messageId/attachments/:attachmentId/file', async (req, res) 
     const bytes = Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 
     const filename = (meta?.filename ?? 'attachment').replace(/["\\\r\n]/g, '');
+    accountSignal.throwIfAborted();
     res.setHeader('Content-Type', meta?.mimeType || 'application/octet-stream');
     res.setHeader('Content-Length', bytes.length);
     // `inline`: the phone previews it rather than dropping it in Files. The
@@ -1594,130 +1644,151 @@ app.get('/test-ai', async (req, res) => {
   }
 });
 
-// Unsubscribe — launch headless browser to complete unsubscribe flow
+// Disconnect stops further work; already submitted external requests cannot be reversed.
+async function cancelUnsubscribeWork(userId) {
+  unsubscribeStopped.add(userId);
+  const jobs = unsubscribeWorkers.get(userId);
+  if (jobs) {
+    await Promise.allSettled([...jobs.values()].map(async job => {
+      job.controller.abort();
+      if (job.browser) await job.browser.close().catch(() => {});
+    }));
+  }
+  unsubscribeWorkers.delete(userId);
+  await Promise.allSettled([...unsubscribeWrites].filter(([key]) => key.startsWith(`${userId}:`)).map(([, value]) => value));
+  for (const key of unsubscribeWrites.keys()) if (key.startsWith(`${userId}:`)) unsubscribeWrites.delete(key);
+  unsubscribeStatuses.delete(userId);
+  unsubscribeRuns.delete(userId);
+  await unsubscribeJournal.clear(userId);
+}
+
 app.post('/unsubscribe', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
-
-  const { messageId, unsubscribeUrl: directUnsubscribeUrl, senderName: directSenderName } = req.body;
-  if (!messageId) return res.status(400).json({ error: 'messageId required' });
-
-  let record = null;
-  try {
-    record = await messageStore.getMessage(userId, messageId);
-  } catch (err) {
-    console.warn('[unsubscribe] message lookup failed, falling back to request payload:', err.message);
-  }
-
-  const unsubscribeUrl = record?.unsubscribeUrl || directUnsubscribeUrl;
-  const senderName = directSenderName || record?.fromName || record?.fromEmail || 'Sender';
-  if (!unsubscribeUrl) return res.status(400).json({ error: 'no unsubscribe URL for this message' });
-
-  // Registered before the first emit so `index` / `total` are populated from
-  // the very first event the tray receives.
+  const accountSignal = require('./accountAccess').signal(userId);
+  const user = await userStore.getUser(userId).catch(() => null);
+  if (!user?.access_token || !user?.refresh_token) return res.status(401).json({ error: 'mailbox disconnected' });
+  try { accountSignal.throwIfAborted(); }
+  catch { return res.status(409).json({ error: 'mailbox disconnected' }); }
+  unsubscribeStopped.delete(userId);
+  const { messageId, unsubscribeUrl: directURL, senderName: directName, attemptId } = req.body;
+  if (typeof messageId !== 'string' || !messageId) return res.status(400).json({ error: 'messageId required' });
+  const existingWorker = unsubscribeWorkers.get(userId)?.get(messageId);
+  if (existingWorker) return res.json({ success: true, alreadyRunning: true, run: getUnsubscribeStatuses(userId).get(messageId) || null });
+  const record = await messageStore.getMessage(userId, messageId).catch(() => null);
+  const unsubscribeUrl = record?.unsubscribeUrl || directURL;
+  const senderName = record?.fromName || directName || record?.fromEmail || 'Sender';
+  let parsedURL;
+  try { parsedURL = new URL(unsubscribeUrl); } catch { return res.status(400).json({ error: 'invalid unsubscribe URL' }); }
+  if (!['https:', 'http:', 'mailto:'].includes(parsedURL.protocol)) return res.status(400).json({ error: 'unsupported unsubscribe URL' });
+  try { accountSignal.throwIfAborted(); }
+  catch { return res.status(409).json({ error: 'mailbox disconnected' }); }
+  if (unsubscribeWorkers.get(userId)?.has(messageId)) return res.json({ success: true, alreadyRunning: true, run: getUnsubscribeStatuses(userId).get(messageId) || null });
+  const worker = { controller: new AbortController(), browser: null };
+  if (!unsubscribeWorkers.has(userId)) unsubscribeWorkers.set(userId, new Map());
+  unsubscribeWorkers.get(userId).set(messageId, worker);
   beginUnsubscribeRun(userId, messageId);
-  emitUnsubscribeStatus(userId, { messageId, senderName, step: 'queued', message: null });
-
-  // Acknowledge immediately — status updates flow via SSE
-  res.json({ success: true });
-
-  let user = null;
-  try {
-    user = await userStore.getUser(userId);
-  } catch (err) {
-    console.warn('[unsubscribe] user lookup failed, continuing without DB user:', err.message);
+  const emit = (step, message, extra = {}) => worker.controller.signal.aborted ? Promise.resolve() : emitUnsubscribeStatus(userId, {
+    messageId, senderName, step, message, attemptId: typeof attemptId === 'string' ? attemptId.slice(0, 80) : null,
+    sourceURL: safePageURL(unsubscribeUrl), ...extra,
+  });
+  try { await emit('queued', null); }
+  catch {
+    // Queued was already visible over SSE, but external work starts only below
+    // this boundary. Publish the definite no-action result even if disk remains
+    // unavailable, so clients cannot mistake the queued acknowledgement for work.
+    await emit('failed', 'Could not save this task. No request was sent to the sender.', {
+      outcome: 'not_started', evidence: 'Task storage failed before any sender page or mail request was opened.',
+    }).catch(() => {});
+    if (unsubscribeWorkers.get(userId)?.get(messageId) === worker) unsubscribeWorkers.get(userId).delete(messageId);
+    return res.status(503).json({ error: 'Could not save this task. No request was sent to the sender.' });
   }
-
-  const authProfile = await resolveUserProfile(req);
-  const requestAccessToken = authProfile?.token ?? null;
-  const userEmail = authProfile?.profile?.email || user?.email || '';
-
-  const emit = (step, message, extra = {}) =>
-    emitUnsubscribeStatus(userId, { messageId, senderName, step, message, ...extra });
-
-  // `failed` is the retryable outcome, and the contract says it is auto-retried
-  // once before the user ever sees it. So the first failure is swallowed here.
-  // `no_link` and `needs_you` are not retried: they are standing facts about
-  // their page, and running at them again would only be wrong twice.
-  const runTwiceIfItFails = async (attempt) => {
-    let result = await attempt();
-    if (result.step !== 'failed') return result;
-
-    console.warn(`[unsubscribe] first attempt failed for ${senderName}, retrying once`);
-    emit('navigating', 'Trying that again', { evidence: `retry after: ${result.evidence ?? 'no detail'}` });
-    return attempt();
-  };
-
-  // Handle mailto: unsubscribe (send an email, no browser needed)
-  if (unsubscribeUrl.startsWith('mailto:')) {
-    const sendUnsubscribeMail = async () => {
-      emit('navigating', 'Sending the mail they ask for');
-      try {
-        const accessToken = requestAccessToken || await userStore.getValidAccessToken(userId);
-        const mailto = new URL(unsubscribeUrl);
-        const to     = mailto.pathname;
-        const subject = mailto.searchParams.get('subject') ?? 'Unsubscribe';
-        const raw = [
-          `To: ${to}`,
-          `Subject: ${subject}`,
-          'Content-Type: text/plain',
-          '',
-          'Unsubscribe',
-        ].join('\r\n');
-        const encoded = Buffer.from(raw).toString('base64url');
-        const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-          method:  'POST',
-          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ raw: encoded }),
-        });
-        if (!gmailRes.ok) throw new Error(`gmail send failed (${gmailRes.status})`);
-        // There is no page to read back here, so the sentence says what was
-        // actually done and stops short of claiming they confirmed anything.
-        return { step: 'done', message: 'Sent it to their unsubscribe address', evidence: `mailto:${to}` };
-      } catch (err) {
-        console.error('[unsubscribe] mailto error:', err.message);
-        return { step: 'failed', message: null, evidence: describeUnsubscribeError(err) };
-      }
-    };
-
-    const result = await runTwiceIfItFails(sendUnsubscribeMail);
-    emit(result.step, result.message, { evidence: result.evidence ?? null });
-    return;
-  }
-
-  // Handle https: unsubscribe via Playwright
-  let browser;
+  res.json({ success: true, alreadyRunning: false, run: getUnsubscribeStatuses(userId).get(messageId) || null });
   try {
-    await ensurePlaywrightChromium();
-    const { chromium } = require('playwright');
-    browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-
-    const result = await runTwiceIfItFails(() =>
-      runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, openai, senderName })
-        .catch(err => {
-          console.error('[unsubscribe] agent error:', err.message);
-          return { step: 'failed', message: null, evidence: describeUnsubscribeError(err) };
-        }));
-
-    emit(result.step, result.message, { evidence: result.evidence ?? null });
+    if (worker.controller.signal.aborted) return;
+    const profile = await resolveUserProfile(req);
+    if (worker.controller.signal.aborted) return;
+    if (parsedURL.protocol === 'mailto:') {
+      await emit('navigating', 'Sending the request to the unsubscribe address');
+      const to = parsedURL.pathname;
+      const subject = parsedURL.searchParams.get('subject') || 'Unsubscribe';
+      if (!to || /[\r\n]/.test(to + subject)) throw new Error('Invalid unsubscribe address');
+      const token = profile?.token || await userStore.getValidAccessToken(userId);
+      if (worker.controller.signal.aborted) return;
+      const raw = [`To: ${to}`, `Subject: ${subject}`, 'Content-Type: text/plain; charset=utf-8', '', 'Unsubscribe'].join('\r\n');
+      const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+        method: 'POST', signal: worker.controller.signal,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ raw: Buffer.from(raw).toString('base64url') }),
+      });
+      if (!response.ok) throw new Error(`Unsubscribe request refused (${response.status})`);
+      await emit('done', 'Request sent. The sender has not confirmed removal.', {
+        outcome: 'request_sent', evidence: 'Gmail accepted the unsubscribe request email.',
+      });
+    } else {
+      await ensurePlaywrightChromium();
+      if (worker.controller.signal.aborted) return;
+      worker.browser = await require('playwright').chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+      if (worker.controller.signal.aborted) return;
+      const result = await runUnsubscribeAgent({ browser: worker.browser, unsubscribeUrl,
+        userEmail: profile?.profile?.email || user.email || '', openai, senderName,
+        emit: (step, message, extra) => { void emit(step, message, extra).catch(() => {}); },
+      });
+      if (!worker.controller.signal.aborted) await emit(result.step, result.message, {
+        evidence: result.evidence || null,
+        outcome: result.outcome || (result.step === 'done' ? 'sender_confirmed' : null),
+        handoffURL: result.handoffURL || ((result.step === 'needs_you' || result.step === 'no_link') ? safePageURL(unsubscribeUrl) : null),
+      });
+    }
   } catch (err) {
-    console.error('[unsubscribe] browser error:', err.message);
-    emit('failed', null, { evidence: describeUnsubscribeError(err) });
+    if (!worker.controller.signal.aborted) await emit('failed', null, {
+      // A lost response after a click/send is ambiguous. Never auto-retry a side effect.
+      outcome: 'outcome_unknown', evidence: describeUnsubscribeError(err), handoffURL: safePageURL(unsubscribeUrl),
+    }).catch(() => {});
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (worker.browser) await worker.browser.close().catch(() => {});
+    if (unsubscribeWorkers.get(userId)?.get(messageId) === worker) unsubscribeWorkers.get(userId).delete(messageId);
   }
+});
+
+app.get('/unsubscribe/runs', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const saved = await unsubscribeJournal.list(userId);
+    const current = new Map(saved.map(run => [run.messageId, run]));
+    for (const [id, run] of getUnsubscribeStatuses(userId)) current.set(id, run);
+    res.json({ runs: [...current.values()].map(run => reconciledStatus(run, unsubscribeWorkers.get(userId)?.has(run.messageId))) });
+  } catch { res.status(503).json({ error: 'Activity is temporarily unavailable' }); }
 });
 
 app.get('/unsubscribe/:messageId/status', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const run = getUnsubscribeStatuses(userId).get(req.params.messageId) || await unsubscribeJournal.get(userId, req.params.messageId);
+    if (!run) return res.status(404).json({ error: 'status not found' });
+    res.json(reconciledStatus(run, unsubscribeWorkers.get(userId)?.has(run.messageId)));
+  } catch { res.status(503).json({ error: 'Status unavailable' }); }
+});
 
-  const { messageId } = req.params;
-  const status = pruneUnsubscribeStatuses(userId).get(messageId);
-  if (!status) return res.status(404).json({ error: 'status not found' });
-
-  const { updatedAt, ...payload } = status;
-  res.json(payload);
+app.delete('/unsubscribe/:messageId/receipt', async (req, res) => {
+  const userId = await resolveUserId(req);
+  if (!userId) return res.status(401).json({ error: 'unauthorized' });
+  const id = req.params.messageId;
+  if (unsubscribeWorkers.get(userId)?.has(id)) return res.status(409).json({ error: 'Work is still running' });
+  try {
+    await unsubscribeWrites.get(`${userId}:${id}`)?.catch(() => {});
+    if (unsubscribeWorkers.get(userId)?.has(id)) return res.status(409).json({ error: 'Work is still running' });
+    const previous = getUnsubscribeStatuses(userId).get(id);
+    const expected = previous || await unsubscribeJournal.get(userId, id);
+    if (unsubscribeWorkers.get(userId)?.has(id)) return res.status(409).json({ error: 'Work is still running' });
+    if (expected && !await unsubscribeJournal.remove(userId, id, expected)) {
+      return res.status(409).json({ error: 'This task changed. Refresh activity before removing its receipt.' });
+    }
+    if (getUnsubscribeStatuses(userId).get(id) === previous) getUnsubscribeStatuses(userId).delete(id);
+    res.json({ success: true });
+  } catch { res.status(503).json({ error: 'Could not remove receipt' }); }
 });
 
 // ─── UI copy ──────────────────────────────────────────────────────────────
@@ -1729,8 +1800,11 @@ app.post('/discuss', async (req, res) => {
   const userId = await resolveUserId(req);
   if (!userId) return res.status(401).json({ error: 'unauthorized' });
 
-  const { messageId, question } = req.body;
-  if (!messageId || !question) return res.status(400).json({ error: 'messageId and question required' });
+  const { messageId, question, history } = req.body;
+  const { discussionHistory, discussionSource, discussionInput } = require('./discussionContext');
+  if (typeof messageId !== 'string' || typeof question !== 'string' || !question.trim() || question.length > 2000) {
+    return res.status(400).json({ error: 'A message and a question of 1–2000 characters are required' });
+  }
 
   try {
     const record = await messageStore.getMessage(userId, messageId);
@@ -1738,24 +1812,27 @@ app.post('/discuss', async (req, res) => {
 
     // The body is fetched fresh rather than stored: a question about an email
     // deserves the whole email, and we keep only enough to build the feed.
-    let body = record.snippet ?? '';
+    let plainText = null;
     try {
       const raw = await gmailSync.fetchFullMessage(userId, messageId);
-      body = cleanEmailForAI(raw).body?.plainText?.slice(0, 6000) || body;
+      const cleaned = cleanEmailForAI(raw);
+      plainText = cleaned.body?.plainText || cleaned.body?.htmlText;
     } catch (err) {
       console.warn('[discuss] body fetch failed, using snippet:', err.message);
     }
 
+    const source = discussionSource(plainText, record.snippet);
+    const prior = discussionHistory(history);
     const prompt = renderPrompt(PROMPTS.discussThread, {
       fromName: record.fromName ?? '', fromEmail: record.fromEmail ?? '',
       subject: record.subject ?? '', receivedAt: new Date(Number(record.internalDate)).toISOString(),
-      body,
+      body: source.body,
       quote: record.quote ?? '(none)', summary: record.summary ?? '(none)',
-      question: String(question).slice(0, 500),
+      question: 'The next user message contains the question.',
     });
 
-    const response = await openai.responses.create({ model: 'gpt-5', input: prompt });
-    res.json({ answer: response.output_text.trim() });
+    const response = await openai.responses.create({ model: 'gpt-5', input: discussionInput(prompt, prior, question) });
+    res.json({ answer: response.output_text.trim(), scope: { source: source.source, truncated: source.truncated, priorMessages: prior.length, attachmentsIncluded: false, emails: 1 } });
   } catch (err) {
     console.error('[discuss] error:', err.message);
     res.status(500).json({ error: 'discuss failed' });

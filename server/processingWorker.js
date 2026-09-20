@@ -3,6 +3,7 @@ const gmailSync       = require('./gmailSync');
 const { cleanEmailForAI } = require('./emailCleaner');
 const emailImage      = require('./emailImage');
 const emailAttachments = require('./emailAttachments');
+const accountAccess = require('./accountAccess');
 
 // Injected by index.js to avoid circular imports
 let _streamInterpretEmail     = null;
@@ -20,7 +21,8 @@ function init({ streamInterpretEmail, streamDecideActionSurface, detectRiskSigna
 }
 
 // Per-user active worker flag and wake-up mechanism
-const activeWorkers = new Map(); // userId → boolean
+const activeWorkers = new Map(); // userId → unique loop identity
+const workerJobs = new Map();
 const wakeCallbacks  = new Map(); // userId → () => void
 
 function wakeWorker(userId) {
@@ -32,7 +34,11 @@ function wakeWorker(userId) {
 }
 
 async function processNext(userId) {
+  const workSignal = accountAccess.signal(userId);
+  workSignal.throwIfAborted();
+  let pendingRisk = null;
   const messageId = await messageStore.getNextToProcess(userId);
+  workSignal.throwIfAborted();
   if (!messageId) return false;
 
   await messageStore.setAiStatus(userId, messageId, 'processing');
@@ -40,6 +46,7 @@ async function processNext(userId) {
 
   try {
     const rawMsg = await gmailSync.fetchFullMessage(userId, messageId, { priority: 0 });
+    workSignal.throwIfAborted();
     const email  = cleanEmailForAI(rawMsg);
 
     // The email's own picture, taken from the HTML we already have. Stored,
@@ -81,6 +88,7 @@ async function processNext(userId) {
     }
 
     // Save unsubscribe URL immediately — available before AI finishes
+    workSignal.throwIfAborted();
     if (email.unsubscribeUrl) {
       await messageStore.setUnsubscribeUrl(userId, messageId, email.unsubscribeUrl);
       _emitSSE(userId, { type: 'field-complete', messageId, field: 'unsubscribeUrl', value: email.unsubscribeUrl });
@@ -94,15 +102,18 @@ async function processNext(userId) {
     //
     // It never throws: a message the risk check could not reach still gets
     // its card, and still gets it without a POSSIBLE SCAM on it.
-    const riskVerdict = _detectRiskSignals(email, messageId, userId)
+    workSignal.throwIfAborted();
+    const riskVerdict = pendingRisk = _detectRiskSignals(email, messageId, userId)
       .catch(err => {
         console.warn(`[worker] risk detection failed on ${messageId}: ${err.message}`);
         return null;
       });
 
     await _streamInterpretEmail(email, messageId, userId);
+    workSignal.throwIfAborted();
     await _streamDecideActionSurface(email, messageId, userId);
     await riskVerdict;
+    workSignal.throwIfAborted();
 
     // Consolidate final AI fields from DB (set field-by-field during streaming)
     const record = await messageStore.getMessage(userId, messageId);
@@ -121,6 +132,7 @@ async function processNext(userId) {
       .catch(err => console.warn('[worker] push handoff failed:', err.message));
     console.log(`[worker] done: ${messageId} (user: ${userId.slice(0, 8)}…)`);
   } catch (err) {
+    if (workSignal.aborted) return false;
     console.error(`[worker] error on ${messageId}:`, err.message);
     // Counted, not just marked. A message that fails three times is failing
     // for its own reasons and must stop being re-queued; one that failed
@@ -128,16 +140,20 @@ async function processNext(userId) {
     // is fixed. Without the count those two are indistinguishable, and the
     // difference is whether a retry is free or is a paid model call on loop.
     await messageStore.failAttempt(userId, messageId);
+  } finally {
+    // A request already handed to the model may finish; disconnect does not
+    // confirm while that task is still outstanding.
+    if (pendingRisk) await pendingRisk;
   }
 
   return true;
 }
 
-async function workerLoop(userId) {
+async function workerLoop(userId, identity) {
   console.log(`[worker] loop started for user ${userId.slice(0, 8)}…`);
-  while (activeWorkers.get(userId)) {
+  while (activeWorkers.get(userId) === identity) {
     const processed = await processNext(userId);
-    if (!processed) {
+    if (!processed && activeWorkers.get(userId) === identity) {
       // Queue empty — idle, wake on new work or after 30s
       await new Promise(resolve => {
         const timer = setTimeout(resolve, 30_000);
@@ -151,17 +167,23 @@ async function workerLoop(userId) {
 }
 
 function startWorker(userId) {
+  if (accountAccess.signal(userId).aborted) return;
   if (activeWorkers.get(userId)) return;
-  activeWorkers.set(userId, true);
-  workerLoop(userId).catch(err => {
+  const identity = {};
+  activeWorkers.set(userId, identity);
+  const job = workerLoop(userId, identity).catch(err => {
     console.error(`[worker] loop crashed for ${userId.slice(0, 8)}…:`, err.message);
-    activeWorkers.delete(userId);
+    if (activeWorkers.get(userId) === identity) activeWorkers.delete(userId);
+  }).finally(() => {
+    if (workerJobs.get(userId) === job) workerJobs.delete(userId);
   });
+  workerJobs.set(userId, job);
 }
 
 function stopWorker(userId) {
   activeWorkers.delete(userId);
   wakeWorker(userId); // unblock any sleep
+  return workerJobs.get(userId) ?? Promise.resolve();
 }
 
 module.exports = { init, startWorker, stopWorker, wakeWorker };

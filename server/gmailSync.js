@@ -3,6 +3,7 @@ const messageStore = require('./messageStore');
 const { createUnreadBacklog } = require('./unreadBacklog');
 const { createGmailReadTransport, gmailReadError } = require('./gmailReadTransport');
 const gmailRead = createGmailReadTransport();
+const accountAccess = require('./accountAccess');
 
 function decodeHtmlEntities(text) {
   return text
@@ -52,7 +53,9 @@ function metadataToRecord(msg, postCutoff = false) {
 }
 
 async function authedFetch(userId, url, accessToken, options) {
-  return gmailRead(userId, url, accessToken, options);
+  accountAccess.assertActive(userId);
+  return gmailRead(userId, url, accessToken, { ...options,
+    signal: AbortSignal.any([accountAccess.signal(userId), options?.signal ?? AbortSignal.timeout(60000)]) });
 }
 
 async function fetchMailboxProfile(userId, accessToken) {
@@ -160,6 +163,7 @@ function initialSync(userId) {
 }
 async function runInitialSync(userId) {
   for (;;) {
+    accountAccess.assertActive(userId);
     const snapshot = await userStore.beginAllMailSync(userId);
     try {
       if (await importAllMail(userId, snapshot) === false) continue;
@@ -168,6 +172,7 @@ async function runInitialSync(userId) {
       // An expired-history recovery invalidated the snapshot while it ran.
       // The coalesced job owns the follow-up; no request is required to restart.
     } catch (error) {
+      accountAccess.assertActive(userId);
       if (!await userStore.setAllMailSyncState(userId, 'failed', { generation: snapshot.generation })) continue;
       if (error.status === 400) await userStore.setAllMailSyncState(userId, 'pending', { generation: snapshot.generation });
       throw error;

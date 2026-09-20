@@ -66,6 +66,7 @@ struct TapStyle: ButtonStyle {
 /// stand in here.
 struct InkToggle: View {
     @Binding var isOn: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Capsule()
@@ -81,13 +82,17 @@ struct InkToggle: View {
                     .frame(width: 20, height: 20)
                     .padding(3)
             }
+            .frame(minHeight: Metric.tapTarget)
             .contentShape(.rect)
-            .onTapGesture {
-                withAnimation(Move.crisp) { isOn.toggle() }
-            }
+            .onTapGesture { toggle() }
             .accessibilityElement()
+            .accessibilityAction { toggle() }
             .accessibilityAddTraits(.isToggle)
             .accessibilityValue(isOn ? "On" : "Off")
+    }
+
+    private func toggle() {
+        withAnimation(Move.resolved(Move.crisp, reduceMotion)) { isOn.toggle() }
     }
 }
 
@@ -131,7 +136,7 @@ struct PrimaryButton: View {
                 .padding(.vertical, Space.lg)
                 .background(enabled ? Ink.inverse : Ink.border, in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TapStyle())
         .disabled(!enabled)
     }
 }
@@ -151,7 +156,7 @@ struct GhostButton: View {
                 .padding(.vertical, Space.lg)
                 .overlay(Capsule().strokeBorder(Ink.primary, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TapStyle())
     }
 }
 

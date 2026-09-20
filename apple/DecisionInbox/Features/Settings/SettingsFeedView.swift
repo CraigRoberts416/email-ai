@@ -23,10 +23,10 @@ struct SettingsFeedView: View {
 
     var body: some View {
         SettingsScreen(title: "Feed", onBack: { dismiss() }) {
-            if store.mailboxes.count > 1 {
+            if !store.mailboxes.isEmpty {
                 SettingsGroup(
                     "MAILBOXES IN THIS FEED",
-                    caption: "Leaving one out hides its mail here. The mailbox stays connected, and nothing is deleted."
+                    caption: "These choices are saved on this device. Leaving a mailbox out hides its mail here; it stays connected and nothing is deleted."
                 )
                 Rule()
 
@@ -64,6 +64,7 @@ struct SettingsFeedView: View {
         .sheet(isPresented: $filtering) {
             MailboxFilterSheet()
                 .presentationDetents([.medium, .large])
+                .presentationSizing(.page)
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(.clear)
         }
@@ -84,12 +85,12 @@ struct SettingsFeedView: View {
 /// Full-bleed rows inside a sheet with no horizontal padding of its own, and a
 /// primary button whose label counts the live selection.
 ///
-/// Deselecting everything is refused rather than accepted: an empty filter set
-/// falls through to "show everything" downstream, so a button that said "Show
-/// these 0" would do the opposite of what it promised.
+/// An empty selection deliberately hides all mailboxes. It is the same policy
+/// as the single-account toggle; the feed explains how to restore a selection.
 struct MailboxFilterSheet: View {
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var chosen: Set<String> = []
     @State private var query = ""
@@ -103,13 +104,17 @@ struct MailboxFilterSheet: View {
                         .foregroundStyle(Ink.primary)
                     Spacer(minLength: Space.md)
                     Button("ALL") {
-                        withAnimation(Move.crisp) {
+                        withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
                             chosen = Set(store.mailboxes.map(\.id))
                         }
                     }
                     .typeStyle(Style.monoAction)
                     .foregroundStyle(Ink.primary)
                     .buttonStyle(.plain)
+                    .frame(minWidth: 44, minHeight: 44)
+                    Button("Cancel") { dismiss() }
+                        .frame(minHeight: 44)
+                        .keyboardShortcut(.cancelAction)
                 }
                 .padding(.horizontal, Metric.gutter)
                 .padding(.bottom, Space.sm)
@@ -147,7 +152,7 @@ struct MailboxFilterSheet: View {
                 }
                 .scrollIndicators(.hidden)
 
-                PrimaryButton(label: buttonLabel, enabled: !chosen.isEmpty) {
+                PrimaryButton(label: buttonLabel) {
                     for mailbox in store.mailboxes {
                         store.setIncluded(mailbox.id, chosen.contains(mailbox.id))
                     }
@@ -170,6 +175,7 @@ struct MailboxFilterSheet: View {
         .onAppear {
             chosen = Set(store.mailboxes.filter(\.includeInUnifiedFeed).map(\.id))
         }
+        .accessibilityAction(.escape) { dismiss() }
     }
 
     private var filtered: [Mailbox] {
@@ -181,13 +187,13 @@ struct MailboxFilterSheet: View {
     }
 
     private var buttonLabel: String {
-        if chosen.isEmpty { return "Pick at least one" }
+        if chosen.isEmpty { return "Hide all mailboxes" }
         if chosen.count == store.mailboxes.count { return "Show all \(chosen.count)" }
         return "Show these \(chosen.count)"
     }
 
     private func toggle(_ id: String) {
-        withAnimation(Move.crisp) {
+        withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
             if chosen.contains(id) { chosen.remove(id) } else { chosen.insert(id) }
         }
     }

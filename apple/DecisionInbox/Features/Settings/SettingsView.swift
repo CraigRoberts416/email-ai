@@ -12,6 +12,7 @@ import SwiftUI
 /// switch that does nothing is worse than no switch at all.
 struct SettingsView: View {
     @Environment(FeedStore.self) private var store
+    @Environment(\.scenePhase) private var scenePhase
     @State private var route: Route?
     @State private var notifications: NotificationState = .unknown
 
@@ -21,17 +22,18 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        SettingsScreen(title: "Settings") {
+        SettingsScreen(title: "Settings", showsActivity: true) {
             SettingsGroup("MAILBOXES")
             Rule()
             mailboxes
             ListRow(
-                title: "Add a mailbox",
+                title: store.auth.isConnecting ? "Connecting mailbox…" : "Add a mailbox",
                 subtitle: "NO LIMIT",
                 action: { Task { await store.add() } },
                 trailing: { RowArrow() }
             )
             .disabled(store.auth.isConnecting)
+            ConnectionFeedback(auth: store.auth)
             Rule()
 
             SettingsGroup("THE APP")
@@ -54,7 +56,7 @@ struct SettingsView: View {
             SettingsLink(title: "About", value: Self.version) { route = .about }
             Rule()
 
-            Text("Decision Inbox reads your mail so you don\u{2019}t have to. Nothing leaves it without you pressing something.")
+            Text("Connected mail is synced and interpreted on our server. Sending, archiving and unsubscribing begin with your action. Privacy and data explains what is stored.")
                 .typeStyle(Style.bodySmall)
                 .foregroundStyle(Ink.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -62,6 +64,9 @@ struct SettingsView: View {
                 .padding(.top, Space.xxl)
         }
         .task { notifications = await NotificationState.current() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { notifications = await NotificationState.current() } }
+        }
         .navigationDestination(item: $route) { route in
             switch route {
             case .mailboxes: MailboxesView()
@@ -126,10 +131,10 @@ struct SettingsView: View {
         return showing == total ? "ALL MAILBOXES" : "\(showing) OF \(total)"
     }
 
-    /// Receipts the unsubscribe agent has actually produced this session.
+    /// Attempts recorded for the connected mailboxes, regardless of outcome.
     private var sendersValue: String? {
         let runs = store.unsubscribes.count
-        return runs == 0 ? nil : "\(runs) UNSUBSCRIBED"
+        return runs == 0 ? nil : "\(runs) ATTEMPTS"
     }
 
     private static var version: String {

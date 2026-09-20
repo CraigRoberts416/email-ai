@@ -1,0 +1,56 @@
+# Onboarding and settings implementation
+
+September 19, 2026. Implements the approved whole-app review on `codex/app-interaction-craft`. The [onboarding/settings audit](audit-onboarding-settings-2026-09-19.md) remains a historical source review; this file records the resulting changes. The [main implementation record](interaction-implementation-2026-09-19.md) owns integrated native build, Simulator and final suite results.
+
+The relevant product contract is control over automation, trust through evidence and a calm native interface. The implementation uses existing SwiftUI typography, components and `Move` tokens. No animation runtime or generated asset was added to the app.
+
+## Delivered interaction
+
+| Surface | Result | Reason and tradeoff |
+|---|---|---|
+| Onboarding example | An explicitly synthetic email switches between original source and interpretation. Selected controls have accessibility semantics and 44-point targets; changes use restrained native motion with a reduced-motion alternative. | The distinction can be tried before connecting. It is an explanation, not fake personalization. |
+| Onboarding navigation | Scrollable, bounded-width content; provider and permission steps have Back. Connection distinguishes waiting for Google from finishing local credential setup, offers Cancel and explains a long wait. | Longer consent text remains reachable at large text sizes. It adds reading and explicit control rather than hiding the breadth of access. |
+| Consent | The primer names the broad Gmail scope, including permanent deletion capability. Optional Google contact-photo scopes are excluded by default and requested only with an explicit opt-in or later photo connection. | Photos become a separate choice. Existing grants can still be included by Google's incremental-consent flow; turning photo use off does not revoke that grant. |
+| Account identity | Reconnect supplies an account hint and validates the returned address before writing any credentials. OAuth callback state is validated; inability to start the system session resolves as an error. | Choosing the wrong Google account leaves the intended mailbox unchanged and explains the problem. |
+| Mailbox inclusion | Selection persists per account through cold launches. Every entry point permits all mailboxes to be hidden; the feed has a distinct no-selection state. The chooser has explicit Cancel and keyboard/accessibility escape. | Hiding every mailbox is intentional, not proof of an empty inbox. Inclusion affects the feed, not server syncing or notification eligibility. |
+| Tags | Values normalize to 2–4 letters/numbers; collisions and too-short input have feedback. Suggestions remain within the supported length, including a four-character collision such as HOME → HOM2. | A valid existing tag remains until a replacement passes validation. |
+| Destructive controls | Native confirmation dialogs include Cancel and the specific consequence. Disconnect stays on screen until the server confirms cleanup, with a retryable error when confirmation is unavailable. | This costs an explicit confirmation and a network wait; it avoids pretending that removing a row ends access. |
+| Notifications | Unknown, not asked, allowed, quiet, temporary and denied are distinct. The explicit Settings action requests first permission; normal launch only registers an existing grant. Alert/badge settings refresh on return, and device registration errors are visible. | Permission, registration and delivery are separate facts. Neither permission nor a successful server response proves an alert arrived. |
+| Privacy and export | Storage distinguishes seven-day feed cache from durable local work and retained server records. Contact-denial and limited-access states are visible. JSON export reports preparation, failure and share outcome, writes off the main actor and removes its own temporary file. | Export is the locally loaded subset, not a complete mailbox backup. Saved items, drafts, discussions and task history survive ordinary cache clearing. |
+| Activity access | Settings' custom title bar contains the shared Activity button, so hidden progress can be found again from this tab. | It uses the actual custom navigation shell; adding a native toolbar item to a hidden navigation bar would not make it reachable. |
+
+Primary native sources: `Features/Onboarding/OnboardingFlow.swift`, `Features/Settings`, `Services/AccountConnectionPolicy.swift`, `Services/AuthService.swift`, `Services/PushService.swift`, and the mailbox section of `Model/FeedStore.swift`. All are under `apple/DecisionInbox`. Unsubscribe receipt content and the shared Activity implementation are owned by the broader integration work.
+
+## Disconnect's exact contract
+
+The new authenticated `DELETE /auth/account` route establishes **stopped app/server access**, not deletion of the Gmail account, erasure of stored server mail, or revocation of the entire Google OAuth grant.
+
+1. A per-account lifecycle gate aborts this server process's Gmail work. Persisted access/refresh tokens, push token and watch expiry are cleared before optional provider cleanup. Other mailboxes remain active.
+2. Interpretation workers stop admitting stages/messages and drain already-submitted model work. Interrupted processing rows return to a retryable state. Unsubscribe cleanup aborts active jobs, closes browsers and removes that account's task records; events already submitted to an external service cannot be reversed.
+3. Gmail watch shutdown and detached-device badge correction are best effort. Failure there does not restore credentials. Critical database/worker cleanup failure returns an error instead of `disconnected: true`.
+4. Only after server confirmation does the device remove Keychain credentials, local feed cache, saved snapshots, drafts, discussions, send jobs and unsubscribe records for that mailbox. An unconfirmed response keeps the local account available for a safe retry. The server may already have stopped access when a response is lost.
+5. Repeated/overlapping disconnect requests are coalesced and safe to retry. Registration and disconnect serialize per account. A request that began before disconnect cannot reinstall credentials afterward; fresh explicit reconnection can. Late refresh results cannot repopulate a disconnected account.
+
+Server message records and their user row remain. This is disclosed in Mailbox detail and What we store. There is no new server-history deletion control or verified retention-period guarantee. Cancelling current work is scoped to a server process; a deployment with several concurrently serving processes would require coordination between them to interrupt work already holding credentials everywhere. Persistent credential deletion still blocks subsequent token acquisition.
+
+Relevant server sources: `server/accountAccess.js`, `server/accountDisconnect.js`, `server/userStore.js`, `server/processingWorker.js`, `server/gmailSync.js`, `server/watchManager.js`, and the registration/disconnect routes in `server/index.js`.
+
+## Verification and limits
+
+- **13 passed synthetic native policy checks:** optional scopes, expected-account matching, supported tag suggestions, independently persisted inclusion and all-hidden restoration. Test: `apple/tests/AccountConnectionPolicyTests.swift`.
+- **50 passed native API-client checks:** includes a real URLProtocol-controlled DELETE request with the selected account's bearer token, positive confirmation required, false confirmation rejected and server-failure propagation. Test: `apple/tests/APIClientTests.swift`; no request reaches a real account.
+- **9 passed disconnect tests:** real PGlite credential clearing/account isolation/mail retention, no late-token resurrection, idempotence, concurrent drain, optional-provider failure, required cleanup failure, authenticated identity and an actual processing worker paused between synthetic model stages. A further real-SQL race verifies that old registration cannot restore credentials and fresh reconnection waits for cleanup. Test: `server/tests/accountDisconnect.test.js`.
+- **2 passed provider-count cancellation checks:** caller cancellation and lifecycle cancellation compose without dropping the count request's deadline. Test: `server/tests/unreadCountProvider.test.js`.
+- **125 passed production FeedStore integration checks:** includes failed disconnect preserving local data, confirmed disconnect isolating removal to one account, People switching to the remaining mailbox and a delayed old response being rejected. Test: `apple/tests/run-feed-store-tests.sh`.
+- Related archive/history test dependency harnesses now load the new account gate. The final integrated server run passed all 162 tests, including the repaired same-millisecond unsubscribe-journal race; see the main implementation record.
+- Changed server files pass syntax checks and the shared worktree passes `git diff --check` at the time of this record. The parent integration task performs the native app build and synthetic Simulator review; these source/unit checks do not claim VoiceOver, device APNs or OAuth UI verification.
+
+No real account was connected/disconnected, no system permission was requested, no email or unsubscribe was sent, and no production deployment was performed during these checks. Physical-device delivery, Google consent UI, long-text/focus stress testing and model-provider retention/training policies remain separate verification work. Provider work already submitted before disconnect cannot be retroactively withdrawn.
+
+## Additional unsubscribe evidence correction
+
+The integration review found a false-success path in `server/unsubscribeAgent.js`: generic saved preferences, a success-looking URL or a conditional “no longer receive” sentence could produce sender confirmation before a form was submitted. The new pure `server/unsubscribeEvidence.js` requires an affirmative removal-specific statement in visible body text, preserving the entire sentence/line as receipt evidence. Actual one-click links can still complete on initial load when the sender explicitly confirms removal.
+
+Both text-model and vision `done` responses must carry an exact confirming quote. The finish boundary verifies it against the visible text and its context; it cannot accept a fabricated quote or extract a reassuring fragment from a conditional instruction. If evidence is insufficient, the app retains `needs_you` / `outcome_unknown` and a sender-page handoff. Clicking and then seeing only “preferences saved” also remains unknown.
+
+Seven synthetic tests in `server/tests/unsubscribeEvidence.test.js` pass. They cover affirmative statements, instruction/conditional/negative cases and future-tense pre-submit promises, URL/title-only claims, quote authenticity/context, and the production agent with fake browser/model transports. No browser contacts a sender and no model call leaves the test process. This deliberately conservative English text policy can route unusual phrasing, non-English confirmation or confirmation available only as pixels to a human check. That costs automation coverage in exchange for inspectable success evidence; no model-only success verdict bypasses it.

@@ -51,12 +51,13 @@ struct MailboxesView: View {
             SettingsGroup("ADD")
             Rule()
             ListRow(
-                title: "Add a mailbox",
+                title: store.auth.isConnecting ? "Connecting mailbox…" : "Add a mailbox",
                 subtitle: "NO LIMIT",
                 action: { Task { await store.add() } },
                 trailing: { RowArrow() }
             )
             .disabled(store.auth.isConnecting)
+            ConnectionFeedback(auth: store.auth)
             Rule()
 
             VStack(alignment: .leading, spacing: Space.sm) {

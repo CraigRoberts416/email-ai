@@ -50,7 +50,11 @@ struct MastheadAtmosphere: View {
     let weather: Weather
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.motionIsActive) private var motionIsActive
     @State private var drifting = false
+    @State private var visible = true
+    private var animating: Bool { !reduceMotion && motionIsActive && visible && scenePhase == .active }
 
     /// Position, size and travel for each wash, as fractions of the masthead
     /// box so this scales with Dynamic Type rather than drifting off it.
@@ -118,14 +122,21 @@ struct MastheadAtmosphere: View {
         // Intensity and tempo both change with state, so the transition
         // between them has to be slow enough not to read as a flicker when a
         // sync finishes.
-        .animation(.easeInOut(duration: 1.2), value: weather)
-        .onAppear { drifting = true }
+        .animation(reduceMotion ? Move.crossfade : .easeInOut(duration: 0.8), value: weather)
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
+        .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
+        .onChange(of: animating, initial: true) { _, active in
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = !active
+            withTransaction(transaction) { drifting = active }
+        }
     }
 
     /// Nil under Reduce Motion, which leaves the washes at their resting
     /// positions — still a composition, just a still one.
     private func spec(period: Double) -> Animation? {
-        guard !reduceMotion else { return nil }
+        guard animating else { return nil }
         return .easeInOut(duration: period * weather.tempo).repeatForever(autoreverses: true)
     }
 }

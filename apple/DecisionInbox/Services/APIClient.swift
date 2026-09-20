@@ -282,6 +282,22 @@ struct APIClient {
         _ = try await send(path: "/auth/push-token", method: "DELETE", body: nil)
     }
 
+    /// Keep local credentials until the server confirms access has stopped.
+    /// The longer timeout permits already-started interpretation to drain.
+    func disconnectAccount() async throws {
+        var request = URLRequest(url: baseURL.appending(path: "/auth/account"))
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 60
+        request.setValue("Bearer \(try await auth.validAccessToken(for: accountID))", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw APIError.transport }
+        guard (200..<300).contains(http.statusCode) else {
+            throw http.statusCode == 401 ? APIError.unauthorized : APIError.server(http.statusCode)
+        }
+        struct Result: Decodable { let disconnected: Bool }
+        guard try JSONDecoder().decode(Result.self, from: data).disconnected else { throw APIError.transport }
+    }
+
     @discardableResult func markRead(_ messageID: String) async throws -> Bool? {
         let data = try await send(path: "/messages/\(Self.pathComponent(messageID))/read", method: "PATCH", body: nil)
         struct Result: Decodable { let wasUnread: Bool? }
@@ -339,13 +355,30 @@ struct APIClient {
     /// Asks the model about one specific email. The body is fetched server-side
     /// rather than sent from here — the device has a snippet, and a question
     /// about an email deserves the whole email.
+    struct DiscussionInput: Codable { let role: String; let content: String }
+    struct DiscussionAnswer: Decodable {
+        let answer: String
+        let scope: Scope?
+        struct Scope: Decodable {
+            let source: String
+            let truncated: Bool
+            let priorMessages: Int
+            var description: String {
+                "One email · " + (source == "snippet" ? "snippet only" : (truncated ? "body excerpt" : "email body"))
+                    + " · attachments not read · \(priorMessages) prior discussion messages"
+            }
+        }
+    }
+
     func discuss(messageID: String, question: String) async throws -> String {
-        let body = try JSONSerialization.data(withJSONObject: [
-            "messageId": messageID, "question": question,
-        ])
+        try await discussWithContext(messageID: messageID, question: question, history: []).answer
+    }
+
+    func discussWithContext(messageID: String, question: String, history: [DiscussionInput]) async throws -> DiscussionAnswer {
+        struct Request: Encodable { let messageId: String; let question: String; let history: [DiscussionInput] }
+        let body = try JSONEncoder().encode(Request(messageId: messageID, question: question, history: history))
         let data = try await send(path: "/discuss", method: "POST", body: body)
-        struct Answer: Decodable { let answer: String }
-        return try JSONDecoder().decode(Answer.self, from: data).answer
+        return try JSONDecoder().decode(DiscussionAnswer.self, from: data)
     }
 
     /// A reply the model drafted. Offered to the composer, never inserted —
@@ -358,12 +391,29 @@ struct APIClient {
         return try JSONDecoder().decode(Draft.self, from: data).draft
     }
 
-    /// Kicks off the headless-browser agent. Progress arrives over SSE, not here.
-    func unsubscribe(messageID: String, url: String, senderName: String) async throws {
-        let body = try JSONSerialization.data(withJSONObject: [
-            "messageId": messageID, "unsubscribeUrl": url, "senderName": senderName,
-        ])
-        _ = try await send(path: "/unsubscribe", method: "POST", body: body)
+    struct UnsubscribeAcknowledgement: Decodable {
+        let run: UnsubscribeRun?
+        let alreadyRunning: Bool?
+    }
+
+    /// The acknowledgement identifies the accepted task, which can be an
+    /// existing attempt from another session. Progress continues over SSE.
+    func unsubscribe(messageID: String, url: String, senderName: String, attemptID: String? = nil) async throws -> UnsubscribeAcknowledgement {
+        var payload = ["messageId": messageID, "unsubscribeUrl": url, "senderName": senderName]
+        if let attemptID { payload["attemptId"] = attemptID }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let data = try await send(path: "/unsubscribe", method: "POST", body: body)
+        return try JSONDecoder().decode(UnsubscribeAcknowledgement.self, from: data)
+    }
+
+    func unsubscribeRuns() async throws -> [UnsubscribeRun] {
+        let data = try await send(path: "/unsubscribe/runs", method: "GET", body: nil)
+        struct Response: Decodable { let runs: [UnsubscribeRun] }
+        return try JSONDecoder().decode(Response.self, from: data).runs
+    }
+
+    func removeUnsubscribeReceipt(messageID: String) async throws {
+        _ = try await send(path: "/unsubscribe/\(Self.pathComponent(messageID))/receipt", method: "DELETE", body: nil)
     }
 
     /// Hands the server a refresh token so it can sync in the background and

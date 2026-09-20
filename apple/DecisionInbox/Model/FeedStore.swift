@@ -15,6 +15,10 @@ final class FeedStore {
     var mailboxes: [Mailbox] = []
     var messages: [Message] = []
     private var retained: [Message] = []
+    private var savedRecords: [String: Message] = [:]
+    private var offlineMailboxes: Set<String> = []
+    private var supplementalRefresh: Task<Void, Never>?
+    private var confirmedUnsubscribeAttempts: Set<String> = []
     var condition: FeedCondition = .normal
     var showOldPosts = UserDefaults.standard.object(forKey: "feed.showOldPosts") as? Bool ?? true {
         didSet { UserDefaults.standard.set(showOldPosts, forKey: "feed.showOldPosts") }
@@ -267,7 +271,7 @@ final class FeedStore {
     /// Record proven passes synchronously. The view only measures gestures;
     /// the store owns their delivery, independent of the visible screen.
     func recordSeen(_ messages: [Message]) {
-        for message in messages where !message.isRead && !hasSeen(message) {
+        for message in messages where canUseMailbox(message.mailboxID) && !message.isRead && !hasSeen(message) {
             recordedReads[message.feedKey] = FeedReadIntent(message)
             failedSeen.removeValue(forKey: message.feedKey)
         }
@@ -282,7 +286,7 @@ final class FeedStore {
         readDrain = Task { @MainActor in
             while let intent = recordedReads.values.sorted(by: { $0.receivedAt > $1.receivedAt }).first(where: { intent in
                 failedSeen[intent.key] == nil && !markingSeen.contains(intent.key)
-                    && (isSample || auth.accounts.contains { $0.id == intent.mailboxID })
+                    && canUseMailbox(intent.mailboxID)
             }) {
                 await markSeen(intent)
             }
@@ -295,7 +299,7 @@ final class FeedStore {
 
     private func markSeen(_ intent: FeedReadIntent) async {
         let key = intent.key, accountID = intent.mailboxID
-        guard isSample || auth.accounts.contains(where: { $0.id == accountID }) else { return }
+        guard canUseMailbox(accountID) else { return }
         guard !seenKeys.contains(key), markingSeen.insert(key).inserted else { return }
         recordedReads[key] = intent
         failedSeen.removeValue(forKey: key)
@@ -306,7 +310,7 @@ final class FeedStore {
             let wasUnread: Bool?
             if isSample { wasUnread = true } else { wasUnread = try await client(accountID).markRead(intent.id) }
             markingSeen.remove(key)
-            guard isSample || auth.accounts.contains(where: { $0.id == accountID }) else { return }
+            guard canUseMailbox(accountID) else { return }
             readVersions[key, default: 0] += 1
             mailboxVersions[accountID, default: 0] += 1
             confirmRead(intent, decrement: wasUnread == true)
@@ -318,7 +322,7 @@ final class FeedStore {
             readVersions[key, default: 0] += 1
             markingSeen.remove(key)
             if seenKeys.contains(key) { failedSeen.removeValue(forKey: key); return }
-            guard isSample || auth.accounts.contains(where: { $0.id == accountID }) else { return }
+            guard canUseMailbox(accountID) else { return }
             // Keep the intent on disk for retry, but restore its displayed count.
             failedSeen[key] = intent
             if let held = retained.first(where: { $0.feedKey == key }), !messages.contains(where: { $0.feedKey == key }) {
@@ -428,10 +432,28 @@ final class FeedStore {
 
     /// Live unsubscribe runs, keyed by message. The enum is fixed; the sentence
     /// is written by the model each step, so the UI shows what it is told.
-    var unsubscribes: [String: SSEClient.UnsubscribeStatus] = [:]
+    var unsubscribes: [String: SSEClient.UnsubscribeStatus] = [:] {
+        didSet { if !isSample { InteractionArchive.saveRuns(unsubscribes) } }
+    }
+    var isActivityTrayVisible = false
+    var activityPresented = false
+    var activitySyncFailure: String?
+    private var unsubscribeRequestsInFlight: Set<String> = []
+    var unsubscribeRuns: [UnsubscribeRun] {
+        unsubscribes.values.sorted { $0.date > $1.date }
+    }
 
-    /// P5 — the action receipt. One at a time; a new one replaces the old.
-    var receipt: Receipt?
+    /// Each action owns its receipt. Hiding a surface never cancels its work.
+    var receipts: [Receipt] = []
+    var receipt: Receipt? {
+        get { receipts.last }
+        set {
+            guard let value = newValue else { if !receipts.isEmpty { receipts.removeLast() }; return }
+            if let index = receipts.firstIndex(where: { $0.id == value.id }) { receipts[index] = value }
+            else { receipts.append(value) }
+            isActivityTrayVisible = true
+        }
+    }
 
     /// Mail from people, grouped by who is in it. Loaded separately from the
     /// feed because it answers a different question — the feed asks what
@@ -479,21 +501,27 @@ final class FeedStore {
 
     struct Receipt: Identifiable {
         enum Undo {
-            case send
+            case send(UUID)
             case archive(Message, Int)
         }
-        let id = UUID()
+        let id: UUID
         var message: String
         var detail: String?
         var undo: Undo?
+        init(id: UUID = UUID(), message: String, detail: String? = nil, undo: Undo? = nil) {
+            self.id = id; self.message = message; self.detail = detail; self.undo = undo
+        }
     }
 
     let auth: AuthService
     private var streams: [String: SSEClient] = [:]
     private var loaded: Set<String> = []
     private var syncing: Set<String> = []
-    private var outgoing: Task<Void, Never>?
+    private var outgoing: [UUID: Task<Void, Never>] = [:]
+    var sendJobs: [UUID: SendJob] = MailDraftStore.recoveredJobs()
     private var archiving: [String: Task<Void, Never>] = [:]
+    private var archiveUndoable: Set<String> = []
+    private var archiveReceiptIDs: [String: UUID] = [:]
     private var reconcile: [String: Task<Void, Never>] = [:]
 
     init(auth: AuthService) {
@@ -504,6 +532,18 @@ final class FeedStore {
            let saved = try? JSONDecoder().decode([String: FeedReadIntent].self, from: data) {
             recordedReads = saved.filter { entry in auth.accounts.contains { $0.id == entry.value.mailboxID } }
         }
+        let accountIDs = Set(auth.accounts.map(\.id))
+        savedRecords = Dictionary(InteractionArchive.saved().filter { accountIDs.contains($0.mailboxID) }
+            .map { ($0.mailboxID + ":" + $0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        unsubscribes = InteractionArchive.runs().filter { accountIDs.contains($0.value.mailboxID ?? "") }.mapValues { stored in
+            var run = stored
+            if !run.isTerminal && run.runId == nil {
+                run.status = "unknown"; run.outcome = "outcome_unknown"
+                run.message = "The app closed before this attempt was acknowledged. Refresh status or check the sender’s page."
+            }
+            return run
+        }
+        isActivityTrayVisible = unsubscribes.values.contains { !$0.isTerminal || $0.needsAttention }
         var restored: [Message] = []
         for account in auth.accounts {
             guard let cached = FeedCache.load(for: account.id) else { continue }
@@ -514,6 +554,7 @@ final class FeedStore {
         messages = restored.filter { keys.insert(seenKey($0)).inserted }
             .map { message in
                 var message = message
+                message.isSaved = savedRecords[seenKey(message)] != nil
                 if seenKeys.contains(seenKey(message)) { message.isRead = true }
                 return message
             }
@@ -547,6 +588,10 @@ final class FeedStore {
         session.restart(with: messages)
     }
 
+    private func canUseMailbox(_ accountID: String) -> Bool {
+        isSample || (auth.accounts.contains { $0.id == accountID } && !disconnectingMailboxes.contains(accountID))
+    }
+
     private func client(_ accountID: String) -> APIClient {
         APIClient(auth: auth, accountID: accountID, timeZone: session.timeZone)
     }
@@ -577,10 +622,9 @@ final class FeedStore {
         conversationsSyncState = "pending"
         conversationsLoading = false
         conversationsFailure = nil
-        unsubscribes.removeAll()
+        // Saved items and task records are explicit user work, not feed cache.
         recap = nil
         tally = Tally()
-        receipt = nil
         failedSeen.removeAll()
         seenFailure = nil
         loadFailure = nil
@@ -595,7 +639,9 @@ final class FeedStore {
 
     // MARK: Derived
 
-    var saved: [Message] { (messages + retained).filter(\.isSaved) }
+    var saved: [Message] {
+        savedRecords.values.map { currentVersion(of: $0) }.sorted { $0.receivedAt > $1.receivedAt }
+    }
 
     var needsReconnect: [Mailbox] { mailboxes.filter { !$0.isHealthy } }
 
@@ -651,7 +697,7 @@ final class FeedStore {
         failedSeen.removeAll()
         drainRecordedReads()
         await withTaskGroup(of: Void.self) { group in
-            for account in auth.accounts where !loaded.contains(account.id) {
+            for account in auth.accounts where !loaded.contains(account.id) && !disconnectingMailboxes.contains(account.id) {
                 loaded.insert(account.id)
                 group.addTask { await self.bring(up: account.id) }
             }
@@ -659,6 +705,7 @@ final class FeedStore {
     }
 
     private func bring(up accountID: String) async {
+        guard auth.accounts.contains(where: { $0.id == accountID }), !disconnectingMailboxes.contains(accountID) else { return }
         #if DEBUG
         print("[feed] starting mailbox")
         #endif
@@ -686,6 +733,7 @@ final class FeedStore {
         // while the app is closed. It also kicks off the first backlog pull,
         // so it has to happen before the feed is worth reading.
         try? await client(accountID).register()
+        guard auth.accounts.contains(where: { $0.id == accountID }), !disconnectingMailboxes.contains(accountID) else { return }
         #if DEBUG
         print("[feed] registration finished")
         #endif
@@ -699,6 +747,7 @@ final class FeedStore {
         }
 
         await load(accountID, admitDirectly: true)
+        Task { await self.refreshUnsubscribeActivity() }
         await settle(accountID)
     }
 
@@ -717,6 +766,7 @@ final class FeedStore {
         guard messages.isEmpty else { return }
 
         for delay in [2, 3, 5, 8, 12, 20, 30] {
+            guard feedFailures[accountID] == nil, !feedEndVerified else { return }
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             await load(accountID, admitDirectly: true)
@@ -726,7 +776,7 @@ final class FeedStore {
 
     /// True while a mailbox is doing its first sync and has produced nothing
     /// yet. The distinction the feed has to draw is "not yet" versus "none".
-    var isFirstSync: Bool { !syncing.isEmpty && messages.isEmpty }
+    var isFirstSync: Bool { !syncing.isEmpty && messages.isEmpty && loadFailure == nil }
 
     /// Why the last fetch failed, if it did. "Nothing waiting" is a claim
     /// about someone's mailbox, and the app must never make it on the strength
@@ -742,7 +792,7 @@ final class FeedStore {
     /// is the app narrating its own plumbing.
     func loadConversations(preservingLoaded: Bool = false) async {
         guard !isSample else { conversationsLoaded = true; conversationsHistoryComplete = true; return }
-        guard let account = auth.accounts.first else { return }
+        guard let account = auth.accounts.first, canUseMailbox(account.id) else { return }
         guard !preservingLoaded || !conversationsLoading else { return }
         let version = cacheVersion
         let requestID = UUID()
@@ -755,7 +805,8 @@ final class FeedStore {
         }
         do {
             let page = try await client(account.id).conversationsPage()
-            guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID else { return }
+            guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID,
+                  auth.accounts.first?.id == account.id, canUseMailbox(account.id) else { return }
             let incoming = page.conversations.map(Self.conversation(from:))
             if (preservingLoaded || page.historyComplete != true)
                 && !(page.historyComplete == true && page.totalConversations == 0) {
@@ -784,14 +835,15 @@ final class FeedStore {
             conversationsFailure = nil
             conversationsLoaded = true
         } catch {
-            guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID else { return }
+            guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID,
+                  auth.accounts.first?.id == account.id, canUseMailbox(account.id) else { return }
             conversationsFailure = "Couldn’t refresh conversations. Try again."
         }
     }
 
     func loadMoreConversations() async {
         guard !isSample, !conversationsLoading, let startingCursor = conversationsNextCursor,
-              let account = auth.accounts.first else { return }
+              let account = auth.accounts.first, canUseMailbox(account.id) else { return }
         let version = cacheVersion
         let requestID = conversationsRequestID
         conversationsLoading = true
@@ -802,7 +854,8 @@ final class FeedStore {
             // duplicate-only pages automatically, retaining a retryable cursor.
             for _ in 0..<20 {
                 let page = try await client(account.id).conversationsPage(cursor: cursor)
-                guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID else { return }
+                guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID,
+                  auth.accounts.first?.id == account.id, canUseMailbox(account.id) else { return }
                 let existing = Set(conversations.map(\.id))
                 let fresh = page.conversations.map(Self.conversation(from:)).filter { !existing.contains($0.id) }
                 conversations.append(contentsOf: fresh)
@@ -817,7 +870,8 @@ final class FeedStore {
                 cursor = next
             }
         } catch {
-            guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID else { return }
+            guard !Task.isCancelled, version == cacheVersion, conversationsRequestID == requestID,
+                  auth.accounts.first?.id == account.id, canUseMailbox(account.id) else { return }
             conversationsFailure = "Couldn’t load older conversations. Try again."
         }
     }
@@ -883,7 +937,7 @@ final class FeedStore {
         guard let account = auth.accounts.first else { throw AuthError.signedOut }
         let version = cacheVersion
         let page = try await client(account.id).conversationMessagesPage(conversation.id, cursor: cursor)
-        guard version == cacheVersion else { throw CancellationError() }
+        guard version == cacheVersion, auth.accounts.first?.id == account.id, canUseMailbox(account.id) else { throw CancellationError() }
         // Keep the newest page for the next first frame. Loading older mail
         // never replaces that useful cached page with the oldest one visited.
         if cursor == nil { FeedCache.saveMessages(page.messages, account: account.id, conversation: conversation.id) }
@@ -944,7 +998,11 @@ final class FeedStore {
                 group.addTask { await self.load(account.id, admitDirectly: false) }
             }
         }
-        await loadRecap()
+        supplementalRefresh?.cancel()
+        supplementalRefresh = Task { [weak self] in
+            guard let self else { return }
+            await loadRecap()
+        }
         await refreshUnreadBadge()
     }
 
@@ -968,7 +1026,7 @@ final class FeedStore {
         guard !loaded.isEmpty else { return await start() }
 
         await withTaskGroup(of: Void.self) { group in
-            for accountID in loaded {
+            for accountID in loaded where !disconnectingMailboxes.contains(accountID) {
                 group.addTask { await self.reopen(accountID) }
             }
         }
@@ -977,7 +1035,9 @@ final class FeedStore {
 
     /// Replaces one mailbox's event stream with a live one.
     private func reopen(_ accountID: String) async {
+        guard auth.accounts.contains(where: { $0.id == accountID }), !disconnectingMailboxes.contains(accountID) else { return }
         await streams[accountID]?.disconnect()
+        guard auth.accounts.contains(where: { $0.id == accountID }), !disconnectingMailboxes.contains(accountID) else { return }
         let stream = SSEClient(baseURL: client(accountID).baseURL, auth: auth, accountID: accountID)
         streams[accountID] = stream
         await stream.connect { [weak self] event in
@@ -988,7 +1048,7 @@ final class FeedStore {
     /// Pulls one mailbox's feed and merges it in place, keeping every other
     /// mailbox's posts untouched.
     private func load(_ accountID: String, admitDirectly: Bool, cursor: String? = nil, expectedGeneration: Int? = nil, scheduleCountCheck: Bool = true) async {
-        guard !isSample, !Task.isCancelled else { return }
+        guard !isSample, !Task.isCancelled, !disconnectingMailboxes.contains(accountID) else { return }
         let generation = session.generation
         var pageTicket: FeedPaginationLifecycle.Ticket?
         if cursor != nil {
@@ -1016,14 +1076,14 @@ final class FeedStore {
             #endif
             guard !Task.isCancelled, feedVersions[accountID] == version,
                   generation == session.generation,
-                  auth.accounts.contains(where: { $0.id == accountID }) else { return }
+                  canUseMailbox(accountID) else { return }
             let existing = Dictionary((messages + pending + retained).map { (seenKey($0), $0) },
                                       uniquingKeysWith: { first, _ in first })
             let incoming = response.cards.map { card -> Message in
                 var updated = card.asMessage(mailboxID: accountID)
                 let key = seenKey(updated)
                 let previous = existing[key]
-                updated.isSaved = previous?.isSaved ?? false
+                updated.isSaved = savedRecords[key] != nil
                 updated.reaction = previous?.reaction
                 let readChanged = readsAtStart[key] != readVersions[key]
                     || markingAtStart.contains(key) || markingSeen.contains(key)
@@ -1089,20 +1149,21 @@ final class FeedStore {
             persistSeen()
             confirmedFeeds.insert(accountID)
             feedFailures.removeValue(forKey: accountID)
+            offlineMailboxes.remove(accountID)
             mark(accountID, healthy: true)
             lastSynced = .now
-            loadFailure = nil
+            loadFailure = feedingIDs.compactMap { feedFailures[$0] }.first
             if cursor == nil { FeedCache.save(response.cards, recap: recap, for: accountID) }
             revealAvailablePage()
             scheduleBadgeRefresh()
             if scheduleCountCheck && (!feedingIDs.isSubset(of: completeCounts) || remainingInFeed != knownEligibleUnread.count) { scheduleCountsRefresh() }
         } catch APIError.unauthorized, AuthError.signedOut {
-            guard feedVersions[accountID] == version else { return }
+            guard feedVersions[accountID] == version, canUseMailbox(accountID) else { return }
             mark(accountID, healthy: false, reason: "needs reconnecting")
             loadFailure = "That mailbox needs reconnecting."
             feedFailures[accountID] = loadFailure
         } catch {
-            guard !Task.isCancelled, feedVersions[accountID] == version else { return }
+            guard !Task.isCancelled, feedVersions[accountID] == version, canUseMailbox(accountID) else { return }
             #if DEBUG
             print("[feed] load failed: \(error.localizedDescription)")
             #endif
@@ -1110,7 +1171,7 @@ final class FeedStore {
             feedFailures[accountID] = loadFailure
             if cursor != nil { paginationFailure = "Couldn’t load older emails. Try again." }
             if let urlError = error as? URLError, Self.unresolved.contains(urlError.code) {
-                condition = .statusStrip(state: "OFFLINE", freshness: freshness)
+                offlineMailboxes.insert(accountID)
             }
         }
         resolveCondition()
@@ -1125,7 +1186,7 @@ final class FeedStore {
         let keys = activeMessages.map(seenKey)
         let cards = activeMessages.prefix(40).map(\.asRecapCard)
         let received = try? await client(first.id).sessionRecap(cards: cards, timeOfDay: timeOfDay)
-        if keys == activeMessages.map(seenKey), !session.hasInteracted { recap = received }
+        if !Task.isCancelled, canUseMailbox(first.id), keys == activeMessages.map(seenKey), !session.hasInteracted { recap = received }
     }
 
     func oldPosts(accountID: String, cursor: Int? = nil) async throws -> (posts: [Message], cursor: Int?) {
@@ -1133,6 +1194,7 @@ final class FeedStore {
             return ((messages + retained).filter { $0.mailboxID == accountID && ($0.isRead || hasSeen($0)) }, nil)
         }
         let response = try await client(accountID).allMail(cursor: cursor)
+        guard canUseMailbox(accountID) else { throw CancellationError() }
         return (response.cards.map { $0.asMessage(mailboxID: accountID) }
             .filter(\.isRead), response.nextCursor)
     }
@@ -1159,6 +1221,7 @@ final class FeedStore {
         if isSample { return APIClient.Body(plainText: message.snippet, htmlRaw: "") }
         let version = cacheVersion
         let body = try await client(message.mailboxID).body(of: message.id)
+        guard canUseMailbox(message.mailboxID) else { throw CancellationError() }
         if version == cacheVersion, !Task.isCancelled,
            auth.accounts.contains(where: { $0.id == message.mailboxID }) {
             FeedCache.saveBody(body, account: message.mailboxID, message: message.id)
@@ -1178,6 +1241,8 @@ final class FeedStore {
 
     // MARK: Mailboxes
 
+    private(set) var disconnectingMailboxes: Set<String> = []
+
     /// Mirrors the auth account list into feed-facing mailboxes, preserving
     /// per-mailbox preferences the user has already set.
     private func syncMailboxes() {
@@ -1189,7 +1254,7 @@ final class FeedStore {
             return Mailbox(
                 id: account.id, address: account.id, provider: "Gmail",
                 status: .active(lastSynced: .now), tag: account.tag,
-                includeInUnifiedFeed: true
+                includeInUnifiedFeed: AccountConnectionPolicy.included(account.id)
             )
         }
     }
@@ -1203,35 +1268,54 @@ final class FeedStore {
         await bring(up: account.id)
     }
 
-    func remove(_ mailboxID: String) {
-        Task {
-            // The account must still authenticate while unregistering its push
-            // token; otherwise a disconnected inbox keeps inflating the badge.
-            if !isSample { try? await client(mailboxID).unregisterPushToken() }
-            FeedCache.clear(for: mailboxID)
-            await streams[mailboxID]?.disconnect()
-            streams[mailboxID] = nil
-            loaded.remove(mailboxID)
-            messages.removeAll { $0.mailboxID == mailboxID }
-            pending.removeAll { $0.mailboxID == mailboxID }
-            retained.removeAll { $0.mailboxID == mailboxID }
-            failedSeen = failedSeen.filter { $0.value.mailboxID != mailboxID }
-            recordedReads = recordedReads.filter { $0.value.mailboxID != mailboxID }
-            persistRecordedReads()
-            confirmedFeeds.remove(mailboxID)
-            loadingFeeds.remove(mailboxID)
-            feedFailures.removeValue(forKey: mailboxID)
-            unreadCounts.removeValue(forKey: mailboxID)
-            sectionCounts.removeValue(forKey: mailboxID)
-            completeCounts.remove(mailboxID)
-            auth.disconnect(mailboxID)
-            SenderIdentityStore.shared.clearCache()
-            RemoteImageStore.shared.clearCache()
-            SenderIdentityStore.shared.remember(messages: messages + pending + retained)
-            syncMailboxes()
-            resolveCondition()
-            await refreshUnreadBadge()
+    func remove(_ mailboxID: String) async throws {
+        guard disconnectingMailboxes.insert(mailboxID).inserted else { throw APIError.transport }
+        defer { disconnectingMailboxes.remove(mailboxID); drainRecordedReads() }
+        // Keep local credentials available until server access shutdown is confirmed.
+        if !isSample { try await client(mailboxID).disconnectAccount() }
+        let removedPeopleAccount = auth.accounts.first?.id == mailboxID
+        auth.disconnect(mailboxID)
+        if removedPeopleAccount {
+            // The current People directory belongs to the first mailbox. Its
+            // pending response must not restore rows after that mailbox leaves.
+            conversationsRequestID = UUID()
+            conversations = []
+            conversationsLoaded = false
+            conversationsLoadedOlderPages = false
+            conversationsNextCursor = nil
+            conversationsTotal = nil
+            conversationsUnreadTotal = nil
+            conversationsHistoryComplete = false
+            conversationsSyncState = "pending"
+            conversationsLoading = false
+            conversationsFailure = nil
         }
+        removeLocalInteractions(for: mailboxID)
+        removeCommunicationData(for: mailboxID)
+        PushDeliveryStatus.shared.registeredAccounts.remove(mailboxID)
+        FeedCache.clear(for: mailboxID)
+        await streams[mailboxID]?.disconnect()
+        streams[mailboxID] = nil
+        loaded.remove(mailboxID)
+        messages.removeAll { $0.mailboxID == mailboxID }
+        pending.removeAll { $0.mailboxID == mailboxID }
+        retained.removeAll { $0.mailboxID == mailboxID }
+        failedSeen = failedSeen.filter { $0.value.mailboxID != mailboxID }
+        recordedReads = recordedReads.filter { $0.value.mailboxID != mailboxID }
+        persistRecordedReads()
+        confirmedFeeds.remove(mailboxID)
+        loadingFeeds.remove(mailboxID)
+        feedFailures.removeValue(forKey: mailboxID)
+        unreadCounts.removeValue(forKey: mailboxID)
+        sectionCounts.removeValue(forKey: mailboxID)
+        completeCounts.remove(mailboxID)
+        SenderIdentityStore.shared.clearCache()
+        RemoteImageStore.shared.clearCache()
+        SenderIdentityStore.shared.remember(messages: messages + pending + retained)
+        syncMailboxes()
+        resolveCondition()
+        if removedPeopleAccount && !auth.accounts.isEmpty { Task { await self.loadConversations() } }
+        await refreshUnreadBadge()
     }
 
     func rename(_ mailboxID: String, tag: String) {
@@ -1242,17 +1326,24 @@ final class FeedStore {
     func setIncluded(_ mailboxID: String, _ included: Bool) {
         guard let i = mailboxes.firstIndex(where: { $0.id == mailboxID }) else { return }
         mailboxes[i].includeInUnifiedFeed = included
+        if !isSample { AccountConnectionPolicy.setIncluded(included, accountID: mailboxID) }
         beginFeedSession()
     }
 
 
     /// Re-consent for one mailbox. Every other mailbox keeps working through it.
-    func reconnect(_ mailboxID: String? = nil) async {
+    func reconnect(_ mailboxID: String? = nil, includeGooglePhotos: Bool = false) async {
         guard !isSample else { return }
         let target = mailboxID ?? needsReconnect.first?.id ?? auth.accounts.first?.id
-        guard let target, await auth.connect() != nil else { return }
+        guard target.map({ !disconnectingMailboxes.contains($0) }) ?? false else { return }
+        guard let target, await auth.connect(expectedAccountID: target, includeGooglePhotos: includeGooglePhotos) != nil else { return }
+        guard auth.accounts.contains(where: { $0.id == target }), !disconnectingMailboxes.contains(target) else { return }
         syncMailboxes()
-        try? await client(target).register()
+        do { try await client(target).register() }
+        catch {
+            auth.lastError = "Google connected, but our server could not finish reconnecting. Try again when online."
+            return
+        }
         await load(target, admitDirectly: true)
     }
 
@@ -1270,7 +1361,11 @@ final class FeedStore {
     private func resolveCondition() {
         let broken = needsReconnect
         if broken.isEmpty {
-            condition = .normal
+            if !offlineMailboxes.isDisjoint(with: feedingIDs) {
+                condition = .statusStrip(state: "OFFLINE", freshness: freshness)
+            } else if feedingIDs.isEmpty && !mailboxes.isEmpty {
+                condition = .statusStrip(state: "NO MAILBOXES SELECTED", freshness: "Choose mailboxes in You → Feed")
+            } else { condition = .normal }
         } else if mailboxes.count == 1 {
             condition = .actionBar(message: "That mailbox needs reconnecting.", verb: "Reconnect")
         } else {
@@ -1303,6 +1398,7 @@ final class FeedStore {
     // MARK: Live events
 
     private func apply(_ event: SSEClient.Event, from accountID: String) {
+        guard canUseMailbox(accountID) else { return }
         switch event {
         case .messageAdded(let card):
             guard !(card.labelIds ?? []).contains(where: { $0 == "SPAM" || $0 == "TRASH" }) else { return }
@@ -1378,11 +1474,7 @@ final class FeedStore {
             found(mutate(id, accountID: accountID) { $0.isInterpreting = false; $0.reinterpret() }, else: accountID)
 
         case .unsubscribeStatus(let status):
-            unsubscribes[status.messageId] = status
-            if status.step == .done {
-                messages.removeAll { $0.id == status.messageId }
-                tally.unsubscribed += 1
-            }
+            receiveUnsubscribe(status, accountID: accountID)
         }
     }
 
@@ -1412,7 +1504,10 @@ final class FeedStore {
 
     /// Historical posts remain actionable without entering the unread feed.
     func currentVersion(of message: Message) -> Message {
-        (messages + pending + retained).first { seenKey($0) == seenKey(message) } ?? message
+        var current = (messages + pending + retained).first { seenKey($0) == seenKey(message) }
+            ?? savedRecords[seenKey(message)] ?? message
+        current.isSaved = savedRecords[seenKey(message)] != nil
+        return current
     }
 
     private func retainIfNeeded(_ message: Message) {
@@ -1447,6 +1542,10 @@ final class FeedStore {
     /// rather than at the top.
     func archive(_ message: Message) {
         let key = seenKey(message)
+        guard archiving[key] == nil, canUseMailbox(message.mailboxID) else { return }
+        let receiptID = UUID()
+        archiveReceiptIDs[key] = receiptID
+        archiveUndoable.insert(key)
         let index = session.cards.firstIndex { seenKey($0) == key } ?? -1
         let removed = currentVersion(of: message)
         session.remove(key)
@@ -1457,14 +1556,17 @@ final class FeedStore {
         archiving[key]?.cancel()
 
         receipt = Receipt(
-            message: "Archived.",
+            id: receiptID,
+            message: "Archive queued.",
             detail: removed.sender.displayName.uppercased(),
             undo: .archive(removed, index)
         )
 
         archiving[key] = Task {
-            try? await Task.sleep(for: .seconds(Move.undoWindow))
-            guard !Task.isCancelled else { return }
+            do { try await Task.sleep(for: .seconds(Move.undoWindow)) } catch { return }
+            guard !Task.isCancelled, canUseMailbox(removed.mailboxID) else { return }
+            archiveUndoable.remove(key)
+            updateReceipt(id: receiptID, message: "Archiving…", detail: removed.sender.displayName)
             readVersions[key, default: 0] += 1
             mailboxVersions[removed.mailboxID, default: 0] += 1
             markingSeen.insert(key)
@@ -1473,21 +1575,25 @@ final class FeedStore {
                 // Its SSE event and HTTP reply may arrive in either order;
                 // confirmRead applies the counter change just once.
                 let wasUnread = isSample ? true : try await client(removed.mailboxID).markRead(removed.id)
+                guard !Task.isCancelled, canUseMailbox(removed.mailboxID) else { return }
                 confirmRead(removed, decrement: wasUnread == true)
                 if wasUnread == nil { completeCounts.remove(removed.mailboxID) }
                 if !isSample {
                     try await GmailClient(auth: auth, accountID: removed.mailboxID).archive(messageID: removed.id)
                 }
+                guard !Task.isCancelled, canUseMailbox(removed.mailboxID) else { return }
                 tally.archived += 1
+                updateReceipt(id: receiptID, message: "Archived.", detail: removed.sender.displayName)
                 scheduleBadgeRefresh()
             } catch {
+                guard canUseMailbox(removed.mailboxID) else { return }
                 if index >= 0 {
                     let restored = currentVersion(of: removed)
                     messages.removeAll { seenKey($0) == key }
                     messages.insert(restored, at: min(index, messages.count))
                     session.restore(restored, at: index)
                 }
-                receipt = Receipt(message: "Couldn’t archive. Your post is still here.")
+                updateReceipt(id: receiptID, message: "Couldn’t confirm the archive. Your post is still here.", detail: removed.sender.displayName)
             }
             readVersions[key, default: 0] += 1
             mailboxVersions[removed.mailboxID, default: 0] += 1
@@ -1499,6 +1605,7 @@ final class FeedStore {
 
     func undoArchive(_ message: Message, at index: Int) {
         let key = seenKey(message)
+        guard canUseMailbox(message.mailboxID), archiveUndoable.remove(key) != nil else { return }
         archiving[key]?.cancel()
         archiving[key] = nil
         if index >= 0 {
@@ -1507,7 +1614,9 @@ final class FeedStore {
             messages.insert(message, at: min(index, messages.count))
             session.restore(message, at: index)
         }
-        receipt = nil
+        if let receiptID = archiveReceiptIDs.removeValue(forKey: key) {
+            updateReceipt(id: receiptID, message: "Kept in Feed.", detail: message.sender.displayName)
+        }
     }
 
     func markRead(_ message: Message) {
@@ -1518,7 +1627,7 @@ final class FeedStore {
     /// Marks a message with an emoji, or clears it. Nothing leaves the device.
     func react(_ message: Message, _ emoji: String?) {
         retainIfNeeded(message)
-        mutate(message.id) { $0.reaction = emoji }
+        mutate(message.id, accountID: message.mailboxID) { $0.reaction = emoji }
         // A reaction is an accepted value change, so it earns a cue — but only
         // on setting one. Clearing is a correction, and a correction that
         // announces itself as loudly as the decision reads as an error.
@@ -1531,44 +1640,182 @@ final class FeedStore {
     }
 
     func toggleSaved(_ message: Message) {
-        retainIfNeeded(message)
-        mutate(message.id) { $0.isSaved.toggle() }
-        if currentVersion(of: message).isSaved { tally.saved += 1 }
+        let key = seenKey(message)
+        let wasSaved = savedRecords[key] != nil
+        var current = currentVersion(of: message)
+        current.isSaved = !wasSaved
+        savedRecords[key] = wasSaved ? nil : current
+        retainIfNeeded(current)
+        mutate(message.id, accountID: message.mailboxID) { $0.isSaved = !wasSaved }
+        if !isSample { InteractionArchive.save(Array(savedRecords.values)) }
+        if !wasSaved { tally.saved += 1 }
+    }
+
+    func removeLocalInteractions(for accountID: String) {
+        for key in Array(archiving.keys) where key.hasPrefix(accountID + ":") {
+            archiving.removeValue(forKey: key)?.cancel()
+            archiveUndoable.remove(key)
+            if let receiptID = archiveReceiptIDs.removeValue(forKey: key) {
+                receipts.removeAll { $0.id == receiptID }
+            }
+            markingSeen.remove(key)
+        }
+        offlineMailboxes.remove(accountID)
+        savedRecords = savedRecords.filter { $0.value.mailboxID != accountID }
+        unsubscribes = unsubscribes.filter { $0.value.mailboxID != accountID }
+        InteractionArchive.save(Array(savedRecords.values))
     }
 
     func unsubscribe(from message: Message) {
         guard !isSample else { receipt = Receipt(message: "Connect a mailbox to unsubscribe."); return }
         guard let url = message.unsubscribeURL else { return }
-        // Seed the local status so the row reacts on tap rather than on the
-        // server's first event — the round trip is not the user's problem.
-        unsubscribes[message.id] = .init(
-            messageId: message.id,
-            senderName: message.sender.displayName,
-            status: "queued",
-            message: nil,
-            index: unsubscribes.count + 1,
-            total: unsubscribes.count + 1,
-            fieldIndex: nil, fieldTotal: nil
-        )
+        let key = seenKey(message)
+        if unsubscribes[key] != nil {
+            isActivityTrayVisible = true
+            activityPresented = true
+            return
+        }
+        let initial = UnsubscribeRun(messageId: message.id, senderName: message.sender.displayName,
+            status: "queued", message: nil, index: nil, total: nil, fieldIndex: nil, fieldTotal: nil,
+            mailboxID: message.mailboxID, attemptId: UUID().uuidString, updatedAt: Date.now.timeIntervalSince1970 * 1000,
+            sourceURL: url.absoluteString)
+        unsubscribes[key] = initial
+        isActivityTrayVisible = true
+        let intent = initial.attemptId!
+        unsubscribeRequestsInFlight.insert(intent)
         Task {
+            defer { unsubscribeRequestsInFlight.remove(intent) }
             do {
-                try await client(message.mailboxID).unsubscribe(
-                    messageID: message.id,
-                    url: url.absoluteString,
-                    senderName: message.sender.displayName
-                )
+                let acknowledgement = try await client(message.mailboxID).unsubscribe(messageID: message.id,
+                    url: url.absoluteString, senderName: message.sender.displayName, attemptID: intent)
+                acceptUnsubscribeAcknowledgement(acknowledgement, key: key, accountID: message.mailboxID, intent: intent)
+                unsubscribeRequestsInFlight.remove(intent)
+                await refreshUnsubscribeActivity()
             } catch {
-                Haptics.needsYou()
-                unsubscribes[message.id] = .init(
-                    messageId: message.id,
-                    senderName: message.sender.displayName,
-                    status: "failed",
-                    message: error.localizedDescription,
-                    index: unsubscribes[message.id]?.index,
-                    total: unsubscribes[message.id]?.total,
-                    fieldIndex: nil, fieldTotal: nil
-                )
+                // An HTTP response can be lost after the stream acknowledged work.
+                // Preserve that server evidence rather than replacing it with a guess.
+                guard let current = unsubscribes[key], current.attemptId == initial.attemptId,
+                      current.runId == nil else { return }
+                var failed = initial
+                failed.status = "failed"
+                failed.message = error.localizedDescription
+                // The request may have reached the server even if its answer did not.
+                failed.outcome = "outcome_unknown"
+                receiveUnsubscribe(failed, accountID: message.mailboxID)
             }
+        }
+    }
+
+    /// Only the direct POST response may authoritatively adopt a different
+    /// live attempt. General SSE/list updates retain the stale-attempt guard.
+    private func acceptUnsubscribeAcknowledgement(_ acknowledgement: APIClient.UnsubscribeAcknowledgement,
+                                                   key: String, accountID: String, intent: String) {
+        guard let current = unsubscribes[key], current.attemptId == intent,
+              let run = acknowledgement.run, run.messageId == current.messageId else { return }
+        guard run.attemptId == intent || acknowledgement.alreadyRunning == true else { return }
+        receiveUnsubscribe(run, accountID: accountID,
+                           adoptingPendingIntent: acknowledgement.alreadyRunning == true ? intent : nil)
+    }
+
+    func receiveUnsubscribe(_ incoming: UnsubscribeRun, accountID: String, adoptingPendingIntent: String? = nil) {
+        guard auth.accounts.contains(where: { $0.id == accountID }) || isSample else { return }
+        var run = incoming
+        run.mailboxID = accountID
+        let previous = unsubscribes[run.id]
+        if let expected = previous?.attemptId, expected != run.attemptId, previous?.runId == nil,
+           adoptingPendingIntent != expected { return }
+        if previous?.runId != nil, let oldTime = previous?.updatedAt, let newTime = run.updatedAt,
+           newTime < oldTime { return }
+        let previousAttempt = previous?.attemptId ?? previous?.runId
+        let sameAttempt = previousAttempt != nil && previousAttempt == (run.attemptId ?? run.runId)
+        if sameAttempt, previous?.runId != nil, previous?.isTerminal == true,
+           previous?.step != .unknown, !run.isTerminal { return }
+        run.sourceURL = run.sourceURL ?? previous?.sourceURL
+        run.handoffURL = run.handoffURL ?? (sameAttempt ? previous?.handoffURL : nil)
+        run.openedByUserAt = previous?.openedByUserAt
+        run.userReportedComplete = previous?.userReportedComplete
+        if !sameAttempt { run.userReportedComplete = nil; run.openedByUserAt = nil }
+        if run.updatedAt == nil { run.updatedAt = Date.now.timeIntervalSince1970 * 1000 }
+        if run.history == nil {
+            var history = sameAttempt ? (previous?.history ?? []) : []
+            if history.last?.status != run.status || history.last?.message != run.message {
+                history.append(.init(status: run.status, message: run.message, at: run.updatedAt!))
+            }
+            run.history = Array(history.suffix(40))
+        }
+        unsubscribes[run.id] = run
+        let attemptKey = run.id + ":" + (run.attemptId ?? run.runId ?? "legacy")
+        if run.isConfirmed && confirmedUnsubscribeAttempts.insert(attemptKey).inserted && previous?.isConfirmed != true {
+            tally.unsubscribed += 1
+        }
+    }
+
+    func refreshUnsubscribeActivity() async {
+        guard !isSample else { return }
+        var failures = false
+        for account in auth.accounts {
+            let beforeRefresh = unsubscribes
+            do {
+                let runs = try await client(account.id).unsubscribeRuns()
+                for run in runs { receiveUnsubscribe(run, accountID: account.id) }
+                let remoteIDs = Set(runs.map(\.messageId))
+                for (key, local) in Array(unsubscribes) where local.mailboxID == account.id && !local.isTerminal {
+                    guard !unsubscribeRequestsInFlight.contains(local.attemptId ?? ""),
+                          let observed = beforeRefresh[key],
+                          observed.attemptId == local.attemptId, observed.runId == local.runId,
+                          observed.updatedAt == local.updatedAt, observed.status == local.status else { continue }
+                    // A successful authoritative snapshot cannot leave a local
+                    // orphan claiming it is still working. No automatic retry.
+                    if local.runId == nil || !remoteIDs.contains(local.messageId) {
+                        var unknown = local
+                        unknown.status = "unknown"; unknown.outcome = "outcome_unknown"
+                        unknown.message = "The server could not confirm this attempt. Check the sender’s page before trying again."
+                        unsubscribes[key] = unknown
+                    }
+                }
+            } catch { failures = true }
+        }
+        activitySyncFailure = failures ? "Couldn’t refresh activity. Showing the last known status." : nil
+    }
+
+    func retryUnsubscribe(_ id: String) {
+        guard let previous = unsubscribes[id], previous.isTerminal,
+              let account = previous.mailboxID, let url = previous.sourceURL, !isSample else { return }
+        var queued = previous
+        queued.status = "queued"; queued.outcome = nil; queued.message = nil
+        queued.handoffURL = nil; queued.evidence = nil
+        queued.runId = nil; queued.attemptId = UUID().uuidString; queued.history = nil; queued.openedByUserAt = nil; queued.userReportedComplete = nil
+        queued.updatedAt = Date.now.timeIntervalSince1970 * 1000
+        unsubscribes[id] = queued
+        isActivityTrayVisible = true
+        let intent = queued.attemptId!
+        unsubscribeRequestsInFlight.insert(intent)
+        Task {
+            defer { unsubscribeRequestsInFlight.remove(intent) }
+            do {
+                let acknowledgement = try await client(account).unsubscribe(messageID: queued.messageId, url: url, senderName: queued.senderName ?? "Sender", attemptID: intent)
+                acceptUnsubscribeAcknowledgement(acknowledgement, key: id, accountID: account, intent: intent)
+                unsubscribeRequestsInFlight.remove(intent)
+                await refreshUnsubscribeActivity()
+            } catch {
+                guard let current = unsubscribes[id], current.attemptId == queued.attemptId,
+                      current.runId == nil else { return }
+                var unknown = queued
+                unknown.status = "failed"; unknown.outcome = "outcome_unknown"; unknown.message = error.localizedDescription
+                receiveUnsubscribe(unknown, accountID: account)
+            }
+        }
+    }
+
+    func openedUnsubscribePage(_ id: String) { unsubscribes[id]?.openedByUserAt = .now }
+    func markUnsubscribeComplete(_ id: String) { unsubscribes[id]?.userReportedComplete = true }
+    func removeUnsubscribeReceipt(_ id: String) {
+        guard let run = unsubscribes[id], run.isTerminal else { return }
+        unsubscribes[id] = nil
+        guard !isSample, let account = run.mailboxID else { return }
+        Task {
+            do { try await client(account).removeUnsubscribeReceipt(messageID: run.messageId) }
+            catch { receiveUnsubscribe(run, accountID: account); activitySyncFailure = "Couldn’t remove this receipt. Try again." }
         }
     }
 
@@ -1578,48 +1825,107 @@ final class FeedStore {
     // A dialog taxes everybody every time to catch the few who change their
     // mind; an undo charges nothing until you actually use it.
 
-    func queueSend(_ draft: GmailClient.Draft, from mailboxID: String? = nil) {
-        guard !isSample else { receipt = Receipt(message: "Connect a mailbox to send email."); return }
-        let from = mailboxID ?? auth.accounts.first?.id
-        guard let from else { return }
-        outgoing?.cancel()
-        receipt = Receipt(message: "Sending\u{2026}", detail: draft.to.first?.uppercased(), undo: .send)
-        outgoing = Task {
-            try? await Task.sleep(for: .seconds(Move.sendUndoWindow))
-            guard !Task.isCancelled else { return }
+    func discuss(question: String, about message: Message, history: [APIClient.DiscussionInput]) async throws -> APIClient.DiscussionAnswer {
+        try await client(message.mailboxID).discussWithContext(messageID: message.id, question: question, history: history)
+    }
+
+    @discardableResult
+    func queueSend(_ draft: GmailClient.Draft, from mailboxID: String? = nil, draftKey: String? = nil) -> UUID? {
+        guard !isSample else { receipt = Receipt(message: "Connect a mailbox to send email."); return nil }
+        guard let from = mailboxID ?? auth.accounts.first?.id,
+              auth.accounts.contains(where: { $0.id == from }) else { return nil }
+        let id = UUID()
+        let key = draftKey ?? "recovered:\(id.uuidString)"
+        sendJobs[id] = SendJob(id: id, mailboxID: from, draftKey: key, draft: draft, phase: .queued)
+        // Durable intent first. If the app closes, this becomes an editable
+        // held draft on launch, never an automatic background resend.
+        guard MailDraftStore.saveJobs(sendJobs) else {
+            sendJobs[id]?.phase = .held
+            sendJobs[id]?.detail = "Couldn’t save this send on the device. Keep this draft open and try again."
+            return nil
+        }
+        isActivityTrayVisible = true
+        MailDraftStore.removeDraft(key)
+        outgoing[id] = Task {
+            do { try await Task.sleep(for: .seconds(Move.sendUndoWindow)) }
+            catch { return }
+            guard !Task.isCancelled, sendJobs[id]?.phase == .queued else { return }
+            // The cancellation boundary is before provider submission. Once
+            // submitted, a cancelled request cannot promise that nothing sent.
+            sendJobs[id]?.phase = .sending
+            guard MailDraftStore.saveJobs(sendJobs) else {
+                sendJobs[id]?.phase = .held
+                sendJobs[id]?.detail = "Couldn’t record the send safely. Nothing was submitted."
+                outgoing.removeValue(forKey: id)
+                return
+            }
             do {
                 try await GmailClient(auth: auth, accountID: from).send(draft)
+                sendJobs[id]?.phase = .sent
+                sendJobs[id]?.detail = "Accepted by your mail provider."
                 tally.replied += 1
-                receipt = Receipt(message: "Sent.", detail: draft.to.first?.uppercased())
-            } catch let error as URLError where Self.unresolved.contains(error.code) {
-                // The request never came back. That is not the same as a
-                // refusal — the message may well be in their inbox already,
-                // and saying "didn't send" would send it twice.
+            } catch is URLError {
+                sendJobs[id]?.phase = .unknown
+                sendJobs[id]?.detail = "Check Sent mail before sending this draft again."
                 Haptics.needsYou()
-                receipt = Receipt(
-                    message: "We couldn\u{2019}t confirm that send.",
-                    detail: "CHECK YOUR SENT MAIL BEFORE WRITING IT AGAIN"
-                )
+            } catch is CancellationError {
+                sendJobs[id]?.phase = .unknown
+                sendJobs[id]?.detail = "Check Sent mail before sending this draft again."
             } catch {
-                // Gmail answered and refused. No retry offered: a duplicate
-                // send is worse than ambiguity.
+                sendJobs[id]?.phase = .failed
+                sendJobs[id]?.detail = "Your draft is kept. \(error.localizedDescription)"
                 Haptics.needsYou()
-                receipt = Receipt(
-                    message: "Gmail wouldn\u{2019}t take that one.",
-                    detail: error.localizedDescription.uppercased()
-                )
             }
-            outgoing = nil
+            MailDraftStore.saveJobs(sendJobs)
+            outgoing.removeValue(forKey: id)
         }
+        return id
     }
 
-    func undoSend() {
-        outgoing?.cancel()
-        outgoing = nil
-        receipt = Receipt(message: "Held. Nothing was sent.")
+    func undoSend(_ id: UUID) {
+        guard var job = sendJobs[id], job.canUndo else { return }
+        outgoing.removeValue(forKey: id)?.cancel()
+        job.phase = .held
+        job.detail = "Nothing was submitted. Your words are ready to edit."
+        sendJobs[id] = job
+        MailDraftStore.save(.init(id: job.draftKey, mailboxID: job.mailboxID, draft: job.draft))
+        MailDraftStore.saveJobs(sendJobs)
     }
 
-    func dismissReceipt() { receipt = nil }
+    func dismissSendJob(_ id: UUID) {
+        guard let job = sendJobs[id], !job.isRunning else { return }
+        if job.canEdit {
+            guard MailDraftStore.save(.init(id: "send:\(job.id)", mailboxID: job.mailboxID, draft: job.draft, requiresSentCheck: job.phase == .unknown)) else { return }
+        }
+        sendJobs.removeValue(forKey: id)
+        MailDraftStore.saveJobs(sendJobs)
+    }
+
+    func removeCommunicationData(for accountID: String) {
+        for job in Array(sendJobs.values) where job.mailboxID == accountID {
+            outgoing.removeValue(forKey: job.id)?.cancel()
+            sendJobs.removeValue(forKey: job.id)
+        }
+        MailDraftStore.remove(accountID: accountID)
+        DiscussionStore.remove(accountID: accountID)
+    }
+
+    func cancelQueuedSends() {
+        for job in Array(sendJobs.values) where job.canUndo { undoSend(job.id) }
+    }
+
+    var visibleSendJobs: [SendJob] {
+        let accounts = Set(auth.accounts.map(\.id))
+        return sendJobs.values.filter { accounts.contains($0.mailboxID) }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func dismissReceipt(id: UUID? = nil) {
+        guard let id = id ?? receipt?.id else { return }
+        receipts.removeAll { $0.id == id }
+    }
+    func updateReceipt(id: UUID, message: String, detail: String? = nil, undo: Receipt.Undo? = nil) {
+        receipt = Receipt(id: id, message: message, detail: detail, undo: undo)
+    }
 
     /// Admits the pending batch at the top. Called only from the new-posts pill.
     func admitPending() {

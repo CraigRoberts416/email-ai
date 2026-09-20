@@ -18,6 +18,7 @@ import UIKit
 struct SettingsScreen<Content: View>: View {
     let title: String
     var onBack: (() -> Void)?
+    var showsActivity = false
     @ViewBuilder var content: Content
 
     var body: some View {
@@ -26,7 +27,9 @@ struct SettingsScreen<Content: View>: View {
                 scroller.backNavigation(title: title, action: onBack)
             } else {
                 VStack(spacing: 0) {
-                    NavBar(title: title)
+                    NavBar(title: title) {
+                        if showsActivity { ActivityToolbarButton() }
+                    }
                     scroller
                 }
                 .toolbar(.hidden, for: .navigationBar)
@@ -95,6 +98,7 @@ struct SettingsGroup: View {
 /// a 44 × 26 control is under the 44pt minimum in one dimension, and hunting
 /// for it is not a skill anyone should need.
 struct SettingsToggle: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let title: String
     var subtitle: String?
     @Binding var isOn: Bool
@@ -103,7 +107,7 @@ struct SettingsToggle: View {
         ListRow(
             title: title,
             subtitle: subtitle,
-            action: { withAnimation(Move.crisp) { isOn.toggle() } },
+            action: { withAnimation(Move.resolved(Move.crisp, reduceMotion)) { isOn.toggle() } },
             trailing: {
                 InkToggle(isOn: $isOn)
                     .allowsHitTesting(false)
@@ -163,8 +167,8 @@ struct SettingsFact: View {
 /// The sentence underneath is set in sentence case, in body type, in ink — not
 /// in 10pt upper-case mono. It is the single most important line on the screen
 /// it appears on, and it was previously in the least readable treatment the
-/// product owns. Destructive rows step the title to medium and confirm on a
-/// second tap; there is no red anywhere, because weight is the signal.
+/// product owns. Destructive rows use the platform's confirmation dialog,
+/// including an explicit Cancel, so an old armed tap cannot commit later.
 struct ConsequenceRow: View {
     let title: String
     let sentence: String
@@ -177,16 +181,11 @@ struct ConsequenceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             Button {
-                guard confirmTitle != nil, !confirming else {
-                    confirming = false
-                    action()
-                    return
-                }
-                withAnimation(Move.crisp) { confirming = true }
+                if confirmTitle != nil { confirming = true } else { action() }
             } label: {
-                Text(confirming ? (confirmTitle ?? title) : title)
+                Text(title)
                     .typeStyle(destructive ? Style.sender : Style.bodyMedium)
-                    .foregroundStyle(confirming ? Ink.onInverse : Ink.primary)
+                    .foregroundStyle(Ink.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, Metric.gutter)
                     .padding(.top, Space.lg)
@@ -194,14 +193,18 @@ struct ConsequenceRow: View {
                     // control, and 24pt of air between them makes it read as
                     // unrelated fine print.
                     .padding(.bottom, 10)
-                    .background(confirming ? Ink.inverse : Ink.surface)
+                    .background(Ink.surface)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
             // The consequence travels with the control rather than sitting in
             // a separate element a VoiceOver user might never reach — and the
             // button stays a button, which combining the stack would undo.
-            .accessibilityHint(confirming ? "Confirms. \(sentence)" : sentence)
+            .accessibilityHint(sentence)
+            .confirmationDialog(title, isPresented: $confirming, titleVisibility: .visible) {
+                Button(confirmTitle ?? title, role: destructive ? .destructive : nil) { action() }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text(sentence) }
 
             Text(sentence)
                 .typeStyle(Style.bodySmall)
@@ -251,10 +254,31 @@ struct ExportFile: Identifiable {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let url: URL
+    var onCompletion: ((Bool, Error?) -> Void)?
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        controller.completionWithItemsHandler = { _, completed, _, error in
+            onCompletion?(completed, error)
+        }
+        return controller
     }
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+}
+
+/// Connection feedback is shared by Add, Reconnect and optional photo consent.
+struct ConnectionFeedback: View {
+    let auth: AuthService
+    var body: some View {
+        if auth.isConnecting {
+            SettingsParagraph(auth.connectionStage == .waitingForGoogle
+                ? "Continue in Google to finish connecting."
+                : "Checking the account and finishing the connection.")
+            SettingsLink(title: "Cancel connection", action: { auth.cancelConnection() })
+        } else if let error = auth.lastError {
+            SettingsParagraph(error)
+                .accessibilityLabel("Connection failed. \(error)")
+        }
+    }
 }

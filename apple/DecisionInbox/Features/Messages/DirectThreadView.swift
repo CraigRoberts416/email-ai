@@ -19,6 +19,11 @@ struct DirectThreadView: View {
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var outgoing: [SendJob] {
+        let mailbox = conversation.mailboxID ?? store.auth.accounts.first?.id ?? ""
+        return store.visibleSendJobs.filter { $0.draftKey == "people:\(mailbox):\(conversation.id)" }.reversed()
+    }
     @State private var messages: [ConversationMessage] = []
     @State private var seeded = false
     @State private var nextCursor: String?
@@ -113,7 +118,13 @@ struct DirectThreadView: View {
                         MessageGroup(group: group, showsSender: conversation.isGroup, opener: opener)
                             .padding(.top, index == 0 ? 0 : Space.md)
                     }
+                    ForEach(outgoing) { job in
+                        OutgoingMessageStatus(job: job)
+                            .padding(.top, Space.md)
+                            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                    }
                 }
+                .animation(Move.resolved(Move.settle, reduceMotion), value: outgoing.map(\.id))
                 .padding(.horizontal, Metric.gutter)
                 .padding(.top, Space.lg)
                 .padding(.bottom, Space.xl)
@@ -134,14 +145,15 @@ struct DirectThreadView: View {
             // the data was sitting right there.
             .defaultScrollAnchor(.bottom)
             .background(Ink.surface)
-            .toolbar { ToolbarItem(placement: .principal) { header } }
+            .toolbar {
+                ToolbarItem(placement: .principal) { header }
+                ToolbarItem(placement: .topBarTrailing) { ActivityToolbarButton() }
+            }
             // A bottom inset, not an overlay: the scroll view reserves the space,
             // so the last bubble can always be scrolled clear of the pill instead
             // of hiding under it forever.
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                ThreadComposer(conversation: conversation, replyingTo: messages.last) {
-                    Task { await refresh() }
-                }
+                ThreadComposer(conversation: conversation, replyingTo: messages.last)
             }
             .backNavigation { dismiss() }
             .toolbar(.hidden, for: .tabBar)
@@ -160,6 +172,10 @@ struct DirectThreadView: View {
                 messages = store.cachedMessages(in: conversation)
             }
             .task { await refresh() }
+            .onChange(of: store.visibleSendJobs.filter { $0.phase == .sent }.map(\.id)) {
+                Task { await refresh() }
+            }
+            .onDisappear { opener.cancel() }
             .task(id: "\(sourceRefreshSignal):\(scenePhase == .active):\(profile == nil)") {
                 guard scenePhase == .active, profile == nil else { return }
                 await refreshSources()
@@ -194,19 +210,17 @@ struct DirectThreadView: View {
             }
             .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
             .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
-            .overlay(alignment: .bottom) {
-                if case .failed(let why) = opener.state {
-                    Text(why)
-                        .typeStyle(Style.monoCaption)
-                        .foregroundStyle(Ink.surface)
-                        .padding(.horizontal, Space.lg)
-                        .padding(.vertical, Space.md)
-                        .background(Ink.primary, in: Capsule())
-                        .padding(.bottom, Space.xxl)
-                        .task {
-                            try? await Task.sleep(for: .seconds(3))
-                            opener.state = .idle
-                        }
+            .safeAreaInset(edge: .top) {
+                if case .loading = opener.state {
+                    HStack { ProgressView("Opening file…"); Spacer(); Button("Cancel") { opener.cancel() } }
+                        .padding().background(Ink.surface)
+                } else if case .failed(let why) = opener.state {
+                    HStack {
+                        Text(why).typeStyle(Style.bodySmall)
+                        Spacer()
+                        Button("Try again") { Task { await opener.retry() } }
+                        Button("Dismiss") { opener.cancel() }
+                    }.padding().background(Ink.surface)
                 }
             }
         }

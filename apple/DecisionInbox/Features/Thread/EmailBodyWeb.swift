@@ -32,6 +32,7 @@ private struct WebBody: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.suppressesIncrementalRendering = true
+        configuration.websiteDataStore = .nonPersistent()
 
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
@@ -53,54 +54,38 @@ private struct WebBody: UIViewRepresentable {
 
     func updateUIView(_ view: WKWebView, context: Context) {
         context.coordinator.onHeight = { height = $0 }
-        let document = Self.document(html: html, allowRemote: loadRemoteContent)
+        let document = EmailHTMLPolicy.document(html: html, allowRemote: loadRemoteContent)
         guard context.coordinator.lastLoaded != document else { return }
         context.coordinator.lastLoaded = document
-        view.loadHTMLString(document, baseURL: nil)
+        if loadRemoteContent {
+            view.configuration.userContentController.removeAllContentRuleLists()
+            view.loadHTMLString(document, baseURL: nil)
+        } else {
+            // Compile before loading any sender HTML. CSP also blocks remote
+            // resources; the WebKit rule covers speculative network requests.
+            WKContentRuleListStore.default().compileContentRuleList(
+                forIdentifier: "email-block-remote-v1",
+                encodedContentRuleList: #"[{"trigger":{"url-filter":"^https?://"},"action":{"type":"block"}}]"#
+            ) { rules, _ in
+                guard context.coordinator.lastLoaded == document else { return }
+                guard let rules else {
+                    view.loadHTMLString(EmailHTMLPolicy.document(html: "<p>This email’s layout could not be opened with remote content blocked. You can choose Load to open it.</p>", allowRemote: false), baseURL: nil)
+                    return
+                }
+                view.configuration.userContentController.add(rules)
+                view.loadHTMLString(document, baseURL: nil)
+            }
+        }
     }
 
     static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) {
+        coordinator.lastLoaded = nil
+        view.stopLoading()
         coordinator.observation?.invalidate()
     }
 
     // MARK: Document
 
-    private static func document(html: String, allowRemote: Bool) -> String {
-        var body = html
-        if !allowRemote {
-            // Renaming the attribute rather than deleting the element keeps the
-            // sender's layout intact — the space stays, the beacon doesn't fire.
-            body = body.replacingOccurrences(
-                of: #"(?i)\s(src|background)\s*=\s*(["'])\s*https?://"#,
-                with: " data-blocked-$1=$2https://",
-                options: .regularExpression
-            )
-            body = body.replacingOccurrences(
-                of: #"(?i)url\(\s*(["']?)\s*https?://"#,
-                with: "url($1about:blank#",
-                options: .regularExpression
-            )
-        }
-
-        // A viewport meta and a width clamp, because bulk senders still ship
-        // 600px fixed-width tables that would otherwise force a sideways scroll.
-        return """
-        <!doctype html><html><head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          :root { color-scheme: light; }
-          /* No horizontal padding: the card that hosts this already owns the
-             margin, and adding a second one cost the sender 32pt of the 358
-             they had — enough to break a 320px table layout. */
-          html, body { margin: 0; padding: 0; background: transparent;
-            font: 16px/1.45 -apple-system, system-ui, sans-serif; color: #000;
-            -webkit-text-size-adjust: 100%; word-break: break-word; }
-          img, video, table, pre { max-width: 100% !important; height: auto; }
-          table { width: 100% !important; }
-          a { color: #000; }
-        </style></head><body>\(body)</body></html>
-        """
-    }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastLoaded: String?
@@ -121,12 +106,14 @@ private struct WebBody: UIViewRepresentable {
             decidePolicyFor action: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
-            guard action.navigationType == .linkActivated, let url = action.request.url else {
-                decisionHandler(.allow)
+            if action.navigationType == .linkActivated, let url = action.request.url,
+               ["http", "https", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") {
+                decisionHandler(.cancel)
+                UIApplication.shared.open(url)
                 return
             }
-            decisionHandler(.cancel)
-            UIApplication.shared.open(url)
+            // Only the locally supplied document may navigate this view.
+            decisionHandler(action.request.url?.scheme == "about" ? .allow : .cancel)
         }
     }
 }

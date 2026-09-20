@@ -25,7 +25,9 @@ struct FeedView: View {
     @State private var notificationFailure: String?
     @State private var profile: Sender?
     @State private var compose: ComposeView.Intent?
-    @State private var showRunLog = false
+    @State private var initialComposeIntent: ComposeView.Intent?
+    @State private var focusDiscussion = false
+    @State private var choosingMailboxes = false
     @State private var showingOldPosts = false
     @State private var scrollPass = ScrollPastState()
     @State private var progress = FeedScrollProgress()
@@ -43,12 +45,18 @@ struct FeedView: View {
         let seenFailure: String?
     }
 
+    private var hasSelectedMailboxes: Bool { store.mailboxes.contains(where: \.includeInUnifiedFeed) }
+    private var emptyLoading: Bool {
+        hasSelectedMailboxes && store.sessionMessages.isEmpty && store.loadFailure == nil
+            && (store.isFirstSync || store.checkingCompletion)
+    }
+
     private var currentMasthead: Masthead {
-        Masthead(recap: store.recap, waiting: store.waitingCount,
+        Masthead(recap: hasSelectedMailboxes ? store.recap : nil, waiting: hasSelectedMailboxes ? store.waitingCount : 0,
                  total: store.remainingInFeed ?? store.activeMessages.count,
                  totalIsComplete: store.remainingInFeed != nil,
-                 isReading: store.isFirstSync || (store.activeMessages.isEmpty && store.checkingCompletion),
-                 isComplete: store.completionVerified)
+                 isReading: hasSelectedMailboxes && (store.isFirstSync || (store.activeMessages.isEmpty && store.checkingCompletion)),
+                 isComplete: hasSelectedMailboxes && store.completionVerified, showsActivity: true)
     }
     private var displayedGroups: [(String, [Message])] { scrollSnapshot?.groups ?? store.messages() }
     private var displayedMasthead: Masthead { scrollSnapshot?.masthead ?? currentMasthead }
@@ -59,7 +67,7 @@ struct FeedView: View {
     }
     private var canCommitScrollReads: Bool {
         feedVisible && scenePhase == .active && open == nil && profile == nil
-            && compose == nil && !showingOldPosts && !showRunLog && !swiping && !refreshing && !notificationLoading
+            && compose == nil && !showingOldPosts && !choosingMailboxes && !swiping && !refreshing && !notificationLoading
     }
 
 
@@ -79,6 +87,12 @@ struct FeedView: View {
     @State private var refreshing = false
     @State private var stripHold: CGFloat = 0
     @State private var settled: String?
+    @State private var refreshFailed = false
+    @State private var refreshWaitStage = 0
+    @State private var firstWaitStage = 0
+    @State private var refreshID = UUID()
+    @State private var refreshTask: Task<Void, Never>?
+    @ScaledMetric(relativeTo: .caption) private var refreshHeight: CGFloat = 56
 
     /// Post → Thread is parent → child of the *same* entity, so it is a zoom
     /// shared container rather than a push. Nothing else in the feed is a
@@ -97,8 +111,8 @@ struct FeedView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         // This target always exists, even thousands of rows down.
-                        // The space the pull strip holds open while it works.
-                        Color.clear.frame(height: stripHold).id(Self.topAnchor)
+                        // Refresh feedback reserves space through the safe-area inset.
+                        Color.clear.frame(height: 0).id(Self.topAnchor)
 
                         displayedMasthead
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
@@ -108,7 +122,7 @@ struct FeedView: View {
                         // `.refreshable` supplied the VoiceOver rotor's Refresh
                         // action for free. Driving the pull by hand removes
                         // that, so it is put back explicitly rather than lost.
-                        .accessibilityAction(named: "Refresh") { Task { await refreshNow() } }
+                        .accessibilityAction(named: "Refresh") { startRefresh() }
 
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         ForEach(displayedGroups, id: \.0) { section, items in
@@ -118,14 +132,14 @@ struct FeedView: View {
                                     message: message,
                                     tag: store.showsMailboxTags
                                         ? store.mailbox(message.mailboxID)?.tag : nil,
-                                    onOpen: { store.noteFeedInteraction(); open = message },
+                                    onOpen: { openMessage(message) },
                                     // Reply and Forward open the thread, where
                                     // the composer belongs — one tap, one
                                     // destination, rather than a push and a
                                     // sheet racing each other.
-                                    onReply: { open = message },
-                                    onDiscuss: { open = message },
-                                    onForward: { open = message },
+                                    onReply: { openMessage(message, intent: .reply) },
+                                    onDiscuss: { openMessage(message, discuss: true) },
+                                    onForward: { openMessage(message, intent: .forward) },
                                     onSave: { store.toggleSaved(message) },
                                     onArchive: { store.archive(message) },
                                     onUnsubscribe: { store.unsubscribe(from: message) },
@@ -294,26 +308,43 @@ struct FeedView: View {
                     scrollToTop(animated: false)
                 }
 
-                // Both live on the top edge, so they stack rather than
-                // overlapping when a pull happens during a degraded state.
-                //
-                // Hidden while a refresh is running. The strip tracks the
-                // finger, which is right during a pull and wrong afterwards:
-                // once released it kept drawing at the top of the ZStack and
-                // "READING YOUR MAILBOX…" landed directly on top of the
-                // greeting. The masthead says it is reading — the count holds
-                // an em dash and the kicker reads READING — so the strip has
-                // nothing left to add.
-                VStack(spacing: 0) {
-                    if !refreshing { pullStrip }
-                    condition
-                }
+                // While pulling, the scroll view supplies the overscroll gap.
+                // After release a real safe-area inset owns the status space,
+                // so it cannot cover mail when the reader scrolls onward.
+                if !refreshing && settled == nil { pullStrip }
 
                 pill
             }
             .background(Ink.surface)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    if refreshing || settled != nil { pullStrip }
+                    condition
+                }
+            }
             .navigationBarHidden(true)
             .onAppear { feedVisible = true }
+            .environment(\.motionIsActive, feedVisible && scenePhase == .active && open == nil && profile == nil && !showingOldPosts)
+            .task(id: emptyLoading) {
+                firstWaitStage = 0
+                guard emptyLoading else { return }
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                    firstWaitStage = 10
+                    try await Task.sleep(for: .seconds(20))
+                    firstWaitStage = 30
+                } catch { }
+            }
+            .task(id: refreshing) {
+                refreshWaitStage = 0
+                guard refreshing else { return }
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                    refreshWaitStage = 10
+                    try await Task.sleep(for: .seconds(20))
+                    refreshWaitStage = 30
+                } catch { }
+            }
             .onChange(of: notificationRequest, initial: true) { _, _ in
                 handledNotificationID = nil
                 notificationFailure = nil
@@ -351,9 +382,10 @@ struct FeedView: View {
             .onChange(of: profile != nil) { _, shown in if shown { cancelScrollReads() } }
             .onChange(of: showingOldPosts) { _, shown in if shown { cancelScrollReads() } }
             .onChange(of: compose != nil) { _, shown in if shown { cancelScrollReads() } }
-            .onChange(of: showRunLog) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: choosingMailboxes) { _, shown in if shown { cancelScrollReads() } }
             .onChange(of: swiping) { _, active in if active { cancelScrollReads() } }
             .sheet(isPresented: $showingOldPosts) { OldPostsView() }
+            .sheet(isPresented: $choosingMailboxes) { MailboxFilterSheet() }
             // The sender. `profile` was being set by every avatar tap and
             // observed by nothing — the screen existed, was built, was styled,
             // and could not be reached from the feed at all. Search had this
@@ -367,7 +399,7 @@ struct FeedView: View {
             // sheet with none of the behaviour, which is exactly what reads as
             // wrong even when the radius is right.
             .sheet(item: $open) { message in
-                ThreadView(message: message)
+                ThreadView(message: message, initialComposeIntent: initialComposeIntent, focusDiscussion: focusDiscussion)
                     .id(message.feedKey)
                     .presentationDetents([.large])
                     // No grabber. The gesture exists either way, and the
@@ -378,11 +410,8 @@ struct FeedView: View {
                     // Delivers the post lifting and expanding into the sheet,
                     // and the system's own fallback when the source row has
                     // been recycled out of the LazyVStack.
-                    .navigationTransition(.zoom(sourceID: message.feedKey, in: feedZoom))
+                    .modifier(FeedThreadTransition(sourceID: message.feedKey, namespace: feedZoom, reduceMotion: reduceMotion))
             }
-            // Agent progress and receipts stack at the bottom, above the tab
-            // bar. Neither ever takes the screen.
-            .safeAreaInset(edge: .bottom) { overlays }
             .sheet(item: $compose) { intent in
                 ComposeView(intent: intent, message: open)
                     .presentationDetents([.large])
@@ -390,20 +419,21 @@ struct FeedView: View {
                     // consequences is one too many.
                     .presentationDragIndicator(.hidden)
             }
-            .sheet(isPresented: $showRunLog) {
-                UnsubscribeRunLog(
-                    runs: store.unsubscribes.values.sorted { ($0.index ?? 0) < ($1.index ?? 0) },
-                    onClear: { withAnimation(Move.crisp) { store.unsubscribes.removeAll() } }
-                )
-            }
             // Hardware keyboard and Full Keyboard Access, which `.refreshable`
             // also used to cover.
             .background {
-                Button("Refresh") { Task { await refreshNow() } }
+                Button("Refresh") { startRefresh() }
                     .keyboardShortcut("r", modifiers: .command)
                     .hidden()
             }
         }
+    }
+
+    private func openMessage(_ message: Message, intent: ComposeView.Intent? = nil, discuss: Bool = false) {
+        store.noteFeedInteraction()
+        initialComposeIntent = intent
+        focusDiscussion = discuss
+        open = message
     }
 
     private func openNotificationIfAvailable() {
@@ -415,7 +445,7 @@ struct FeedView: View {
         handledNotificationID = request.id
         notificationLoading = false
         notificationFailure = nil
-        open = message
+        openMessage(message)
     }
 
     private func loadNotification(_ request: NotificationOpenRequest) async {
@@ -564,27 +594,38 @@ struct FeedView: View {
 
     @ViewBuilder private var pullStrip: some View {
         if pull > Move.Pull.showAt || stripHold > 0 {
-            HStack(spacing: Space.sm) {
+            HStack(alignment: .center, spacing: Space.md) {
                 if refreshing {
                     Caret(height: 20)
                 } else if settled == nil {
-                    Rectangle()
-                        .fill(Ink.primary)
-                        .frame(width: Metric.unreadBar, height: 20)
-                        .opacity(armingProgress)
+                    RefreshMargin(tension: reduceMotion ? 0 : armingProgress)
+                        .stroke(Ink.primary, style: StrokeStyle(lineWidth: Metric.unreadBar, lineCap: .round))
+                        .frame(width: 10, height: 22)
+                        .opacity(0.3 + 0.7 * armingProgress)
+                        .accessibilityHidden(true)
                 }
                 Text(pullLabel)
                     .typeStyle(Style.chip)
                     .foregroundStyle(Ink.secondary)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if refreshFailed && !refreshing {
+                    Button("Retry") { startRefresh() }
+                        .typeStyle(Style.bodySmall)
+                        .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
+                        .buttonStyle(TapStyle())
+                    Button { dismissRefreshStatus() } label: {
+                        Image(systemName: "xmark").frame(width: Metric.tapTarget, height: Metric.tapTarget)
+                    }
+                    .buttonStyle(TapStyle()).accessibilityLabel("Dismiss refresh status")
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Metric.gutter)
-            // Height tracks the pull 1 : 1 — the scroll view is already
-            // rubber-banding and banding twice reads as lag.
-            .frame(height: max(pull, stripHold), alignment: .center)
+            .frame(height: refreshing || settled != nil ? stripHold : pull, alignment: .center)
+            .background(Ink.surface)
             .clipped()
-            .accessibilityHidden(true)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("feed.refresh.status")
         }
     }
 
@@ -594,51 +635,61 @@ struct FeedView: View {
     }
 
     private var pullLabel: String {
-        if let settled { return settled }
-        if refreshing { return "READING YOUR MAILBOX\u{2026}" }
+        if let settled, !refreshing { return settled }
+        if refreshing {
+            if refreshWaitStage >= 30 { return "STILL CHECKING. YOU CAN KEEP READING." }
+            if refreshWaitStage >= 10 { return "YOUR MAILBOX IS TAKING LONGER TO RESPOND…" }
+            return "CHECKING YOUR MAILBOX…"
+        }
         return armed ? "RELEASE TO REFRESH" : "PULL TO REFRESH"
     }
 
     private func startRefresh() {
+        guard hasSelectedMailboxes else { choosingMailboxes = true; return }
+        guard !refreshing else { return }
         cancelScrollReads()
+        refreshTask?.cancel()
+        let id = UUID()
+        refreshID = id
         refreshing = true
+        refreshFailed = false
+        refreshWaitStage = 0
+        settled = nil
         armed = false
-        withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
-            stripHold = Move.Pull.holdOpen
-        }
-        Task { await runRefresh() }
+        withAnimation(Move.resolved(Move.crisp, reduceMotion)) { stripHold = refreshHeight }
+        refreshTask = Task { await runRefresh(id: id) }
     }
 
-    private func runRefresh() async {
+    private func runRefresh(id: UUID) async {
         let began = ContinuousClock.now
         await refreshNow()
-
-        // Once the caret shows it holds for at least this long even if the
-        // network answers in 80ms, or the strip flickers. `Move.loadingDelay`
-        // deliberately does NOT apply — the user pulled, so the acknowledgement
-        // is immediate.
+        guard !Task.isCancelled, id == refreshID else { return }
         let elapsed = began.duration(to: .now)
         let floor = Duration.seconds(Move.skeletonMinHold)
-        if elapsed < floor { try? await Task.sleep(for: floor - elapsed) }
-
+        if elapsed < floor {
+            do { try await Task.sleep(for: floor - elapsed) } catch { return }
+        }
+        guard !Task.isCancelled, id == refreshID else { return }
         let failure = store.loadFailure != nil
-        // H7 — one of the only two outcomes a user walks away from believing
-        // the opposite of. No cue on success: it is the common case and the
-        // freshness stamp says so.
-        if failure { Haptics.needsYou() }
-
+        if failure && feedVisible { Haptics.needsYou() }
         withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
             refreshing = false
-            settled = failure
-                ? "COULDN\u{2019}T REACH YOUR MAILBOX"
+            refreshFailed = failure
+            settled = failure ? "COULDN’T REACH YOUR MAILBOX"
                 : "CURRENT AS OF \(Date.now.formatted(date: .omitted, time: .shortened).uppercased())"
         }
+        if feedVisible { UIAccessibility.post(notification: .announcement, argument: settled) }
+        // Failure is actionable and stays until dismissed or retried.
+        guard !failure else { return }
+        do { try await Task.sleep(for: .seconds(Move.Pull.stampHold)) } catch { return }
+        guard id == refreshID, !Task.isCancelled else { return }
+        dismissRefreshStatus()
+    }
 
-        try? await Task.sleep(
-            for: .seconds(failure ? Move.Pull.failureHold : Move.Pull.stampHold)
-        )
-        withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
+    private func dismissRefreshStatus() {
+        withAnimation(Move.resolved(Move.settle, reduceMotion)) {
             settled = nil
+            refreshFailed = false
             stripHold = 0
         }
     }
@@ -654,11 +705,14 @@ struct FeedView: View {
     }
 
     @ViewBuilder private var feedFooter: some View {
-        if store.isFirstSync && store.sessionMessages.isEmpty {
-            EmptyStateView(headline: "Reading your mailbox…", detail: "YOUR EMAILS WILL APPEAR HERE AS THEY LOAD.")
+        if !hasSelectedMailboxes {
+            EmptyStateView(headline: "No mailboxes selected.", detail: "YOUR MAILBOXES ARE STILL CONNECTED.",
+                           actionLabel: "Choose mailboxes", action: { choosingMailboxes = true })
         } else if store.sessionMessages.isEmpty, let failure = store.loadFailure {
             EmptyStateView(headline: "Couldn’t load your mail.", detail: failure,
-                           actionLabel: "Try again", action: { Task { await refreshNow() } })
+                           actionLabel: "Try again", action: { startRefresh() })
+        } else if store.isFirstSync && store.sessionMessages.isEmpty {
+            initialLoading
         } else if store.hasMoreFeed {
             VStack(spacing: Space.md) {
                 if let failure = store.paginationFailure {
@@ -671,9 +725,10 @@ struct FeedView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 100)
         } else if store.checkingCompletion && store.sessionMessages.isEmpty {
-            ProgressView("Checking your inbox…").frame(maxWidth: .infinity).padding(Metric.gutter)
+            initialLoading
         } else if store.feedEndVerified {
             VStack(spacing: Space.md) {
+                CompletionPunctuation(verified: store.completionVerified)
                 Text("No more emails.")
                     .typeStyle(Style.body).foregroundStyle(Ink.secondary)
                 if store.hasPendingInFeed {
@@ -697,73 +752,20 @@ struct FeedView: View {
         }
     }
 
-    private func undo(_ receipt: FeedStore.Receipt) -> (() -> Void)? {
-        switch receipt.undo {
-        case .none: return nil
-        case .send: return { store.undoSend() }
-        case .archive(let message, let index):
-            // Reinsertion at the ORIGINAL index, so the post returns to where
-            // it was rather than to the top.
-            return {
-                withAnimation(Move.resolved(Move.layout, reduceMotion)) {
-                    store.undoArchive(message, at: index)
-                }
-            }
+    private var initialLoading: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            CaretLine(label: store.isFirstSync ? "Reading your mailbox…" : "Checking your inbox…")
+            Text(firstWaitStage >= 30
+                 ? "This is taking longer than expected. You can leave this screen; your mail will appear as it loads."
+                 : (firstWaitStage >= 10 ? "Still waiting for your mailbox to respond."
+                    : "Your emails will appear here as they load."))
+                .typeStyle(Style.bodySmall).foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    // MARK: Overlays
-
-    /// T8 — a bottom-edge overlay arrives from the bottom edge and leaves
-    /// decisively. Under Reduce Motion neither travels; both crossfade.
-    private var bottomOverlay: AnyTransition {
-        .asymmetric(
-            insertion: reduceMotion
-                ? .opacity.animation(Move.crossfade)
-                : .move(edge: .bottom).combined(with: .opacity).animation(Move.crisp),
-            // Exits are faster than entries. The user has moved on.
-            removal: .opacity.animation(Move.resolved(Move.exit, reduceMotion))
-        )
-    }
-
-    @ViewBuilder private var overlays: some View {
-        VStack(spacing: Space.sm) {
-            if !store.unsubscribes.isEmpty {
-                UnsubscribeTray(
-                    runs: store.unsubscribes.values.sorted { ($0.index ?? 0) < ($1.index ?? 0) },
-                    onOpenLog: { showRunLog = true }
-                )
-                .transition(bottomOverlay)
-            }
-
-            if let receipt = store.receipt {
-                ToastView(
-                    message: receipt.message,
-                    detail: receipt.detail,
-                    actionLabel: receipt.undo != nil ? "Undo" : nil,
-                    action: undo(receipt),
-                    onDismiss: { store.dismissReceipt() }
-                )
-                .transition(bottomOverlay)
-                .task(id: receipt.id) {
-                    // Failures hold longer than successes — six seconds is the
-                    // floor for anything the user may need to act on.
-                    let hold: Duration
-                    switch receipt.undo {
-                    case .none: hold = .seconds(6)
-                    case .send: hold = .seconds(Move.sendUndoWindow)
-                    case .archive: hold = .seconds(Move.undoWindow)
-                    }
-                    try? await Task.sleep(for: hold)
-                    withAnimation(Move.resolved(Move.exit, reduceMotion)) {
-                        store.dismissReceipt()
-                    }
-                }
-            }
-        }
-        .padding(.bottom, store.unsubscribes.isEmpty && store.receipt == nil ? 0 : Space.sm)
-        .animation(Move.resolved(Move.crisp, reduceMotion), value: store.unsubscribes.count)
-        .animation(Move.resolved(Move.crisp, reduceMotion), value: store.receipt?.id)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Metric.gutter).padding(.top, Space.xxl)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("feed.initialLoading")
     }
 
     /// Degraded states never take the screen. They sit above the feed and the
@@ -798,6 +800,8 @@ struct Masthead: View {
     /// The mailbox has not been read yet, so there is no count to print.
     var isReading = false
     var isComplete = false
+    var showsActivity = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // The greeting leads, at display size, in the human face.
@@ -815,7 +819,12 @@ struct Masthead: View {
             // one line here that is never written by a model.
             Text(dateline)
                 .typeStyle(Style.sectionHeader)
-                .foregroundStyle(Ink.tertiary)
+                .foregroundStyle(Ink.secondary)
+                .padding(.trailing, showsActivity ? Metric.tapTarget + Space.sm : 0)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .trailing) {
+                    if showsActivity { ActivityToolbarButton() }
+                }
                 .padding(.bottom, Space.md + 2)
 
             headline
@@ -847,7 +856,7 @@ struct Masthead: View {
     /// What the washes behind the greeting are saying.
     private var weather: MastheadAtmosphere.Weather {
         if isReading { return .reading }
-        return waiting > 0 ? .needsYou : .clear
+        return isComplete ? .clear : .needsYou
     }
 
     /// The sentence somebody lands on.
@@ -873,7 +882,7 @@ struct Masthead: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text(recap?.greeting ?? fallbackGreeting)
                     .typeStyle(Style.headline)
-                    .foregroundStyle(Ink.tertiary)
+                    .foregroundStyle(Ink.secondary)
                 if !isReading && (total > 0 || isComplete) {
                     Text(waiting > 0
                          ? "\(waiting) request\(waiting == 1 ? "" : "s") to review."
@@ -904,29 +913,29 @@ struct Masthead: View {
                     .frame(width: Metric.unreadBar, height: 13)
                 Text("STILL READING YOUR MAIL")
                     .typeStyle(Style.kicker)
-                    .foregroundStyle(Ink.tertiary)
+                    .foregroundStyle(Ink.secondary)
             } else if waiting > 0 {
                 Text("\(waiting)")
                     .typeStyle(Style.countInline)
                     .foregroundStyle(Ink.primary)
                     .monospacedDigit()
-                    .contentTransition(.numericText())
+                    .contentTransition(reduceMotion ? .identity : .numericText())
                 Text("NEED YOU")
                     .typeStyle(Style.kicker)
                     .foregroundStyle(Ink.primary)
                 Text("·")
                     .typeStyle(Style.kicker)
-                    .foregroundStyle(Ink.tertiary)
+                    .foregroundStyle(Ink.secondary)
                 Text("\(total) \(totalIsComplete ? "NEW" : "LOADED")")
                     .typeStyle(Style.kicker)
-                    .foregroundStyle(Ink.tertiary)
+                    .foregroundStyle(Ink.secondary)
                     .monospacedDigit()
             } else {
                 // Nothing waiting is the good morning, and it does not need a
                 // zero printed at size to say so.
                 Text(total > 0 ? "\(total) \(totalIsComplete ? "NEW POSTS" : "LOADED")" : (isComplete ? "NO UNREAD POSTS" : "NO POSTS TO SHOW"))
                     .typeStyle(Style.kicker)
-                    .foregroundStyle(Ink.tertiary)
+                    .foregroundStyle(Ink.secondary)
                     .monospacedDigit()
             }
         }
@@ -1070,4 +1079,44 @@ private final class FeedScrollProgress { var offset: Double = 0 }
 private struct FeedPostGeometry: Equatable {
     let region: ScrollPastState.Region
     let height: CGFloat
+}
+
+
+/// The margin gathers tension under the finger; text never deforms.
+private struct RefreshMargin: Shape {
+    var tension: CGFloat
+    var animatableData: CGFloat { get { tension } set { tension = newValue } }
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: 0))
+        path.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.maxY),
+                         control: CGPoint(x: rect.midX + (1 - tension) * 5, y: rect.midY))
+        return path
+    }
+}
+
+/// A confirmed endpoint settles quietly. First appearance does not replay a reward.
+private struct CompletionPunctuation: View {
+    let verified: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        HStack(spacing: 4) {
+            Capsule().frame(width: verified ? 20 : 36, height: 2)
+            Circle().frame(width: 3, height: 3).opacity(verified ? 1 : 0)
+        }
+        .foregroundStyle(Ink.secondary)
+        .frame(width: 44, height: 16)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.65), value: verified)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct FeedThreadTransition: ViewModifier {
+    let sourceID: String
+    let namespace: Namespace.ID
+    let reduceMotion: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if reduceMotion { content }
+        else { content.navigationTransition(.zoom(sourceID: sourceID, in: namespace)) }
+    }
 }

@@ -70,3 +70,12 @@ CREATE TABLE IF NOT EXISTS sender_domain_assets (
   bg_color     TEXT NOT NULL,
   created_at   TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Durable task receipts, independent of an open SSE connection or UI surface.
+CREATE TABLE IF NOT EXISTS unsubscribe_tasks (
+  user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, message_id)
+);

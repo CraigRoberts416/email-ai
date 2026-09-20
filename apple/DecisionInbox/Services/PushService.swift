@@ -1,16 +1,18 @@
 import UIKit
 import UserNotifications
+import Observation
 
-/// Push.
-///
-/// Permission is never asked for on launch. The prompt is a one-shot — decline
-/// it once and the only way back is Settings — so it is spent at the first
-/// moment the answer is obviously yes: after the feed has loaded and the user
-/// has seen what the product actually does.
-///
-/// What arrives is also narrow on purpose. The server only pushes mail it has
-/// already decided needs the user. A notification for a receipt is how an
-/// inbox app teaches people to turn notifications off.
+@MainActor @Observable
+final class PushDeliveryStatus {
+    static let shared = PushDeliveryStatus()
+    var registrationError: String?
+    var registeredAccounts: Set<String> = []
+    var isRegistering = false
+}
+
+/// Settings owns the explicit first-permission request. Launch and foreground
+/// resume registration only when the reader has already granted access.
+/// OS permission, server registration and actual delivery are separate facts.
 @MainActor
 final class PushService: NSObject {
     private let auth: AuthService
@@ -34,6 +36,13 @@ final class PushService: NSObject {
         if granted { register() }
     }
 
+    /// Foregrounding refreshes an existing grant; it does not spend the
+    /// one-time permission prompt before the reader chooses to ask.
+    func registerIfAuthorized() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        if [.authorized, .provisional, .ephemeral].contains(settings.authorizationStatus) { register() }
+    }
+
     private func register() {
         UIApplication.shared.registerForRemoteNotifications()
     }
@@ -41,15 +50,31 @@ final class PushService: NSObject {
     /// Every connected mailbox gets the same device token — the server pushes
     /// per user, and one device can be several users here.
     func submit(deviceToken: Data) async {
+        let status = PushDeliveryStatus.shared
+        status.isRegistering = true
+        status.registrationError = nil
+        defer { status.isRegistering = false }
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         for account in auth.accounts {
-            guard let access = try? await auth.validAccessToken(for: account.id) else { continue }
+            do {
+            let access = try await auth.validAccessToken(for: account.id)
             var request = URLRequest(url: baseURL.appending(path: "/auth/push-token"))
             request.httpMethod = "POST"
             request.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: ["pushToken": token])
-            _ = try? await URLSession.shared.data(for: request)
+            request.timeoutInterval = 15
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw APIError.transport
+            }
+            guard auth.accounts.contains(where: { $0.id == account.id }) else { continue }
+            status.registeredAccounts.insert(account.id)
+            } catch {
+                status.registeredAccounts.remove(account.id)
+                guard auth.accounts.contains(where: { $0.id == account.id }) else { continue }
+                status.registrationError = "This device could not register for every mailbox. Open the app while online to try again."
+            }
         }
     }
 }
@@ -120,7 +145,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
-        // Silent: the feed works without push, and there is nothing the user
-        // could do about an APNs registration failure anyway.
+        Task { @MainActor in
+            PushDeliveryStatus.shared.registrationError = "Apple notification registration is unavailable. Your feed still works; open the app while online to try again."
+        }
     }
 }

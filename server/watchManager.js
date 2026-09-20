@@ -1,6 +1,7 @@
 const cron       = require('node-cron');
 const userStore  = require('./userStore');
 const { query }  = require('./db');
+const accountAccess = require('./accountAccess');
 
 async function registerWatch(userId) {
   const topicName = process.env.GOOGLE_PUBSUB_TOPIC;
@@ -14,6 +15,7 @@ async function registerWatch(userId) {
     method:  'POST',
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body:    JSON.stringify({ topicName, labelIds: ['INBOX'] }),
+    signal: AbortSignal.any([accountAccess.signal(userId), AbortSignal.timeout(10000)]),
   });
 
   if (!res.ok) {
@@ -31,8 +33,8 @@ async function registerWatch(userId) {
 async function renewAllExpiring() {
   const { rows } = await query(`
     SELECT user_id FROM users
-    WHERE watch_expiry IS NULL
-       OR watch_expiry < NOW() + INTERVAL '24 hours'
+    WHERE access_token <> '' AND refresh_token <> ''
+      AND (watch_expiry IS NULL OR watch_expiry < NOW() + INTERVAL '24 hours')
   `);
   for (const { user_id } of rows) {
     try {
@@ -52,4 +54,12 @@ function startWatchRenewalCron() {
   console.log('[watch] renewal cron scheduled (daily at 3am)');
 }
 
-module.exports = { registerWatch, renewAllExpiring, startWatchRenewalCron };
+async function stopWatch(accessToken) {
+  const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/stop', {
+    method: 'POST', headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  return response.ok;
+}
+
+module.exports = { registerWatch, renewAllExpiring, startWatchRenewalCron, stopWatch };

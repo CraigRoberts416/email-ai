@@ -19,6 +19,8 @@ struct Conversation: Identifiable, Hashable {
     var lastFromMe: Bool
     var unread: Bool
     var messageCount: Int
+    /// Explicit source account when routed from an account-scoped surface.
+    var mailboxID: String? = nil
 
     var isGroup: Bool { participants.count > 1 }
 

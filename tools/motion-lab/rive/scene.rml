@@ -1,0 +1,512 @@
+<Rive version="1" kind="fragment">
+    <Artboard id="0:1" name="TaskSignal" width="440" height="252" styleId="0:2" defaultStateMachineId="0:100" viewModelId="0:200" viewModelInstanceId="0:201">
+        <LayoutComponentStyle id="0:2" name="Artboard Style" />
+        <Text id="0:3" name="Title" x="24" y="24" sizingValue="autoWidth">
+            <TextStylePaint id="0:4" name="Title Style" fontSize="12" fontAssetId="0:300">
+                <Fill name="Fill">
+                    <SolidColor name="Color" colorValue="FF727272" />
+                </Fill>
+            </TextStylePaint>
+            <TextValueRun styleId="0:4" text="TASK SIGNAL / LOCAL FIXTURE" name="Title Text" />
+        </Text>
+        <Node id="0:20" name="Ready to check" opacity="1">
+            <Text id="0:21" name="Ready to check" x="84" y="85" sizingValue="autoWidth">
+                <TextStylePaint id="0:22" name="Ready to check Style" fontSize="27" fontAssetId="0:300">
+                    <Fill name="Fill">
+                        <SolidColor name="Color" colorValue="FF111111" />
+                    </Fill>
+                </TextStylePaint>
+                <TextValueRun styleId="0:22" text="Ready to check" name="Ready to check Text" />
+            </Text>
+            <Text id="0:23" name="Ready to check Detail" x="84" y="124" sizingValue="autoWidth">
+                <TextStylePaint id="0:24" name="Ready to check Detail Style" fontSize="14" fontAssetId="0:300">
+                    <Fill name="Fill">
+                        <SolidColor name="Color" colorValue="FF727272" />
+                    </Fill>
+                </TextStylePaint>
+                <TextValueRun styleId="0:24" text="Waiting for an app input." name="Ready to check Detail Text" />
+            </Text>
+        </Node>
+        <Node id="0:30" name="Checking" opacity="0">
+            <Text id="0:31" name="Checking" x="84" y="85" sizingValue="autoWidth">
+                <TextStylePaint id="0:32" name="Checking Style" fontSize="27" fontAssetId="0:300">
+                    <Fill name="Fill">
+                        <SolidColor name="Color" colorValue="FF111111" />
+                    </Fill>
+                </TextStylePaint>
+                <TextValueRun styleId="0:32" text="Checking" name="Checking Text" />
+            </Text>
+            <Text id="0:33" name="Checking Detail" x="84" y="124" sizingValue="autoWidth">
+                <TextStylePaint id="0:34" name="Checking Detail Style" fontSize="14" fontAssetId="0:300">
+                    <Fill name="Fill">
+                        <SolidColor name="Color" colorValue="FF727272" />
+                    </Fill>
+                </TextStylePaint>
+                <TextValueRun styleId="0:34" text="Working; no completion estimate." name="Checking Detail Text" />
+            </Text>
+        </Node>
+        <Node id="0:40" name="Check complete" opacity="0">
+            <Text id="0:41" name="Check complete" x="84" y="85" sizingValue="autoWidth">
+                <TextStylePaint id="0:42" name="Check complete Style" fontSize="27" fontAssetId="0:300">
+                    <Fill name="Fill">
+                        <SolidColor name="Color" colorValue="FF111111" />
+                    </Fill>
+                </TextStylePaint>
+                <TextValueRun styleId="0:42" text="Check complete" name="Check complete Text" />
+            </Text>
+            <Text id="0:43" name="Check complete Detail" x="84" y="124" sizingValue="autoWidth">
+                <TextStylePaint id="0:44" name="Check complete Detail Style" fontSize="14" fontAssetId="0:300">
+                    <Fill name="Fill">
+                        <SolidColor name="Color" colorValue="FF727272" />
+                    </Fill>
+                </TextStylePaint>
+                <TextValueRun styleId="0:44" text="Success is a supplied test input." name="Check complete Detail Text" />
+            </Text>
+        </Node>
+        <Text id="0:61" name="Idle Label" x="66" y="210" sizingValue="autoWidth">
+            <TextStylePaint id="0:62" name="Idle Label Style" fontSize="14" fontAssetId="0:300">
+                <Fill name="Fill">
+                    <SolidColor name="Color" colorValue="FF111111" />
+                </Fill>
+            </TextStylePaint>
+            <TextValueRun styleId="0:62" text="Idle" name="Idle Label Text" />
+        </Text>
+        <Shape id="0:60" name="Idle Control" x="86" y="220">
+            <SemanticData role="button" label="Idle" hint="Set the synthetic task state" />
+            <Rectangle width="116" height="44" cornerRadiusTL="22" />
+            <Fill name="Fill">
+                <SolidColor name="Color" colorValue="FFE6E6E6" />
+            </Fill>
+        </Shape>
+        <Text id="0:71" name="Active Label" x="200" y="210" sizingValue="autoWidth">
+            <TextStylePaint id="0:72" name="Active Label Style" fontSize="14" fontAssetId="0:300">
+                <Fill name="Fill">
+                    <SolidColor name="Color" colorValue="FF111111" />
+                </Fill>
+            </TextStylePaint>
+            <TextValueRun styleId="0:72" text="Active" name="Active Label Text" />
+        </Text>
+        <Shape id="0:70" name="Active Control" x="220" y="220">
+            <SemanticData role="button" label="Active" hint="Set the synthetic task state" />
+            <Rectangle width="116" height="44" cornerRadiusTL="22" />
+            <Fill name="Fill">
+                <SolidColor name="Color" colorValue="FFE6E6E6" />
+            </Fill>
+        </Shape>
+        <Text id="0:81" name="Success Label" x="327" y="210" sizingValue="autoWidth">
+            <TextStylePaint id="0:82" name="Success Label Style" fontSize="14" fontAssetId="0:300">
+                <Fill name="Fill">
+                    <SolidColor name="Color" colorValue="FF111111" />
+                </Fill>
+            </TextStylePaint>
+            <TextValueRun styleId="0:82" text="Success" name="Success Label Text" />
+        </Text>
+        <Shape id="0:80" name="Success Control" x="354" y="220">
+            <SemanticData role="button" label="Success" hint="Set the synthetic task state" />
+            <Rectangle width="116" height="44" cornerRadiusTL="22" />
+            <Fill name="Fill">
+                <SolidColor name="Color" colorValue="FFE6E6E6" />
+            </Fill>
+        </Shape>
+        <Shape id="0:53" name="Complete Mark" x="48" y="105" opacity="0">
+            <PointsPath name="Check Path" isClosed="false">
+                <StraightVertex x="-10" y="0" />
+                <StraightVertex x="-3" y="7" />
+                <StraightVertex x="12" y="-9" />
+            </PointsPath>
+            <Stroke name="Check Stroke" thickness="2.5" cap="round" join="round">
+                <SolidColor name="Ink" colorValue="FF111111" />
+            </Stroke>
+        </Shape>
+        <Shape id="0:52" name="Active Caret" x="48" y="105" opacity="0">
+            <Rectangle width="3" height="18" cornerRadiusTL="1.5" />
+            <Fill name="Fill">
+                <SolidColor name="Color" colorValue="FF111111" />
+            </Fill>
+        </Shape>
+        <Shape id="0:51" name="Ready Dot" x="48" y="105">
+            <Ellipse width="6" height="6" />
+            <Fill name="Fill">
+                <SolidColor name="Color" colorValue="FF111111" />
+            </Fill>
+        </Shape>
+        <Shape name="Status Ring" x="48" y="105">
+            <Ellipse width="38" height="38" />
+            <Stroke name="Ring Stroke" thickness="1.5">
+                <SolidColor name="Ring Ink" colorValue="FFB8B8B8" />
+            </Stroke>
+        </Shape>
+        <Shape name="Divider" x="220" y="175">
+            <Rectangle width="392" height="1" />
+            <Fill name="Fill">
+                <SolidColor name="Color" colorValue="FFE0E0E0" />
+            </Fill>
+        </Shape>
+        <Fill name="Fill">
+            <SolidColor name="Color" colorValue="FFF8F8F8" />
+        </Fill>
+        <LinearAnimation id="0:110" name="Idle" duration="1" loopValue="oneShot">
+            <KeyedObject objectId="0:20">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="1" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:30">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:40">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:51">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="1" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:52">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:53">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation id="0:111" name="Active" duration="64" loopValue="loop">
+            <KeyedObject objectId="0:20">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:30">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="1" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:40">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:51">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:52">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0.35" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.42" y1="0" x2="0.58" y2="1" />
+                    </KeyFrameDouble>
+                    <KeyFrameDouble frame="32" value="1" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.42" y1="0" x2="0.58" y2="1" />
+                    </KeyFrameDouble>
+                    <KeyFrameDouble frame="64" value="0.35" interpolationType="cubic">
+                        <CubicEaseInterpolator x1="0.42" y1="0" x2="0.58" y2="1" />
+                    </KeyFrameDouble>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:53">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation id="0:112" name="Success" duration="1" loopValue="oneShot">
+            <KeyedObject objectId="0:20">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:30">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:40">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="1" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:51">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:52">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:53">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="1" />
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <LinearAnimation id="0:113" name="Active Reduced Motion" duration="1" loopValue="oneShot">
+            <KeyedObject objectId="0:20">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:30">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="1" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:40">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:51">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:52">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0.6" />
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:53">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble frame="0" value="0" />
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+        <StateMachine id="0:100" name="TaskLifecycle">
+            <StateMachineListener targetId="0:60" name="Idle Input">
+                <ListenerInputType listenerTypeValue="click" />
+                <ListenerInputTypeSemantic listenerTypeValue="semanticAction">
+                    <SemanticInput actionType="tap" />
+                </ListenerInputTypeSemantic>
+                <ListenerViewModelChange>
+                    <BindablePropertyNumber propertyValue="0">
+                        <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" direction="true" />
+                    </BindablePropertyNumber>
+                </ListenerViewModelChange>
+            </StateMachineListener>
+            <StateMachineListener targetId="0:70" name="Active Input">
+                <ListenerInputType listenerTypeValue="click" />
+                <ListenerInputTypeSemantic listenerTypeValue="semanticAction">
+                    <SemanticInput actionType="tap" />
+                </ListenerInputTypeSemantic>
+                <ListenerViewModelChange>
+                    <BindablePropertyNumber propertyValue="1">
+                        <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" direction="true" />
+                    </BindablePropertyNumber>
+                </ListenerViewModelChange>
+            </StateMachineListener>
+            <StateMachineListener targetId="0:80" name="Success Input">
+                <ListenerInputType listenerTypeValue="click" />
+                <ListenerInputTypeSemantic listenerTypeValue="semanticAction">
+                    <SemanticInput actionType="tap" />
+                </ListenerInputTypeSemantic>
+                <ListenerViewModelChange>
+                    <BindablePropertyNumber propertyValue="2">
+                        <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" direction="true" />
+                    </BindablePropertyNumber>
+                </ListenerViewModelChange>
+            </StateMachineListener>
+            <StateMachineLayer name="Task State" id="0:101">
+                <AnyState x="200" y="-160" />
+                <ExitState x="400" y="-160" />
+                <EntryState x="0" y="0">
+                    <StateTransition stateToId="0:120" />
+                </EntryState>
+                <AnimationState id="0:120" animationId="0:110" x="220" y="0" reset="true">
+                    <StateTransition stateToId="0:121" duration="160">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="1" />
+                        </TransitionViewModelCondition>
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyBoolean>
+                                    <DataBindContext sourcePathIds="0:200-0:203" propertyKey="634" />
+                                </BindablePropertyBoolean>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueBooleanComparator value="false" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:122" duration="160">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="2" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:123" duration="0">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="1" />
+                        </TransitionViewModelCondition>
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyBoolean>
+                                    <DataBindContext sourcePathIds="0:200-0:203" propertyKey="634" />
+                                </BindablePropertyBoolean>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueBooleanComparator value="true" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+                <AnimationState id="0:121" animationId="0:111" x="400" y="0" reset="true">
+                    <StateTransition stateToId="0:120" duration="160">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="0" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:122" duration="160">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="2" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:123" duration="0">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="1" />
+                        </TransitionViewModelCondition>
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyBoolean>
+                                    <DataBindContext sourcePathIds="0:200-0:203" propertyKey="634" />
+                                </BindablePropertyBoolean>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueBooleanComparator value="true" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+                <AnimationState id="0:122" animationId="0:112" x="580" y="0" reset="true">
+                    <StateTransition stateToId="0:120" duration="160">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="0" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:121" duration="160">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="1" />
+                        </TransitionViewModelCondition>
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyBoolean>
+                                    <DataBindContext sourcePathIds="0:200-0:203" propertyKey="634" />
+                                </BindablePropertyBoolean>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueBooleanComparator value="false" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:123" duration="0">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="1" />
+                        </TransitionViewModelCondition>
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyBoolean>
+                                    <DataBindContext sourcePathIds="0:200-0:203" propertyKey="634" />
+                                </BindablePropertyBoolean>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueBooleanComparator value="true" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+                <AnimationState id="0:123" animationId="0:113" x="760" y="0" reset="true">
+                    <StateTransition stateToId="0:120" duration="0">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="0" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:121" duration="0">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="1" />
+                        </TransitionViewModelCondition>
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyBoolean>
+                                    <DataBindContext sourcePathIds="0:200-0:203" propertyKey="634" />
+                                </BindablePropertyBoolean>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueBooleanComparator value="false" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                    <StateTransition stateToId="0:122" duration="0">
+                        <TransitionViewModelCondition opValue="equal">
+                            <TransitionPropertyViewModelComparator>
+                                <BindablePropertyNumber>
+                                    <DataBindContext sourcePathIds="0:200-0:202" propertyKey="636" />
+                                </BindablePropertyNumber>
+                            </TransitionPropertyViewModelComparator>
+                            <TransitionValueNumberComparator value="2" />
+                        </TransitionViewModelCondition>
+                    </StateTransition>
+                </AnimationState>
+            </StateMachineLayer>
+        </StateMachine>
+    </Artboard>
+    <ViewModel id="0:200" name="TaskSignalModel" defaultInstanceId="0:201">
+        <ViewModelPropertyNumber id="0:202" name="phase" />
+        <ViewModelPropertyBoolean id="0:203" name="reduceMotion" />
+        <ViewModelInstance id="0:201" name="Default" exports="true">
+            <ViewModelInstanceNumber viewModelPropertyId="0:202" propertyValue="0" />
+            <ViewModelInstanceBoolean viewModelPropertyId="0:203" propertyValue="false" />
+        </ViewModelInstance>
+    </ViewModel>
+    <FontAsset id="0:300" file="assets/DM-Sans-Regular.ttf" name="DM Sans Regular" />
+</Rive>

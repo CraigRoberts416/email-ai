@@ -1,0 +1,348 @@
+{
+  "name": "ae_do",
+  "arguments": {
+    "operation": "batch.run",
+    "args": {
+      "ops": [
+        {
+          "operation": "comp.create",
+          "args": {
+            "name": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "width": 640,
+            "height": 360,
+            "fps": 30,
+            "duration": 2,
+            "bgColor": [
+              0.97,
+              0.97,
+              0.96
+            ]
+          }
+        },
+        {
+          "operation": "layer.create_solid",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "name": "Synthetic background",
+            "color": [
+              0.97,
+              0.97,
+              0.96
+            ]
+          }
+        },
+        {
+          "operation": "layer.create_shape",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "name": "Save receipt"
+          }
+        },
+        {
+          "operation": "shape.add_group",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Save receipt",
+            "name": "Card"
+          }
+        },
+        {
+          "operation": "shape.add_rect",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Save receipt",
+            "groupIndex": 1,
+            "size": [
+              400,
+              104
+            ],
+            "roundness": 18
+          }
+        },
+        {
+          "operation": "shape.add_fill",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Save receipt",
+            "groupIndex": 1,
+            "color": [
+              1,
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "operation": "transform.set",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Save receipt",
+            "position": [
+              320,
+              216
+            ]
+          }
+        },
+        {
+          "operation": "layer.create_text",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "name": "Editable receipt title",
+            "text": "Saved"
+          }
+        },
+        {
+          "operation": "text.set_style",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt title",
+            "font": "Arial-BoldMT",
+            "fontSize": 24,
+            "fillColor": [
+              0.13,
+              0.13,
+              0.13
+            ]
+          }
+        },
+        {
+          "operation": "transform.set",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt title",
+            "position": [
+              220,
+              205
+            ]
+          }
+        },
+        {
+          "operation": "layer.set_parent",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt title",
+            "parentLayer": "Save receipt"
+          }
+        },
+        {
+          "operation": "layer.create_text",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "name": "Editable receipt detail",
+            "text": "Available in Saved."
+          }
+        },
+        {
+          "operation": "text.set_style",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt detail",
+            "font": "ArialMT",
+            "fontSize": 16,
+            "fillColor": [
+              0.4,
+              0.4,
+              0.4
+            ]
+          }
+        },
+        {
+          "operation": "transform.set",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt detail",
+            "position": [
+              220,
+              238
+            ]
+          }
+        },
+        {
+          "operation": "layer.set_parent",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt detail",
+            "parentLayer": "Save receipt"
+          }
+        },
+        {
+          "operation": "layer.create_shape",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "name": "Editable check"
+          }
+        },
+        {
+          "operation": "shape.add_group",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable check",
+            "name": "Check path"
+          }
+        },
+        {
+          "operation": "shape.add_path",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable check",
+            "groupIndex": 1,
+            "vertices": [
+              [
+                0,
+                13
+              ],
+              [
+                7,
+                20
+              ],
+              [
+                22,
+                4
+              ]
+            ],
+            "closed": false
+          }
+        },
+        {
+          "operation": "shape.add_stroke",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable check",
+            "groupIndex": 1,
+            "color": [
+              0.13,
+              0.13,
+              0.13,
+              1
+            ],
+            "width": 3
+          }
+        },
+        {
+          "operation": "transform.set",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable check",
+            "position": [
+              170,
+              203
+            ]
+          }
+        },
+        {
+          "operation": "layer.set_parent",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable check",
+            "parentLayer": "Save receipt"
+          }
+        },
+        {
+          "operation": "keyframe.set_batch",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Save receipt",
+            "property": [
+              "Transform",
+              "Position"
+            ],
+            "times": [
+              0,
+              0.24
+            ],
+            "values": [
+              [
+                320,
+                238
+              ],
+              [
+                320,
+                216
+              ]
+            ]
+          }
+        },
+        {
+          "operation": "keyframe.set_batch",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Save receipt",
+            "property": [
+              "Transform",
+              "Opacity"
+            ],
+            "times": [
+              0,
+              0.24
+            ],
+            "values": [
+              0,
+              100
+            ]
+          }
+        },
+        {
+          "operation": "keyframe.set_batch",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt title",
+            "property": [
+              "Transform",
+              "Opacity"
+            ],
+            "times": [
+              0,
+              0.24
+            ],
+            "values": [
+              0,
+              100
+            ]
+          }
+        },
+        {
+          "operation": "keyframe.set_batch",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable receipt detail",
+            "property": [
+              "Transform",
+              "Opacity"
+            ],
+            "times": [
+              0,
+              0.24
+            ],
+            "values": [
+              0,
+              100
+            ]
+          }
+        },
+        {
+          "operation": "keyframe.set_batch",
+          "args": {
+            "comp": "DI_Motion_Lab_Receipt_240ms_20260919",
+            "layer": "Editable check",
+            "property": [
+              "Transform",
+              "Opacity"
+            ],
+            "times": [
+              0,
+              0.24
+            ],
+            "values": [
+              0,
+              100
+            ]
+          }
+        }
+      ],
+      "stopOnError": true
+    }
+  },
+  "status": "EXECUTED_2026_09_20",
+  "notes": "Executed through direct AE tools after fresh empty-project inspection and separate backup. Opacity is explicitly keyed on the three child layers because AE parenting does not inherit opacity."
+}

@@ -1,6 +1,7 @@
 const MAX_STEPS = 10;
 const MAX_BODY_TEXT = 4000;
 const MAX_ACTIONS_FOR_AI = 12;
+const { confirmationQuote } = require('./unsubscribeEvidence');
 
 const POSITIVE_ACTION_RULES = [
   { pattern: /\bunsubscribe\b/i, score: 12 },
@@ -62,19 +63,6 @@ const RECOVERY_ACTION_RULES = [
   { pattern: /\bmanage subscriptions?\b/i, score: 8 },
   { pattern: /\bemail settings?\b/i, score: 8 },
   { pattern: /\baccount settings?\b/i, score: 6 },
-];
-
-const SUCCESS_PATTERNS = [
-  /\byou('?| a)re unsubscribed\b/i,
-  /\bsuccessfully unsubscribed\b/i,
-  /\byou have been unsubscribed\b/i,
-  /\byou have been removed\b/i,
-  /\bremoved from (our )?(mailing|email) list\b/i,
-  /\bno longer receive\b/i,
-  /\bpreferences? (have been )?(updated|saved)\b/i,
-  /\bsubscription status (has been )?updated\b/i,
-  /\bemail settings (have been )?(updated|saved)\b/i,
-  /\bunsubscribe(d)? successfully\b/i,
 ];
 
 const MANUAL_PATTERNS = [
@@ -271,7 +259,7 @@ async function snapshotPage(page) {
     return {
       url: window.location.href,
       title: normalize(document.title),
-      bodyText: normalize(document.body?.innerText ?? '').slice(0, maxBodyText),
+      bodyText: String(document.body?.innerText ?? '').slice(0, maxBodyText),
       actions,
       fields,
     };
@@ -279,11 +267,7 @@ async function snapshotPage(page) {
 }
 
 function detectSuccess(snapshot) {
-  const haystack = normalizeText(`${snapshot.title} ${snapshot.bodyText} ${snapshot.url}`);
-  if (matchesAny(haystack, SUCCESS_PATTERNS)) return true;
-  if (/unsubscribe\/success/i.test(snapshot.url)) return true;
-  if (/status=unsubscribed/i.test(snapshot.url)) return true;
-  return false;
+  return confirmationQuote(snapshot) != null;
 }
 
 function detectManualBlocker(snapshot) {
@@ -547,10 +531,13 @@ Look at the page carefully. What should I click to complete the unsubscribe?
 
 Return JSON only — one of:
 {"action":"click","x":NUMBER,"y":NUMBER,"reason":"brief explanation"}
-{"action":"done","reason":"already unsubscribed"}
+{"action":"done","reason":"already unsubscribed","confirmationQuote":"exact visible removal confirmation"}
 {"action":"manual","reason":"needs login, captcha, or human judgment"}
 
-x and y are pixel coordinates in the screenshot (viewport is 1440×1200).`;
+x and y are pixel coordinates in the screenshot (viewport is 1440×1200).
+For done, quote the sender's exact affirmative statement that this reader has been removed from email.
+Saved preferences, an unsubscribe button, a success URL or conditional instructions are not confirmation.
+If there is no explicit removal confirmation, choose manual rather than done.`;
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o',
@@ -609,7 +596,7 @@ async function chooseActionWithAi(snapshot, history, openai, recent = []) {
     '',
     'Return one of:',
     '{"action":"click","candidateId":"...","reason":"...","message":"..."}',
-    '{"action":"done","reason":"...","message":"..."}',
+    '{"action":"done","reason":"...","message":"...","confirmationQuote":"exact visible removal confirmation"}',
     '{"action":"manual","reason":"...","message":"..."}',
     '',
     '',
@@ -618,6 +605,7 @@ async function chooseActionWithAi(snapshot, history, openai, recent = []) {
     recent.length ? `PREVIOUS LINES (do not reuse their opening):\n${recent.map(line => `- ${line}`).join('\n')}` : '',
     '',
     'Use "done" only if the page clearly confirms the user is off their list.',
+    'For done, confirmationQuote must quote the exact affirmative removal statement in the body excerpt. Saved preferences, success URLs, future instructions and conditional text are not removal confirmation.',
     'Use "manual" if the page requires a captcha, login, or human judgment.',
   ].filter(Boolean).join('\n');
 
@@ -628,14 +616,14 @@ async function chooseActionWithAi(snapshot, history, openai, recent = []) {
     const jsonEnd = raw.lastIndexOf('}');
     if (jsonStart === -1 || jsonEnd === -1) return null;
     const parsed = JSON.parse(raw.slice(jsonStart, jsonEnd + 1));
-    // Only `action`, `reason` and `message` are read back. Anything the model
-    // volunteers about the step it thinks it is on is dropped on the floor
-    // here: the step is ours, and the sentence is the only thing it writes.
+    // A done verdict must carry an exact confirming quote. The shared finish
+    // boundary checks it against visible source text before accepting it.
     return {
       action:      parsed.action,
       candidateId: parsed.candidateId,
       reason:      parsed.reason,
       message:     typeof parsed.message === 'string' ? normalizeText(parsed.message) || null : null,
+      confirmationQuote: typeof parsed.confirmationQuote === 'string' ? parsed.confirmationQuote : null,
     };
   } catch {
     return null;
@@ -653,7 +641,7 @@ async function chooseNextAction(snapshot, history, openai, recent) {
   }
 
   const aiChoice = await chooseActionWithAi(snapshot, history, openai, recent);
-  if (aiChoice?.action === 'done') return { action: 'done', message: aiChoice.message };
+  if (aiChoice?.action === 'done') return { action: 'done', message: aiChoice.message, confirmationQuote: aiChoice.confirmationQuote };
   if (aiChoice?.action === 'manual') return { action: 'manual', reason: aiChoice.reason ?? 'page requires manual action' };
   if (aiChoice?.action === 'click' && aiChoice.candidateId) {
     const candidate = snapshot.actions.find(action => action.id === aiChoice.candidateId);
@@ -716,11 +704,21 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
   // whoever wrote it.
   const say = (step, message, extra) => emit(step, remember(message), extra);
 
-  const finish = async (step, situation, snapshot, message = null) => ({
-    step,
-    message: message ?? await generateMessage(openai, situation, snapshot?.title ?? '', recent),
-    evidence: snapshot ? evidenceOf(snapshot) : null,
-  });
+  const finish = async (step, situation, snapshot, message = null, proposedQuote = undefined) => {
+    const quote = step === 'done' ? confirmationQuote(snapshot, proposedQuote) : null;
+    if (step === 'done' && !quote) {
+      return { step: 'needs_you', outcome: 'outcome_unknown',
+        message: 'The page did not provide a clear removal confirmation. Check it yourself.',
+        evidence: snapshot ? evidenceOf(snapshot) : null, handoffURL: snapshot?.url || unsubscribeUrl };
+    }
+    return {
+      step,
+      message: message ?? await generateMessage(openai, situation, snapshot?.title ?? '', recent),
+      evidence: quote ? `Sender confirmation: “${quote}” — ${snapshot.url}` : snapshot ? evidenceOf(snapshot) : null,
+      handoffURL: ['needs_you', 'no_link', 'failed'].includes(step) ? (snapshot?.url || unsubscribeUrl) : null,
+      outcome: step === 'done' ? 'sender_confirmed' : history.length > 0 ? 'outcome_unknown' : null,
+    };
+  };
 
   // ANALYZING is reported once per page, not once per pass of the loop. The
   // same sentence arriving three times while nothing on screen changes reads
@@ -793,6 +791,7 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
             { evidence: evidenceOf(snapshot) },
           );
           await page.mouse.click(visionChoice.x, visionChoice.y);
+          history.push({ signature: `vision click ${visionChoice.x},${visionChoice.y}` });
           await settlePage(page);
           const afterSnapshot = await snapshotPage(page);
           if (detectSuccess(afterSnapshot)) {
@@ -801,7 +800,7 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
           continue;
         }
         if (visionChoice?.action === 'done') {
-          return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot);
+          return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot, null, visionChoice.confirmationQuote ?? '');
         }
         if (visionChoice?.action === 'manual') {
           return finish('needs_you', visionChoice.reason || `${senderName}'s page wants a person`, snapshot);
@@ -814,11 +813,13 @@ async function runUnsubscribeAgent({ browser, unsubscribeUrl, userEmail, emit, o
         if (pageLooksRecoverable(snapshot)) {
           return finish('failed', `${senderName}'s unsubscribe page is broken and offers no safe fallback link`, snapshot);
         }
-        return finish('no_link', `there is nothing on ${senderName}'s page to click`, snapshot);
+        return history.length > 0
+          ? finish('needs_you', `${senderName}'s page has not confirmed removal after the attempted action`, snapshot)
+          : finish('no_link', `there is nothing on ${senderName}'s page to click`, snapshot);
       }
 
       if (choice.action === 'done') {
-        return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot, choice.message);
+        return finish('done', `${senderName}'s own page confirms the user is off their list`, snapshot, choice.message, choice.confirmationQuote ?? '');
       }
 
       if (choice.action === 'manual') {

@@ -11,7 +11,7 @@ struct GmailClient {
     /// Which mailbox the message is sent from.
     let accountID: String
 
-    struct Draft {
+    struct Draft: Codable, Equatable, Sendable {
         var to: [String]
         var cc: [String] = []
         var subject: String
@@ -20,6 +20,13 @@ struct GmailClient {
         /// rather than starting a new one beside it.
         var threadID: String?
         var inReplyTo: String?
+        var attachments: [FileAttachment] = []
+    }
+
+    struct FileAttachment: Codable, Equatable, Sendable {
+        var filename: String
+        var mimeType: String
+        var data: Data
     }
 
     func unreadCount() async throws -> Int {
@@ -36,19 +43,7 @@ struct GmailClient {
     }
 
     func send(_ draft: Draft) async throws {
-        var headers = [
-            "To: \(draft.to.joined(separator: ", "))",
-            "Subject: \(Self.encodeHeader(draft.subject))",
-            "MIME-Version: 1.0",
-            "Content-Type: text/plain; charset=UTF-8",
-        ]
-        if !draft.cc.isEmpty { headers.insert("Cc: \(draft.cc.joined(separator: ", "))", at: 1) }
-        if let inReplyTo = draft.inReplyTo {
-            headers.append("In-Reply-To: \(inReplyTo)")
-            headers.append("References: \(inReplyTo)")
-        }
-
-        let raw = (headers.joined(separator: "\r\n") + "\r\n\r\n" + draft.body)
+        let raw = try Self.mimeMessage(draft)
         var payload: [String: Any] = ["raw": Data(raw.utf8).base64URLEncoded]
         if let threadID = draft.threadID { payload["threadId"] = threadID }
 
@@ -56,14 +51,57 @@ struct GmailClient {
             url: URL(string: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send")!
         )
         request.httpMethod = "POST"
+        request.timeoutInterval = 60
         request.setValue("Bearer \(try await auth.validAccessToken(for: accountID))", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw GmailError.send(String(decoding: data, as: UTF8.self))
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        // A provider/server failure does not establish that submission failed.
+        guard http.statusCode < 500 else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            struct Failure: Decodable { struct Detail: Decodable { let message: String }; let error: Detail }
+            let reason = (try? JSONDecoder().decode(Failure.self, from: data).error.message) ?? "Gmail declined this email (\(http.statusCode))."
+            throw GmailError.send(reason)
         }
+    }
+
+    static func mimeMessage(_ draft: Draft, boundary: String = "mail-\(UUID().uuidString)") throws -> String {
+        let addresses = draft.to + draft.cc
+        guard !draft.to.isEmpty, addresses.allSatisfy({ address in
+            address.rangeOfCharacter(from: .newlines) == nil && address.contains("@")
+        }) else { throw GmailError.send("Check the recipient addresses.") }
+        guard draft.attachments.reduce(0, { $0 + $1.data.count }) <= 25_000_000 else {
+            throw GmailError.send("The combined attachments exceed 25 MB. Remove a file or send a link.")
+        }
+        var headers = [
+            "To: \(draft.to.joined(separator: ", "))",
+            "Subject: \(Self.encodeHeader(draft.subject.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")))",
+            "MIME-Version: 1.0",
+        ]
+        if !draft.cc.isEmpty { headers.insert("Cc: \(draft.cc.joined(separator: ", "))", at: 1) }
+        // A Gmail resource ID is not an RFC Message-ID. Only carry a real
+        // header value; threadID is independently used for Gmail grouping.
+        if let inReplyTo = draft.inReplyTo, inReplyTo.hasPrefix("<"), inReplyTo.hasSuffix(">"),
+           inReplyTo.rangeOfCharacter(from: .newlines) == nil {
+            headers.append("In-Reply-To: \(inReplyTo)")
+            headers.append("References: \(inReplyTo)")
+        }
+
+        let textPart = "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n" + Data(draft.body.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed])
+        if draft.attachments.isEmpty {
+            return headers.joined(separator: "\r\n") + "\r\n" + textPart
+        }
+        headers.append("Content-Type: multipart/mixed; boundary=\"\(boundary)\"")
+        var parts = [textPart]
+        for attachment in draft.attachments {
+            let filename = attachment.filename.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "attachment"
+            let type = attachment.mimeType.range(of: #"^[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+$"#, options: .regularExpression) != nil
+                ? attachment.mimeType : "application/octet-stream"
+            parts.append("Content-Type: \(type)\r\nContent-Disposition: attachment; filename*=UTF-8''\(filename)\r\nContent-Transfer-Encoding: base64\r\n\r\n" + attachment.data.base64EncodedString(options: [.lineLength76Characters, .endLineWithCarriageReturn, .endLineWithLineFeed]))
+        }
+        return headers.joined(separator: "\r\n") + "\r\n\r\n--\(boundary)\r\n" + parts.joined(separator: "\r\n--\(boundary)\r\n") + "\r\n--\(boundary)--\r\n"
     }
 
     /// Removes INBOX, which is what archiving is. Marking read is a different

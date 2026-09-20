@@ -21,11 +21,15 @@ struct ActionRow: View {
     var onUnsubscribe: () -> Void = {}
     /// Nil clears it.
     var onReact: (String?) -> Void = { _ in }
+    var onInteractionChanged: (Bool) -> Void = { _ in }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
 
     @State private var picking = false
+    @State private var dragPicking = false
+    @GestureState private var holdingReaction = false
+    @AccessibilityFocusState private var reactFocused: Bool
     /// Which reaction is under the finger mid-drag.
     @State private var focus: Int?
 
@@ -50,7 +54,10 @@ struct ActionRow: View {
         if collapsed {
             collapsedMenu
         } else {
-            row
+            ViewThatFits(in: .horizontal) {
+                row.frame(minWidth: ReactionPicker.width(Reaction.all.count))
+                collapsedMenu
+            }
         }
     }
 
@@ -94,7 +101,7 @@ struct ActionRow: View {
 
             Spacer(minLength: Space.md)
 
-            file(message.isSaved ? "bookmark.fill" : "bookmark", label: "Save", action: onSave)
+            file(message.isSaved ? "bookmark.fill" : "bookmark", label: message.isSaved ? "Unsave" : "Save", action: onSave)
             file("archivebox", label: "Archive", action: onArchive)
         }
     }
@@ -186,24 +193,34 @@ struct ActionRow: View {
         .frame(width: Metric.tapTarget, height: Metric.tapTarget)
         .contentShape(.rect)
         .gesture(pickGesture)
-        // Tap is a separate, simpler contract than the press-and-drag: open
-        // the row, or clear a reaction that is already set. Attached after the
-        // drag gesture so the drag wins when both could apply.
+        // Tap opens labeled choices, including clear. Holding adds a shortcut;
+        // it never removes the ordinary tappable route.
         .simultaneousGesture(
             TapGesture().onEnded {
-                if picking {
-                    close()
-                } else if message.reaction != nil {
-                    // No cue. `FeedStore.react` owns this event, and its rule
-                    // is that clearing is a correction and stays silent. This
-                    // line fired `commit()` anyway, so the view and the store
-                    // disagreed about a decision only one of them owns.
-                    onReact(nil)
-                } else {
-                    open()
-                }
+                guard !dragPicking else { return }
+                picking.toggle()
             }
         )
+        .popover(isPresented: $picking, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+            reactionMenu
+                .presentationCompactAdaptation(.popover)
+        }
+        .onDisappear { picking = false; dragPicking = false; focus = nil; onInteractionChanged(false) }
+        .onChange(of: picking) { _, shown in
+            onInteractionChanged(shown || holdingReaction)
+            if !shown { reactFocused = true }
+        }
+        .onChange(of: holdingReaction) { _, held in
+            onInteractionChanged(held || picking)
+            guard !held else { return }
+            Task { @MainActor in
+                await Task.yield()
+                if !holdingReaction && dragPicking { close() }
+            }
+        }
+        .accessibilityFocused($reactFocused)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { picking = true }
         .accessibilityLabel(reactionLabel)
         // VoiceOver cannot drag a dock, so the whole set is offered as named
         // actions instead. This is the only route for it, so it lists every
@@ -221,18 +238,19 @@ struct ActionRow: View {
     private var reactionLabel: String {
         guard let reaction = message.reaction else { return "React" }
         let named = Reaction.label(for: reaction) ?? reaction
-        return "Reacted \(named). Tap to clear, press and hold to change"
+        return "Marked \(named). Change reaction"
     }
 
     @ViewBuilder private var picker: some View {
-        if picking {
-            ReactionPicker(reactions: Reaction.all, focus: focus)
+        if dragPicking {
+            ReactionPicker(reactions: Reaction.all, focus: focus, selected: message.reaction,
+                           onSelect: select)
                 // Clear of the row, and hung from the acting group's leading
                 // edge so it rises out of the react target rather than from
                 // the centre of the card.
                 .offset(y: -(Metric.tapTarget + Space.md))
                 .transition(
-                    .scale(scale: 0.86, anchor: .bottomLeading)
+                    reduceMotion ? .opacity : .scale(scale: 0.96, anchor: .bottomLeading)
                         .combined(with: .opacity)
                 )
                 .zIndex(1)
@@ -244,9 +262,15 @@ struct ActionRow: View {
     private var pickGesture: some Gesture {
         LongPressGesture(minimumDuration: 0.18)
             .sequenced(before: DragGesture(minimumDistance: 0))
+            .updating($holdingReaction) { value, state, _ in
+                switch value {
+                case .first(let held): state = held
+                case .second(let held, _): state = held
+                }
+            }
             .onChanged { value in
                 guard case .second(true, let drag) = value else { return }
-                if !picking { open() }
+                if !dragPicking { openDrag() }
                 guard let drag else { return }
                 let next = hit(drag.location)
                 if next != focus {
@@ -259,15 +283,15 @@ struct ActionRow: View {
             }
             .onEnded { value in
                 guard case .second(true, let drag) = value else { return }
-                // Lifting off the row leaves the picker up so it can be
-                // tapped — a press that opened something should not close it
-                // again just because the finger did not travel.
-                guard let drag, let index = hit(drag.location) else { return }
-                // The store fires the commit cue. Firing one here too gave a
-                // single reaction two cues from two generators back to back —
-                // `commit()` from this line and `detent()` from the store.
-                onReact(Reaction.all[index].emoji)
-                close()
+                if let drag, let index = hit(drag.location) {
+                    select(Reaction.all[index].emoji)
+                } else {
+                    let barelyMoved = drag.map { hypot($0.translation.width, $0.translation.height) < 12 } ?? true
+                    close()
+                    // A held press without travel opens the tappable menu.
+                    // Dragging away cancels rather than selecting a nearby item.
+                    if barelyMoved { picking = true }
+                }
             }
     }
 
@@ -288,10 +312,10 @@ struct ActionRow: View {
 
     /// In the react target's own coordinate space, where 0 is its top edge.
     /// The picker sits above it, so the band reaches well into negative y and
-    /// only a little below the target itself.
-    private static let liveBand: ClosedRange<CGFloat> = -150...60
+    /// ends above the target so a stationary release cannot select a choice.
+    private static let liveBand: ClosedRange<CGFloat> = -80 ... -4
 
-    private func open() {
+    private func openDrag() {
         // A long press completing is a threshold crossed under the finger,
         // which is what `threshold()` means and what the swipe uses for the
         // identical situation. It fired `announce()`, a cue reserved for the
@@ -299,7 +323,7 @@ struct ActionRow: View {
         // which a picker opening above one row is not.
         Haptics.threshold()
         withAnimation(reduceMotion ? nil : Move.crisp) {
-            picking = true
+            dragPicking = true
             focus = nil
         }
     }
@@ -307,8 +331,41 @@ struct ActionRow: View {
     private func close() {
         withAnimation(reduceMotion ? nil : Move.exit) {
             picking = false
+            dragPicking = false
             focus = nil
         }
+    }
+
+    private func select(_ emoji: String) {
+        onReact(emoji)
+        close()
+        reactFocused = true
+    }
+
+    private var reactionMenu: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Space.md) {
+                HStack {
+                    Text("Mark this email").typeStyle(Style.sender)
+                    Spacer(minLength: Space.sm)
+                    Button("Done") { close(); reactFocused = true }
+                        .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
+                        .buttonStyle(TapStyle())
+                }
+                Text("Only in this app. Nothing is sent.")
+                    .typeStyle(Style.bodySmall).foregroundStyle(Ink.secondary)
+                ReactionPicker(reactions: Reaction.all, focus: nil, selected: message.reaction,
+                               showsLabels: true, onSelect: select)
+                if message.reaction != nil {
+                    Button("Remove reaction") { onReact(nil); close(); reactFocused = true }
+                        .frame(maxWidth: .infinity, minHeight: Metric.tapTarget)
+                        .buttonStyle(TapStyle())
+                }
+            }
+            .padding(Space.lg)
+        }
+        .frame(idealWidth: 340, maxHeight: 480)
+        .accessibilityAction(.escape) { close(); reactFocused = true }
     }
 
     /// Acting on the message.
@@ -363,7 +420,7 @@ struct ActionRow: View {
     /// `Haptics.swift` exists to prevent. Save and Archive are local and true
     /// on the spot.
     private func filing(_ label: String) -> Bool {
-        label == "Save" || label == "Archive"
+        label == "Save" || label == "Unsave" || label == "Archive"
     }
 
     /// H3 / H4 — save, archive and unsubscribe all mean "that state now

@@ -17,7 +17,10 @@ struct SenderProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lane: Lane = .emails
+    @Namespace private var laneMotion
     @State private var open: Message?
+    @State private var initialComposeIntent: ComposeView.Intent?
+    @State private var focusDiscussion = false
     @State private var thread: Conversation?
     /// The conversation's own messages. The lanes below were built when a
     /// profile could only be reached from the feed, so all three read
@@ -247,12 +250,17 @@ struct SenderProfileView: View {
             // Keep useful cached content when the network returns no records.
             if !received.isEmpty || chatMessages.isEmpty { chatMessages = received }
         }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { ActivityToolbarButton() } }
+        .safeAreaInset(edge: .bottom) {
+            if openingFile { HStack { ProgressView("Opening file…"); Spacer(); Button("Cancel") { opener.cancel() } }.padding().background(Ink.surface) }
+        }
+        .onDisappear { opener.cancel() }
         .backNavigation { dismiss() }
         .toolbar(.hidden, for: .tabBar)
         // A sheet everywhere, so a thread opened from here is the same
         // object as one opened from the feed.
         .sheet(item: $open) {
-            ThreadView(message: $0)
+            ThreadView(message: $0, initialComposeIntent: initialComposeIntent, focusDiscussion: focusDiscussion)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(.clear)
@@ -431,9 +439,9 @@ struct SenderProfileView: View {
                 PostView(
                     message: message,
                     onOpen: { openPost(message) },
-                    onReply: { openPost(message) },
-                    onDiscuss: { openPost(message) },
-                    onForward: { openPost(message) },
+                    onReply: { initialComposeIntent = .reply; focusDiscussion = false; open = message },
+                    onDiscuss: { initialComposeIntent = nil; focusDiscussion = true; open = message },
+                    onForward: { initialComposeIntent = .forward; focusDiscussion = false; open = message },
                     onSave: { store.toggleSaved(message) },
                     onArchive: { store.archive(message) },
                     onUnsubscribe: { store.unsubscribe(from: message) },
@@ -445,6 +453,7 @@ struct SenderProfileView: View {
     }
 
     private func openPost(_ message: Message) {
+        initialComposeIntent = nil; focusDiscussion = false
         if let chat, chatMessages.contains(where: { $0.id == message.id }) {
             thread = chat
         } else {
@@ -462,7 +471,6 @@ struct SenderProfileView: View {
     }
 
     private func openFile(_ file: Attachment) {
-        guard !openingFile else { return }
         lastOpenedFile = file
         Task { await opener.open(file, authorization: nil) }
     }
@@ -633,37 +641,38 @@ struct SenderProfileView: View {
     /// — which is also the only tab whose name you need.
     private var lanePicker: some View {
         HStack(spacing: 0) {
-            ForEach(Lane.allCases) { option in
-                Button {
-                    withAnimation(Move.resolved(Move.crisp, reduceMotion)) { lane = option }
-                } label: {
-                    VStack(spacing: Space.sm + 2) {
-                        HStack(spacing: Space.xs + 2) {
-                            Image(systemName: option.symbol)
-                                .font(.system(size: 17))
-                            if lane == option {
-                                Text(option.label)
-                                    .typeStyle(Style.kicker)
-                            }
-                        }
-                        .foregroundStyle(lane == option ? Ink.primary : Ink.tertiary)
-                        .frame(minHeight: 22)
+            ForEach(Lane.allCases) { option in laneButton(option) }
+        }
+        .animation(Move.resolved(Move.crisp, reduceMotion), value: lane)
+        .padding(.top, Space.xl)
+    }
 
-                        // Spans the tab, not the label: at full width an
-                        // underline that hugs a word leaves the rest of the
-                        // column looking unclaimed.
-                        Rectangle()
-                            .fill(lane == option ? Ink.primary : .clear)
-                            .frame(height: 2)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: Metric.tapTarget)
-                    .contentShape(.rect)
+    private func laneButton(_ option: Lane) -> some View {
+        Button { lane = option } label: {
+            VStack(spacing: Space.sm + 2) {
+                HStack(spacing: Space.xs + 2) {
+                    Image(systemName: option.symbol).font(.system(size: 17))
+                    if lane == option { Text(option.label).typeStyle(Style.kicker) }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(option.label.capitalized)
-                .accessibilityAddTraits(lane == option ? [.isSelected, .isButton] : .isButton)
+                .foregroundStyle(lane == option ? Ink.primary : Ink.tertiary)
+                .frame(minHeight: 22)
+                laneMarker(option)
+            }
+            .frame(maxWidth: .infinity, minHeight: Metric.tapTarget)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.label.capitalized)
+        .accessibilityAddTraits(lane == option ? [.isSelected, .isButton] : .isButton)
+    }
+
+    @ViewBuilder private func laneMarker(_ option: Lane) -> some View {
+        ZStack {
+            Color.clear.frame(height: 2)
+            if lane == option {
+                if reduceMotion { Rectangle().fill(Ink.primary).frame(height: 2) }
+                else { Rectangle().fill(Ink.primary).frame(height: 2).matchedGeometryEffect(id: "profile-lane", in: laneMotion) }
             }
         }
-        .padding(.top, Space.xl)
     }
 }

@@ -1,0 +1,823 @@
+{
+  "verifiedAt": "2026-09-19",
+  "source": "fnf-after-effects-mcp local ae_catalog via external SDK",
+  "operations": [
+    {
+      "name": "batch.run",
+      "description": "Execute multiple operations in a single IPC call (~400ms total instead of 400ms \u00d7 N). Operations run sequentially inside ONE undo group \u2014 a single Ctrl+Z reverts the whole batch, however many ops it contained. That group is also why undo/redo children (project.undo, command.execute id 16/2035) are rejected here: call those as their own ae_do. If one fails, subsequent ops still run unless stopOnError. Results array matches input order; the response reports how many failed. Mix in read/verify children \u2014 comp.info, layer.info, render.frame \u2014 to mutate AND verify in the same call, e.g. [...mutations, { operation: 'render.frame', args: { \u2026 } }].",
+      "readOnly": true,
+      "params": [
+        {
+          "name": "ops",
+          "type": "array",
+          "required": true,
+          "description": "Array of { operation, args } objects, e.g. [{ \"operation\": \"layer.create_solid\", \"args\": { \"comp\": \"Main\", \"color\": [1,0,0] } }]"
+        },
+        {
+          "name": "stopOnError",
+          "type": "boolean",
+          "required": false,
+          "description": "Stop executing remaining ops if one fails (default false)"
+        }
+      ]
+    },
+    {
+      "name": "comp.create",
+      "description": "Create a new composition.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "Composition name"
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": true,
+          "description": "Width in px"
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": true,
+          "description": "Height in px"
+        },
+        {
+          "name": "fps",
+          "type": "number",
+          "required": true,
+          "description": "Frame rate"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": true,
+          "description": "Duration in seconds"
+        },
+        {
+          "name": "bgColor",
+          "type": "array",
+          "required": false,
+          "description": "[r,g,b] 0-1"
+        }
+      ]
+    },
+    {
+      "name": "comp.duplicate",
+      "description": "Duplicate a composition.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id to duplicate"
+        },
+        {
+          "name": "newName",
+          "type": "string",
+          "required": false,
+          "description": "Name for the duplicate"
+        }
+      ]
+    },
+    {
+      "name": "keyframe.set_batch",
+      "description": "Set many keyframes on one property in a single call (Property.setValuesAtTimes). times and values must have the same length.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index, or the layer name"
+        },
+        {
+          "name": "property",
+          "type": "array",
+          "required": true,
+          "description": "Property path"
+        },
+        {
+          "name": "times",
+          "type": "array",
+          "required": true,
+          "description": "Times in seconds"
+        },
+        {
+          "name": "values",
+          "type": "array",
+          "required": true,
+          "description": "Values, one per time (same order)"
+        }
+      ]
+    },
+    {
+      "name": "keyframe.shift",
+      "description": "Retime all keyframes on a property: newTime = (time - pivot) * scale + pivot + offset. Preserves interpolation, ease, and spatial tangents best-effort.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index, or the layer name"
+        },
+        {
+          "name": "property",
+          "type": "array",
+          "required": true,
+          "description": "Property path"
+        },
+        {
+          "name": "offset",
+          "type": "number",
+          "required": false,
+          "description": "Seconds to shift by (default 0)",
+          "default": 0
+        },
+        {
+          "name": "scale",
+          "type": "number",
+          "required": false,
+          "description": "Time scale factor around pivot (default 1)",
+          "default": 1
+        },
+        {
+          "name": "pivot",
+          "type": "number",
+          "required": false,
+          "description": "Pivot time in seconds for scaling (default 0)",
+          "default": 0
+        }
+      ]
+    },
+    {
+      "name": "layer.create_shape",
+      "description": "Create an empty shape layer.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description": "Layer name"
+        }
+      ]
+    },
+    {
+      "name": "layer.create_solid",
+      "description": "Create a solid layer in a composition.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description": "Layer name",
+          "default": "Solid"
+        },
+        {
+          "name": "color",
+          "type": "array",
+          "required": false,
+          "description": "[r,g,b] 0-1",
+          "default": [
+            1,
+            1,
+            1
+          ]
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": false,
+          "description": "Width in px (default: comp width)"
+        },
+        {
+          "name": "height",
+          "type": "number",
+          "required": false,
+          "description": "Height in px (default: comp height)"
+        }
+      ]
+    },
+    {
+      "name": "layer.create_text",
+      "description": "Create a text layer: point text by default, paragraph (box) text when boxSize is given, vertical when orientation='vertical' (AE 24.2+). Point<->box conversion is not scriptable, so pick the right kind here.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": false,
+          "description": "Text content",
+          "default": ""
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description": "Layer name"
+        },
+        {
+          "name": "boxSize",
+          "type": "array",
+          "required": false,
+          "description": "[width, height] \u2014 creates paragraph (box) text instead of point text"
+        },
+        {
+          "name": "boxPosition",
+          "type": "array",
+          "required": false,
+          "description": "[x, y] top-left of the box in layer space (box text only)"
+        },
+        {
+          "name": "orientation",
+          "type": "string",
+          "required": false,
+          "description": "horizontal|vertical (vertical needs AE 24.2+)",
+          "default": "horizontal"
+        }
+      ]
+    },
+    {
+      "name": "layer.set_parent",
+      "description": "Set or clear a layer's parent. By default AE compensates the child's transform so it doesn't move; jump=true skips compensation (setParentWithJump) so the child adopts the parent's space.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based child layer index, or the layer name"
+        },
+        {
+          "name": "parentLayer",
+          "type": "any",
+          "required": true,
+          "description": "1-based parent layer index or name. Pass null or 0 to unparent.",
+          "nullable": true
+        },
+        {
+          "name": "jump",
+          "type": "boolean",
+          "required": false,
+          "description": "true = no transform compensation (setParentWithJump). Default false.",
+          "default": false
+        }
+      ]
+    },
+    {
+      "name": "shape.add_fill",
+      "description": "Add a Fill to a shape group.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index, or the layer name"
+        },
+        {
+          "name": "groupIndex",
+          "type": "number",
+          "required": true,
+          "description": "1-based group index within Contents"
+        },
+        {
+          "name": "color",
+          "type": "array",
+          "required": true,
+          "description": "[r,g,b,a] 0-1"
+        },
+        {
+          "name": "opacity",
+          "type": "number",
+          "required": false,
+          "description": "Opacity 0-100",
+          "default": 100
+        }
+      ]
+    },
+    {
+      "name": "shape.add_group",
+      "description": "Add a Vector Group to a shape layer's Contents.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index or name (must be a shape layer)"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description": "Group name"
+        }
+      ]
+    },
+    {
+      "name": "shape.add_path",
+      "description": "Add a custom bezier Path (vertices + tangents) to a shape group.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index, or the layer name"
+        },
+        {
+          "name": "groupIndex",
+          "type": "number",
+          "required": true,
+          "description": "1-based group index within Contents"
+        },
+        {
+          "name": "vertices",
+          "type": "array",
+          "required": true,
+          "description": "Array of [x,y] points"
+        },
+        {
+          "name": "inTangents",
+          "type": "array",
+          "required": false,
+          "description": "Array of [x,y] in-tangent offsets"
+        },
+        {
+          "name": "outTangents",
+          "type": "array",
+          "required": false,
+          "description": "Array of [x,y] out-tangent offsets"
+        },
+        {
+          "name": "closed",
+          "type": "boolean",
+          "required": false,
+          "description": "Close the path (default true)",
+          "default": true
+        }
+      ]
+    },
+    {
+      "name": "shape.add_rect",
+      "description": "Add a Rectangle Path to a shape group.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index, or the layer name"
+        },
+        {
+          "name": "groupIndex",
+          "type": "number",
+          "required": true,
+          "description": "1-based group index within Contents"
+        },
+        {
+          "name": "size",
+          "type": "array",
+          "required": true,
+          "description": "[width, height]"
+        },
+        {
+          "name": "position",
+          "type": "array",
+          "required": false,
+          "description": "[x, y] offset from group center",
+          "default": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "roundness",
+          "type": "number",
+          "required": false,
+          "description": "Corner roundness in px",
+          "default": 0
+        }
+      ]
+    },
+    {
+      "name": "shape.add_stroke",
+      "description": "Add a Stroke to a shape group.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index, or the layer name"
+        },
+        {
+          "name": "groupIndex",
+          "type": "number",
+          "required": true,
+          "description": "1-based group index within Contents"
+        },
+        {
+          "name": "color",
+          "type": "array",
+          "required": true,
+          "description": "[r,g,b,a] 0-1"
+        },
+        {
+          "name": "width",
+          "type": "number",
+          "required": false,
+          "description": "Stroke width",
+          "default": 2
+        }
+      ]
+    },
+    {
+      "name": "text.set_style",
+      "description": "Set text styling on the whole document: font, fontSize, colors, tracking, leading, justification, caps, kerning, ligatures, paragraph indents/spacing, RTL direction, vertical baselines, digit set, and more. For a sub-range use text.set_style_range.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "1-based layer index, or the layer name"
+        },
+        {
+          "name": "font",
+          "type": "string",
+          "required": false,
+          "description": "Font postscript name (e.g. 'Arial-BoldMT')"
+        },
+        {
+          "name": "fontSize",
+          "type": "number",
+          "required": false,
+          "description": "Font size in px"
+        },
+        {
+          "name": "fillColor",
+          "type": "array",
+          "required": false,
+          "description": "[r,g,b] 0-1"
+        },
+        {
+          "name": "strokeColor",
+          "type": "array",
+          "required": false,
+          "description": "[r,g,b] 0-1"
+        },
+        {
+          "name": "strokeWidth",
+          "type": "number",
+          "required": false,
+          "description": "Stroke width in px"
+        },
+        {
+          "name": "tracking",
+          "type": "number",
+          "required": false,
+          "description": "Tracking value"
+        },
+        {
+          "name": "leading",
+          "type": "number",
+          "required": false,
+          "description": "Leading (line spacing) in px"
+        },
+        {
+          "name": "applyFill",
+          "type": "boolean",
+          "required": false,
+          "description": "Enable fill"
+        },
+        {
+          "name": "applyStroke",
+          "type": "boolean",
+          "required": false,
+          "description": "Enable stroke"
+        },
+        {
+          "name": "strokeOverFill",
+          "type": "boolean",
+          "required": false,
+          "description": "Render stroke over fill"
+        },
+        {
+          "name": "justification",
+          "type": "string",
+          "required": false,
+          "description": "left|center|right|fullLeft|fullCenter|fullRight|fullLastLineFull"
+        },
+        {
+          "name": "baselineShift",
+          "type": "number",
+          "required": false,
+          "description": "Baseline shift in px"
+        },
+        {
+          "name": "autoLeading",
+          "type": "boolean",
+          "required": false,
+          "description": "Use auto leading"
+        },
+        {
+          "name": "allCaps",
+          "type": "boolean",
+          "required": false,
+          "description": "All caps via fontCapsOption (setter needs AE 24.0+)"
+        },
+        {
+          "name": "smallCaps",
+          "type": "boolean",
+          "required": false,
+          "description": "Small caps via fontCapsOption (setter needs AE 24.0+)"
+        },
+        {
+          "name": "fauxBold",
+          "type": "boolean",
+          "required": false,
+          "description": "Faux bold (setter needs AE 24.0+)"
+        },
+        {
+          "name": "fauxItalic",
+          "type": "boolean",
+          "required": false,
+          "description": "Faux italic (setter needs AE 24.0+)"
+        },
+        {
+          "name": "horizontalScale",
+          "type": "number",
+          "required": false,
+          "description": "Horizontal scale (1 = 100%, setter needs AE 24.0+)"
+        },
+        {
+          "name": "verticalScale",
+          "type": "number",
+          "required": false,
+          "description": "Vertical scale (1 = 100%, setter needs AE 24.0+)"
+        },
+        {
+          "name": "tsume",
+          "type": "number",
+          "required": false,
+          "description": "Tsume (normalized 0-1, CJK spacing, setter needs AE 24.0+)"
+        },
+        {
+          "name": "kerning",
+          "type": "number",
+          "required": false,
+          "description": "Manual kerning amount (AE 24.0+)"
+        },
+        {
+          "name": "autoKernType",
+          "type": "string",
+          "required": false,
+          "description": "none|metric|optical (AE 24.0+)"
+        },
+        {
+          "name": "ligature",
+          "type": "boolean",
+          "required": false,
+          "description": "Enable ligatures (AE 24.0+)"
+        },
+        {
+          "name": "noBreak",
+          "type": "boolean",
+          "required": false,
+          "description": "Prevent line breaks (AE 24.0+)"
+        },
+        {
+          "name": "autoHyphenate",
+          "type": "boolean",
+          "required": false,
+          "description": "Paragraph auto-hyphenation (AE 24.0+)"
+        },
+        {
+          "name": "everyLineComposer",
+          "type": "boolean",
+          "required": false,
+          "description": "true=Every-Line Composer, false=Single-Line (AE 24.0+)"
+        },
+        {
+          "name": "hangingRoman",
+          "type": "boolean",
+          "required": false,
+          "description": "Roman hanging punctuation (burasagari, AE 24.0+)"
+        },
+        {
+          "name": "firstLineIndent",
+          "type": "number",
+          "required": false,
+          "description": "Paragraph first-line indent in px (AE 24.0+)"
+        },
+        {
+          "name": "startIndent",
+          "type": "number",
+          "required": false,
+          "description": "Paragraph start indent in px (AE 24.0+)"
+        },
+        {
+          "name": "endIndent",
+          "type": "number",
+          "required": false,
+          "description": "Paragraph end indent in px (AE 24.0+)"
+        },
+        {
+          "name": "spaceBefore",
+          "type": "number",
+          "required": false,
+          "description": "Paragraph space before in px (AE 24.0+)"
+        },
+        {
+          "name": "spaceAfter",
+          "type": "number",
+          "required": false,
+          "description": "Paragraph space after in px (AE 24.0+)"
+        },
+        {
+          "name": "fontBaselineOption",
+          "type": "string",
+          "required": false,
+          "description": "normal|superscript|subscript (AE 24.0+)"
+        },
+        {
+          "name": "baselineDirection",
+          "type": "string",
+          "required": false,
+          "description": "withStream|verticalRotated|verticalCrossStream (tate-chu-yoko, AE 24.0+)"
+        },
+        {
+          "name": "direction",
+          "type": "string",
+          "required": false,
+          "description": "leftToRight|rightToLeft paragraph direction (AE 24.0+)"
+        },
+        {
+          "name": "leadingType",
+          "type": "string",
+          "required": false,
+          "description": "roman|japanese leading model (AE 24.0+)"
+        },
+        {
+          "name": "lineJoinType",
+          "type": "string",
+          "required": false,
+          "description": "miter|round|bevel stroke joins (AE 24.0+)"
+        },
+        {
+          "name": "digitSet",
+          "type": "string",
+          "required": false,
+          "description": "default|arabic|hindi|farsi|arabicRtl (AE 24.0+)"
+        },
+        {
+          "name": "composerEngine",
+          "type": "string",
+          "required": false,
+          "description": "latinCjk|universalType (AE 24.0+; universalType needed for RTL)"
+        },
+        {
+          "name": "lineOrientation",
+          "type": "string",
+          "required": false,
+          "description": "horizontal|verticalRtl|verticalLtr (whole document only, AE 24.2+)"
+        }
+      ]
+    },
+    {
+      "name": "transform.set",
+      "description": "Set transform properties on one or more layers. layer can be index, name, 'selected', or 'all'. For keyframes use keyframe.add.",
+      "readOnly": false,
+      "params": [
+        {
+          "name": "comp",
+          "type": "any",
+          "required": true,
+          "description": "Comp name or id"
+        },
+        {
+          "name": "layer",
+          "type": "any",
+          "required": true,
+          "description": "Layer index (number), name (string), 'selected', or 'all'"
+        },
+        {
+          "name": "position",
+          "type": "array",
+          "required": false,
+          "description": "[x,y] or [x,y,z]"
+        },
+        {
+          "name": "scale",
+          "type": "array",
+          "required": false,
+          "description": "[sx,sy] or [sx,sy,sz] in percent"
+        },
+        {
+          "name": "rotation",
+          "type": "number",
+          "required": false,
+          "description": "Rotation in degrees"
+        },
+        {
+          "name": "opacity",
+          "type": "number",
+          "required": false,
+          "description": "Opacity 0-100"
+        },
+        {
+          "name": "anchorPoint",
+          "type": "array",
+          "required": false,
+          "description": "[x,y] or [x,y,z]"
+        },
+        {
+          "name": "threeDLayer",
+          "type": "boolean",
+          "required": false,
+          "description": "Enable/disable 3D"
+        }
+      ]
+    }
+  ]
+}

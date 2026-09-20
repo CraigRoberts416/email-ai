@@ -1,0 +1,5 @@
+name: task-signal
+main: TaskSignal
+logs:
+  file: build/rive.log
+  problems: build/problems.log

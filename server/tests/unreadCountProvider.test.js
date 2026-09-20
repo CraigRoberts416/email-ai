@@ -22,12 +22,14 @@ function providerFixture(t, providerFetch) {
   return gmail;
 }
 
-test('actual count adapter passes the same abort signal through OAuth refresh and Gmail label fetch', async t => {
+test('actual count adapter preserves caller cancellation through OAuth and Gmail lifecycle-composed signals', async t => {
   const controller = new AbortController();
   const urls = [];
+  const signals = [];
   const gmail = providerFixture(t, async (url, options) => {
     urls.push(url);
-    assert.equal(options.signal, controller.signal);
+    signals.push(options.signal);
+    assert.equal(options.signal.aborted, false);
     return { ok: true, json: async () => url.includes('oauth2')
       ? { access_token: 'test-new', expires_in: 3600 }
       : { messagesUnread: 42 } };
@@ -35,6 +37,13 @@ test('actual count adapter passes the same abort signal through OAuth refresh an
   assert.equal(await gmail.getUnreadCount('isolated-account', { signal: controller.signal }), 42);
   assert.deepEqual(urls, ['https://oauth2.googleapis.com/token',
     'https://gmail.googleapis.com/gmail/v1/users/me/labels/UNREAD']);
+  const reason = new Error('synthetic deadline');
+  controller.abort(reason);
+  assert.equal(signals.length, 2);
+  for (const signal of signals) {
+    assert.equal(signal.aborted, true);
+    assert.equal(signal.reason, reason);
+  }
 });
 
 test('overall count deadline aborts stalled OAuth before any Gmail request can start', async t => {

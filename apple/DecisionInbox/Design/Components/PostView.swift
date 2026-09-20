@@ -30,30 +30,16 @@ struct PostView: View {
     var onProfile: () -> Void = {}
     /// Nil clears the reaction.
     var onReact: (String?) -> Void = { _ in }
-    /// Reported at the start and end of a horizontal swipe so the feed can
-    /// suppress the new-posts pill: a new object entering the frame under an
-    /// active gesture competes with the dominant event.
+    /// Suspends feed read tracking and new-post entrances during a reaction interaction.
     var onSwiping: (Bool) -> Void = { _ in }
 
-    /// Which outcome the current drag has crossed into. Nil means the gesture
-    /// is under the threshold and releasing would cancel.
-    private enum Armed: Equatable { case save, archive }
-
-    @State private var pressed = false
-    /// The finger travelled during this touch, so its release is not a tap.
-    /// The scroll view would normally cancel the button for us; running the
-    /// swipe simultaneously is what takes that away, so it is restored here.
-    @State private var dragged = false
-    @State private var dx: CGFloat = 0
-    @State private var armed: Armed?
-    /// Latched on the first sample past 10pt and never revisited, so a swipe
-    /// and a scroll can never fight over the same gesture.
-    @State private var axis: Axis?
-    @State private var committing: Armed?
+    @GestureState(resetTransaction: Transaction(animation: Move.pressOut)) private var pressed = false
+    @State private var linkFailed = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.openURL) private var openURL
 
     /// Which file is being fetched, if any — the tile dims while it is.
     private var openingID: Attachment.ID? {
@@ -65,7 +51,7 @@ struct PostView: View {
     /// `Ink.tertiary` measures 3.0:1 — below AA — and carries the `·`
     /// separators and the timestamp. Under Increase Contrast the meta has to
     /// strengthen with everything else or the post's grammar comes apart.
-    private var metaInk: Color { increasedContrast ? Ink.secondary : Ink.tertiary }
+    private var metaInk: Color { Ink.secondary }
     /// At accessibility sizes the header stacks: a `lineLimit(1)` name beside
     /// a non-compressing `· time · count` truncates the identity anchor to
     /// nothing while the timestamp survives.
@@ -82,21 +68,21 @@ struct PostView: View {
             Rule()
         }
         .background(pressed ? Ink.surfaceTertiary : Ink.surface)
-        .offset(x: dx)
-        // The action sits *behind* the post, in the gutter the post vacates —
-        // as a background rather than a ZStack sibling so it takes the row's
-        // own height instead of proposing to fill the viewport. Monochrome,
-        // per the system's rule that state is carried by fill and shape and
-        // never by hue: there is no red here.
-        .background { swipeTrack }
-        // The post slides out of its own row rather than over its neighbours'.
-        .clipped()
         .contentShape(.rect)
         // The whole card opens the thread, and it is a TapGesture rather than
         // a Button for exactly one reason: a scroll cancels it. The inner
         // controls — avatar, CTA, action row — are real Buttons and still take
         // their own taps first, so this only catches the reading surface.
         .onTapGesture { onOpen() }
+        // A non-recognizing hold observes touch-down; travel cancels it.
+        // Unlike a row DragGesture it never claims the scroll view's pan.
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 60, maximumDistance: 8)
+                .updating($pressed) { down, state, transaction in
+                    transaction.animation = Move.pressIn
+                    state = down
+                }
+        )
         // NO row-level DragGesture here, in either form. This was measured, not
         // reasoned about: with the same synthetic drag over the same feed, the
         // scroll offset reached 4681pt without it and exactly 0 with it —
@@ -106,10 +92,9 @@ struct PostView: View {
         // touch, and there is no API to fail a gesture after the fact. Posts
         // cover the whole feed, so the feed did not scroll at all.
         //
-        // Swipe-to-file is worth having, but not at the cost of scrolling a
-        // feed. The route back is `List` + `.swipeActions`, where UIKit does
-        // the arbitration properly — a real change, not a modifier. Until
-        // then the action row carries these, which is where the spec had them.
+        // Visible Save/Archive buttons, the menu and accessibility actions
+        // own filing. Native swipeActions would require a List migration;
+        // no dormant custom swipe implementation is kept to re-enable.
         //
         // No haptic from us: `.contextMenu` fires the system's own lift cue and
         // ours would double it.
@@ -117,6 +102,10 @@ struct PostView: View {
         .overlay(alignment: .topTrailing) { overflowMenu }
         // Presented from the row, because that is where the file is.
         .sheet(item: $opener.previewing) { QuickLookView(url: $0.url).ignoresSafeArea() }
+        .alert("Couldn’t open this link", isPresented: $linkFailed) {
+            Button("Open original email", action: onOpen)
+            Button("Cancel", role: .cancel) { }
+        } message: { Text("The original email is still available.") }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(accessibilityValue)
@@ -124,174 +113,30 @@ struct PostView: View {
         .accessibilityAddTraits(.isButton)
         // Combining children makes the post one readable element and drops
         // every button inside it, so the actions have to be re-offered by
-        // hand. This is also the non-gesture route to anything a swipe does —
-        // a drag-only path to archive would be a blocker.
+        // hand, including reactions, links and attachments.
         .accessibilityActions {
             Button("Open", action: onOpen)
             if message.isPromotion {
                 Button("Unsubscribe", action: requested(onUnsubscribe))
-            } else {
-                Button("Reply", action: onReply)
-                Button("Forward", action: onForward)
             }
+            Button("Reply", action: onReply)
+            Button("Forward", action: onForward)
             Button("Discuss", action: onDiscuss)
+            ForEach(Reaction.all) { reaction in
+                Button("Mark \(reaction.label)") { onReact(reaction.emoji) }
+            }
+            if message.reaction != nil { Button("Remove reaction") { onReact(nil) } }
+            if let label = message.actionLabel, !label.isEmpty {
+                Button(primaryActionTitle, action: performPrimaryAction)
+            }
+            ForEach(message.attachments) { attachment in
+                Button("Open \(attachment.filename)") {
+                    Task { await opener.open(attachment, authorization: nil) }
+                }
+            }
             Button("Open \(message.sender.displayName)", action: onProfile)
             Button(message.isSaved ? "Remove from saved" : "Save", action: filed(onSave))
             Button("Archive", action: filed(onArchive))
-        }
-    }
-
-    // MARK: Swipe
-    //
-    // Trailing (right → left) archives: the dominant inward thumb direction,
-    // and the platform-wide convention for "get rid of it". Leading saves:
-    // additive, keeps the post, and inverts the destructive direction.
-
-    private var swipe: some Gesture {
-        DragGesture(minimumDistance: Move.Swipe.axisLatch, coordinateSpace: .local)
-            .onChanged { value in
-                // Any travel at all, on either axis. A vertical drag is a
-                // scroll and must not also count as a tap on release.
-                dragged = true
-                if axis == nil {
-                    axis = abs(value.translation.width)
-                        > abs(value.translation.height) * Move.Swipe.axisRatio
-                        ? .horizontal : .vertical
-                    if axis == .horizontal {
-                        // Prepared on the gesture's first sample, never on view
-                        // appear — a prepared generator holds the Taptic Engine
-                        // warm, and forty posts doing it on appear would hold it
-                        // warm for the session.
-                        Haptics.prepare()
-                        onSwiping(true)
-                    }
-                }
-                guard axis == .horizontal else { return }
-
-                dx = resist(value.translation.width)
-                let next: Armed? = abs(dx) < Move.Swipe.threshold
-                    ? nil
-                    : (dx < 0 ? .archive : .save)
-                if next != armed {
-                    armed = next
-                    // H1 — the threshold is under the finger and therefore
-                    // invisible, so touch is the only honest channel for it.
-                    // Fires on disarm too, or a user who pulls back short gets
-                    // no confirmation they escaped the commit.
-                    Haptics.threshold()
-                }
-            }
-            .onEnded { value in
-                defer {
-                    axis = nil
-                    onSwiping(false)
-                    // Cleared a turn later, never here: the button's action
-                    // fires on this same touch-up, and it has to still see
-                    // that the finger travelled.
-                    Task { @MainActor in dragged = false }
-                }
-                guard axis == .horizontal else { return }
-
-                // Velocity can commit early: a flick is a decision even when
-                // the finger never reached the line.
-                let flick = value.predictedEndTranslation.width - value.translation.width
-                if let armed {
-                    commit(armed, reported: true)
-                } else if abs(flick) > Move.Swipe.flickDistance {
-                    // The threshold was never crossed, so H1 never fired. One
-                    // decision still owes exactly one cue, and this is the only
-                    // place it can be paid.
-                    commit(flick < 0 ? .archive : .save, reported: false)
-                } else {
-                    cancel()
-                }
-            }
-    }
-
-    /// Past `rubberBandAt` the sheet keeps moving but gives back less than the
-    /// finger puts in, so the gesture has a floor without ever stopping dead.
-    private func resist(_ raw: CGFloat) -> CGFloat {
-        let cap = Move.Swipe.rubberBandAt
-        guard abs(raw) > cap else { return raw }
-        let over = abs(raw) - cap
-        return (cap + over * Move.Swipe.rubberBand) * (raw < 0 ? -1 : 1)
-    }
-
-    /// - Parameter reported: whether H1 already fired for this decision. When
-    ///   it did, nothing fires here — the threshold cue reported the decision
-    ///   and the post leaving reports the outcome, so one gesture yields one
-    ///   haptic.
-    private func commit(_ direction: Armed, reported: Bool) {
-        committing = direction
-        armed = nil
-        if !reported { Haptics.commit() }
-
-        switch direction {
-        case .archive:
-            // The post is leaving. It travels off the edge it was swiped
-            // toward and the row's height collapses in the SAME transaction —
-            // the row leaves and the gap closes as one event, not two.
-            withAnimation(Move.resolved(Move.commit, reduceMotion)) {
-                // Reduce Motion: no lateral travel. The row crossfades out and
-                // the height collapses. The outcome is identical; the journey
-                // is what was making people ill.
-                dx = reduceMotion ? 0 : -UIScreen.main.bounds.width
-                onArchive()
-            } completion: {
-                // Only reached if this row is still mounted — the store
-                // refused the archive, or this list keeps the post. Better a
-                // snap back than an invisible row parked off-screen.
-                dx = 0
-                committing = nil
-            }
-
-        case .save:
-            // Save keeps the post, so the sheet springs back. Flying it
-            // off-screen would assert a removal that does not happen; the
-            // bookmark filling is the outcome.
-            onSave()
-            withAnimation(Move.resolved(Move.commit, reduceMotion)) { dx = 0 }
-            committing = nil
-        }
-    }
-
-    private func cancel() {
-        // Critically damped — a cancel that wobbles reads as a failed commit.
-        // And silent: cancellation never fires a commit-class cue, and H1
-        // already fired on the disarm crossing if the user retreated past it.
-        withAnimation(Move.resolved(Move.settle, reduceMotion)) {
-            dx = 0
-            armed = nil
-        }
-    }
-
-    /// The action revealed behind the post. The fill inversion *is* the armed
-    /// signal, and it lands on the same frame as the threshold haptic.
-    @ViewBuilder private var swipeTrack: some View {
-        if dx != 0 || committing != nil {
-            let archiving = committing.map { $0 == .archive } ?? (dx < 0)
-            let isArmed = armed != nil || committing != nil
-            let progress = min(1, abs(dx) / Move.Swipe.threshold)
-
-            ZStack(alignment: archiving ? .trailing : .leading) {
-                (isArmed ? Ink.primary : Ink.surfaceTertiary)
-
-                HStack(spacing: Space.sm) {
-                    Image(systemName: archiving ? "archivebox" : "bookmark")
-                        .font(.system(size: Metric.iconAction))
-                        // 0.86 → 1.0 interpolated on progress. Tracking, not
-                        // animation: this follows the finger 1 : 1.
-                        .scaleEffect(0.86 + 0.14 * progress)
-                    if isArmed {
-                        Text(archiving ? "ARCHIVE" : "SAVE").typeStyle(Style.kicker)
-                    }
-                }
-                .foregroundStyle(isArmed ? Ink.onInverse : Ink.primary)
-                .padding(.horizontal, Metric.gutter + Space.sm)
-            }
-            // The swipe's outcomes are re-offered in the Actions rotor and the
-            // context menu; the track itself is furniture.
-            .accessibilityHidden(true)
         }
     }
 
@@ -338,7 +183,7 @@ struct PostView: View {
         .accessibilityLabel("More actions")
         // Centred on the header's first line and on the gutter, from the
         // tokens rather than by eye.
-        .padding(.trailing, Metric.gutter - (Metric.tapTarget - 15) / 2)
+        .padding(.trailing, Metric.gutter)
         .padding(.top, Space.xl + Metric.avatar / 2 - Metric.tapTarget / 2)
     }
 
@@ -506,9 +351,8 @@ struct PostView: View {
             // Shown whenever there is something to click, rather than only on
             // a density that no longer exists.
             if let label = message.actionLabel, !label.isEmpty {
-                CTAButton(label: label) {
-                    if let url = message.actionURL { UIApplication.shared.open(url) }
-                }
+                CTAButton(label: primaryActionTitle, isLink: primaryActionURL != nil,
+                          action: performPrimaryAction)
                 .padding(.horizontal, Metric.gutter)
                 .padding(.top, Space.xl)
             }
@@ -528,7 +372,8 @@ struct PostView: View {
                 onSave: onSave,
                 onArchive: onArchive,
                 onUnsubscribe: onUnsubscribe,
-                onReact: onReact
+                onReact: onReact,
+                onInteractionChanged: onSwiping
             )
             .padding(.horizontal, Metric.gutter)
             .padding(.top, Space.xl)
@@ -561,9 +406,8 @@ struct PostView: View {
             }
 
             if let label = message.actionLabel, !label.isEmpty {
-                CTAStrip(label: label) {
-                    if let url = message.actionURL { UIApplication.shared.open(url) }
-                }
+                CTAStrip(label: primaryActionTitle, isLink: primaryActionURL != nil,
+                         action: performPrimaryAction)
             }
 
             // The sender's own line, as a caption. Their name leads it the way
@@ -625,7 +469,8 @@ struct PostView: View {
                 onSave: onSave,
                 onArchive: onArchive,
                 onUnsubscribe: onUnsubscribe,
-                onReact: onReact
+                onReact: onReact,
+                onInteractionChanged: onSwiping
             )
             .padding(.horizontal, Metric.gutter)
             .padding(.top, Space.xl)
@@ -636,67 +481,56 @@ struct PostView: View {
     // MARK: Header — identity on the left, controls on the right
 
     private var header: some View {
-        HStack(alignment: stackedHeader ? .top : .center, spacing: Space.md) {
-            // A high-priority tap, not a Button.
-            //
-            // The whole card carries `.onTapGesture` so it can open the thread
-            // without blocking the scroll, and an ancestor tap gesture beats a
-            // descendant Button — so tapping a sender's avatar opened the
-            // thread instead of the sender, silently, on every post. Claiming
-            // the tap explicitly is what puts the profile back within reach.
-            AvatarView(sender: message.sender, size: Metric.avatar)
-                .contentShape(.circle)
-                .highPriorityGesture(TapGesture().onEnded { onProfile() })
-                .accessibilityLabel("\(message.sender.displayName), open sender")
-
-            // Name over meta, both on the left — the Header frame in the
-            // component library, and a correction.
-            //
-            // It used to run the name and the meta on one line with the meta
-            // pushed to the right edge, which spent the widest gap in the card
-            // separating a sender from their own timestamp. Two things that
-            // belong to each other were the furthest apart, and the chip and
-            // the overflow — which belong to nobody — sat between them. Stacked,
-            // the whole left side is one identity block and the right side is
-            // controls, which is what the header actually contains.
-            //
-            // This was already the layout at accessibility sizes, for a
-            // different reason: a `lineLimit(1)` name beside a non-compressing
-            // `· time · count` truncates the name to nothing while the
-            // timestamp survives. One layout now, correct at every size.
-            VStack(alignment: .leading, spacing: Space.xxs) {
-                senderName
-                meta
-                if let tag { tagChip(tag) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Unsubscribe belongs to the sender, so it sits on the sender's
-            // line. In the action row it took the first slots on promotional
-            // mail, which made a marketing post structurally different from
-            // every other one and put a list-management control among actions
-            // that are about the conversation.
-            if message.isPromotion {
-                Button(action: requested(onUnsubscribe)) {
-                    Text("Unsubscribe")
-                        .typeStyle(Style.chip)
-                        .foregroundStyle(Ink.secondary)
-                        .lineLimit(1)
-                        .padding(.horizontal, Space.md)
-                        .padding(.vertical, 5)
-                        .overlay(Capsule().strokeBorder(Ink.border, lineWidth: 1))
-                        .contentShape(.rect)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(alignment: .top, spacing: Space.md) {
+                AvatarView(sender: message.sender, size: Metric.avatar)
+                    .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
+                    .contentShape(.rect)
+                    .highPriorityGesture(TapGesture().onEnded { onProfile() })
+                    .accessibilityLabel("\(message.sender.displayName), open sender")
+                VStack(alignment: .leading, spacing: Space.xxs) {
+                    senderName
+                    meta
+                    if let tag { tagChip(tag) }
                 }
-                .buttonStyle(TapStyle())
-                .layoutPriority(1)
-                .accessibilityLabel("Unsubscribe from \(message.sender.displayName)")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if message.isPromotion && !stackedHeader { unsubscribeButton }
+                Color.clear.frame(width: Metric.tapTarget, height: Metric.tapTarget)
             }
-
-            // The slot the overflow menu is overlaid into. The control itself
-            // sits outside the button so it can take its own taps.
-            Color.clear.frame(width: 15, height: 15)
+            if message.isPromotion && stackedHeader { unsubscribeButton }
         }
         .padding(.horizontal, Metric.gutter)
+    }
+
+    private var unsubscribeButton: some View {
+        Button(action: requested(onUnsubscribe)) {
+            Text("Unsubscribe")
+                .typeStyle(Style.chip)
+                .foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, Space.sm)
+                .overlay(Capsule().strokeBorder(Ink.border, lineWidth: 1))
+                .frame(minHeight: Metric.tapTarget)
+                .contentShape(.rect)
+        }
+        .buttonStyle(TapStyle())
+        .accessibilityLabel("Unsubscribe from \(message.sender.displayName)")
+    }
+
+    private var primaryActionURL: URL? {
+        guard let url = message.actionURL,
+              ["http", "https", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url
+    }
+
+    private var primaryActionTitle: String {
+        primaryActionURL == nil ? "Open original email" : (message.actionLabel ?? "Open link")
+    }
+
+    private func performPrimaryAction() {
+        guard let url = primaryActionURL else { onOpen(); return }
+        openURL(url) { accepted in if !accepted { linkFailed = true } }
     }
 
     /// Read changes the weight and nothing else. The name stays black — it is
@@ -706,7 +540,8 @@ struct PostView: View {
         Text(message.sender.displayName)
             .typeStyle(message.isRead ? Style.senderRead : Style.sender)
             .foregroundStyle(Ink.primary)
-            .lineLimit(1)
+            .lineLimit(stackedHeader ? nil : 2)
+            .fixedSize(horizontal: false, vertical: true)
             .truncationMode(.tail)
     }
 
@@ -721,7 +556,8 @@ struct PostView: View {
         Text(metaText)
             .typeStyle(Style.meta)
             .foregroundStyle(metaInk)
-            .lineLimit(1)
+            .lineLimit(stackedHeader ? nil : 2)
+            .fixedSize(horizontal: false, vertical: true)
             .monospacedDigit()
     }
 
@@ -1014,6 +850,7 @@ struct SummaryBlock: View {
 
 struct CTAButton: View {
     let label: String
+    var isLink = true
     let action: () -> Void
 
     var body: some View {
@@ -1039,7 +876,7 @@ struct CTAButton: View {
         }
         .buttonStyle(TapStyle())
         .accessibilityLabel(label)
-        .accessibilityAddTraits(.isLink)
+        .accessibilityAddTraits(isLink ? .isLink : .isButton)
     }
 }
 
@@ -1059,6 +896,7 @@ struct CTAButton: View {
 
 struct CTAStrip: View {
     let label: String
+    var isLink = true
     let action: () -> Void
 
     var body: some View {
@@ -1083,7 +921,7 @@ struct CTAStrip: View {
         }
         .buttonStyle(TapStyle())
         .accessibilityLabel(label)
-        .accessibilityAddTraits(.isLink)
+        .accessibilityAddTraits(isLink ? .isLink : .isButton)
     }
 }
 
