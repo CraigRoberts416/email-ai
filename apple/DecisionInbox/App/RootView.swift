@@ -34,6 +34,7 @@ struct RootView: View {
                     Tab("People", systemImage: "bubble.left.and.bubble.right", value: 1) {
                         DirectMessagesView()
                     }
+                    .badge(store.peopleUnreadCount)
                     Tab("Saved", systemImage: "bookmark", value: 2) {
                         SavedView()
                     }
@@ -68,6 +69,16 @@ struct RootView: View {
                     ContactPhotoStore.shared.refreshAuthorization()
                 }
                 .environment(store)
+                // Tab badges must load before their destination is visited.
+                // Pause offscreen; cached rows keep the last known badge visible.
+                .task(id: "\(scenePhase == .active):\(auth.accounts.map(\.id).joined(separator: ","))") {
+                    guard scenePhase == .active else { return }
+                    repeat {
+                        await store.loadConversations(preservingLoaded: true)
+                        do { try await Task.sleep(for: .seconds(30)) }
+                        catch { return }
+                    } while !Task.isCancelled
+                }
                 .task(id: auth.accounts.count) {
                     guard !store.isSample else { return }
                     await store.start()

@@ -355,6 +355,7 @@ final class FeedStore {
         badgeRefresh = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
+            await loadConversations(preservingLoaded: true)
             await refreshUnreadBadge()
         }
     }
@@ -441,6 +442,14 @@ final class FeedStore {
     var conversationsNextCursor: String?
     var conversationsTotal: Int?
     var conversationsUnreadTotal: Int?
+    /// The tab and People masthead describe the same unit: conversations.
+    /// During indexing only known loaded unread rows can be counted honestly.
+    var peopleUnreadCount: Int {
+        if conversationsHistoryComplete, let total = conversationsUnreadTotal {
+            return max(0, total)
+        }
+        return conversations.count { $0.unread }
+    }
     var conversationsHistoryComplete = false
     var conversationsSyncState = "pending"
     var conversationsLoading = false
@@ -930,6 +939,7 @@ final class FeedStore {
         failedSeen.removeAll()
         drainRecordedReads()
         await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.loadConversations(preservingLoaded: true) }
             for account in auth.accounts {
                 group.addTask { await self.load(account.id, admitDirectly: false) }
             }

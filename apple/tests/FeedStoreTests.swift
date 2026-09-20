@@ -390,6 +390,40 @@ import Foundation
         f.stop()
     }
 
+    static func peopleTabBadge() async {
+        let f = fixture(), a = f.accounts[0]
+        func directory(total: Int? = nil, complete: Bool = false, unread: Bool = true) -> HarnessReply {
+            var json: [String: Any] = ["conversations": [["id": "person", "participants": [["email": "person@example.invalid"]],
+                "lastAt": 100, "unread": unread, "messageCount": 12]], "historyComplete": complete]
+            if let total { json["unreadConversations"] = total }
+            return HarnessReply(json: json)
+        }
+        check(f.store.peopleUnreadCount == 0, "No invented People badge before loading")
+        a.feed = { _, _ in page([card("arrival")], total: 1) }
+        a.conversations = { _ in directory() }
+        await f.store.start()
+        await f.store.refresh()
+        check(f.store.conversationsLoaded && f.store.peopleUnreadCount == 1,
+              "App refresh loads People badge without visiting People; twelve messages count as one conversation")
+        a.conversations = { _ in directory(total: 73, complete: true) }
+        await f.store.loadConversations(preservingLoaded: true)
+        check(f.store.peopleUnreadCount == 73, "Verified badge includes unread conversations beyond loaded page")
+        a.conversations = { _ in HarnessReply(status: 503, json: [:]) }
+        await f.store.loadConversations(preservingLoaded: true)
+        check(f.store.peopleUnreadCount == 73, "Failed refresh retains established People badge")
+        a.conversations = { _ in directory(complete: true) }
+        await f.store.loadConversations(preservingLoaded: true)
+        check(f.store.peopleUnreadCount == 1, "Missing aggregate does not hide known unread conversations")
+        a.conversations = { _ in directory(total: 0, complete: true, unread: false) }
+        await a.emit(.messageRead("arrival", wasUnread: true))
+        await until("Live read refreshes People badge to zero", { f.store.peopleUnreadCount == 0 })
+        check(f.store.conversations.first?.unread == false, "Live read updates People row and badge together")
+        a.conversations = { _ in directory(total: 1, complete: true) }
+        await a.emit(.messageAdded(wire(card("fresh"))))
+        await until("New mail refreshes People badge without opening tab", { f.store.peopleUnreadCount == 1 })
+        f.stop()
+    }
+
     static func progressivePeopleDirectory() async {
         let f = fixture(), a = f.accounts[0]
         func person(_ id: String, _ date: Int, unread: Bool = true) -> [String: Any] {
@@ -563,6 +597,7 @@ import Foundation
         await durableScrollReads()
         await persistedProgressBoundaries()
         await excludedAccountBadge()
+        await peopleTabBadge()
         await progressivePeopleDirectory()
         await missedInterpretationCompletion()
         await falseZeroAndDecodeFailure()

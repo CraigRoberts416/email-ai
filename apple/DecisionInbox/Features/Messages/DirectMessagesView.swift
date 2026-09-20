@@ -19,7 +19,7 @@ struct DirectMessagesView: View {
     @AppStorage("people.dismissPhotoPrompt") private var dismissPhotoPrompt = false
 
     private var waiting: Int {
-        store.conversationsHistoryComplete ? (store.conversationsUnreadTotal ?? 0) : store.conversations.count { $0.unread }
+        store.peopleUnreadCount
     }
 
     var body: some View {

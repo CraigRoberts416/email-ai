@@ -105,3 +105,8 @@ Updated text nodes: `341:1071`, `341:1085`, `341:1086`. The whole board was rend
 again and checked for clipping; countdown specimens and visual styling remain.
 Craig confirmed the released countdown animation looked good on his iPhone.
 That feedback does not establish the new read-delivery or navigation fixes.
+
+
+## People tab badge · September 20
+
+The canonical main-board tabbed screens now include an illustrative native People badge of 2, matching the People masthead example. It counts conversations, independently of the app-icon email total. The runtime badge loads before People is visited, follows confirmed unread reconciliation, hides at zero, and preserves known state on failure. Partial history uses loaded unread conversations until the aggregate is verified. Native Simulator showed 9 on the tab and 9 UNREAD LOADED inside People; the design illustration is not a mailbox total. Opening a conversation's read policy remains a separate user question.
