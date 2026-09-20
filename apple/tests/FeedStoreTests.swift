@@ -368,8 +368,9 @@ import Foundation
               "A new calendar day recounts buckets instead of misplacing arrivals from a session that spanned midnight")
         var moved = Calendar.current
         moved.timeZone = TimeZone(secondsFromGMT: Calendar.current.timeZone.secondsFromGMT() == 0 ? 3600 : 0)!
-        restored.beginFeedSession(at: tomorrow, calendar: moved)
-        check(restored.progressRemaining(in: "TODAY") == nil, "A time-zone change never mislabels old day buckets")
+        check(f.store.progressRemaining(in: "EARLIER") == 22_202, "Time-zone test starts with a populated baseline")
+        f.store.beginFeedSession(calendar: moved)
+        check(f.store.progressRemaining(in: "TODAY") == nil, "A time-zone change never mislabels old day buckets")
     }
 
     static func excludedAccountBadge() async {
