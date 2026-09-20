@@ -95,3 +95,13 @@ The existing partial-thread specimen now includes **Loading original emails and 
 The final hero-header refinement removes the full-width frosted band from original-email detail and sender profiles while keeping separate native glass controls. The canonical BackNavigation container and original-email toolbar were already transparent in Figma; their fills/effects were re-inspected and component documentation now explicitly scopes this treatment to the two hero routes. Feed, People lists and Settings retain their existing edge treatment. Runtime glass and scroll-edge rendering remain native verification items.
 
 The implementation task subsequently verified the 1136 Debug original-email screen in Simulator: the rectangular frosted band is absent, the hero reaches the sheet top, and separate circular native glass Back/More controls retain their placement. Opening through the accessibility Open action marked the email read while preserving the current Feed card. This runtime report supports the clear-header specimen; Figma’s static material remains an approximation of the OS rendering.
+
+## September 20 feed regression follow-up
+
+The existing session board (`341:780`) now documents durable read delivery across
+navigation/relaunch, retained verified display counts with midnight rebucketing,
+and admitting a new-mail batch before returning to the updated feed's top.
+Updated text nodes: `341:1071`, `341:1085`, `341:1086`. The whole board was rendered
+again and checked for clipping; countdown specimens and visual styling remain.
+Craig confirmed the released countdown animation looked good on his iPhone.
+That feedback does not establish the new read-delivery or navigation fixes.

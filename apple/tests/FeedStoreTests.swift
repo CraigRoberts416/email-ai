@@ -308,8 +308,69 @@ import Foundation
         check(f.store.remainingInFeed == nil && !f.store.completionVerified && !f.store.feedEndVerified,
               "A display-only zero never bypasses provider completion checks")
         f.store.beginFeedSession()
-        check(f.store.progressRemaining(in: "TODAY") == nil,
-              "A new visit clears display counts that belonged to the previous date boundary")
+        check(f.store.progressRemaining(in: "TODAY") == 0 && f.store.remainingInFeed == nil,
+              "A same-day visit keeps the display baseline but revalidates completion")
+    }
+
+
+    static func durableScrollReads() async {
+        let f = fixture(), a = f.accounts[0], gate = HarnessGate()
+        a.feed = { _, _ in page([card("first"), card("second", age: 60), card("unseen", age: 120)], total: 3) }
+        await f.store.start()
+        a.read = { id in id == "first" ? await gate.wait() : HarnessReply(json: ["wasUnread": true]) }
+        f.store.recordSeen(Array(f.store.sessionMessages.prefix(2)))
+        check(f.store.progressRemaining(in: "TODAY") == 1, "Proven passes count down synchronously before HTTP")
+        await until("first serial read in flight", { gate.waiting })
+        check(a.requests.filter { $0.url!.path.hasSuffix("/read") }.count == 1, "Scroll reads are serial")
+        f.store.beginFeedSession()
+        check(f.store.sessionMessages.map(\.id) == ["unseen"], "Tab/app/refresh boundary hides accepted reads even while Gmail is slow")
+        check(f.store.progressRemaining(in: "TODAY") == 1, "New session keeps both queued decrements")
+        gate.finish(HarnessReply(json: ["wasUnread": true]))
+        await until("reads drain after leaving old session", { a.requests.filter { $0.url!.path.hasSuffix("/read") }.count == 2 })
+        await until("both accepted reads confirmed", { f.store.progressRemaining(in: "TODAY") == 1 && f.store.hasSeen(wire(card("second")).asMessage(mailboxID: f.ids[0])) })
+        check(f.store.seenFailure == nil, "Navigation does not discard pending reads")
+        f.stop()
+
+        let retry = fixture(), b = retry.accounts[0]
+        b.feed = { _, _ in page([card("retry")], total: 1) }
+        await retry.store.start()
+        b.read = { _ in HarnessReply(status: 503, json: [:]) }
+        retry.store.recordSeen(retry.store.sessionMessages)
+        await until("failed write retained", { retry.store.seenFailure != nil })
+        check(retry.store.progressRemaining(in: "TODAY") == 1, "Failure restores provisional decrement")
+        retry.stop()
+        let relaunched = FeedStore(auth: AuthService(accounts: retry.ids))
+        check(relaunched.sessionMessages.isEmpty && relaunched.progressRemaining(in: "TODAY") == 0,
+              "Cold launch restores read intent and baseline before the first frame")
+        b.read = { _ in
+            b.feed = { _, _ in page([], total: 0) }
+            return HarnessReply(json: ["wasUnread": true])
+        }
+        await relaunched.start()
+        await until("relaunch replays persisted write", { relaunched.hasSeen(wire(card("retry")).asMessage(mailboxID: retry.ids[0])) })
+        check(relaunched.progressRemaining(in: "TODAY") == 0,
+              "Replayed confirmation preserves the already displayed decrement")
+        relaunched.beginFeedSession()
+    }
+
+    static func persistedProgressBoundaries() async {
+        let f = fixture(), a = f.accounts[0]
+        a.feed = { _, _ in page([card("baseline")], total: 22_232,
+                              sections: ["today": 10, "yesterday": 20, "earlier": 22_202]) }
+        await f.store.start()
+        f.store.beginFeedSession()
+        let restored = FeedStore(auth: AuthService(accounts: f.ids))
+        check(restored.progressRemaining(in: "EARLIER") == 22_202 && restored.remainingInFeed == nil,
+              "Cold start keeps historical baseline without asserting live verification")
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: .now)!
+        restored.beginFeedSession(at: tomorrow)
+        check(restored.progressRemaining(in: "TODAY") == 0 && restored.progressRemaining(in: "YESTERDAY") == 10
+              && restored.progressRemaining(in: "EARLIER") == 22_222,
+              "Midnight rolls known buckets forward instead of losing the total")
+        var moved = Calendar.current
+        moved.timeZone = TimeZone(secondsFromGMT: Calendar.current.timeZone.secondsFromGMT() == 0 ? 3600 : 0)!
+        restored.beginFeedSession(at: tomorrow, calendar: moved)
+        check(restored.progressRemaining(in: "TODAY") == nil, "A time-zone change never mislabels old day buckets")
     }
 
     static func excludedAccountBadge() async {
@@ -499,6 +560,8 @@ import Foundation
         await staleResponseAndPendingAdmission()
         await batchedKnownReadReconciliation()
         await displayProgressDuringRevalidation()
+        await durableScrollReads()
+        await persistedProgressBoundaries()
         await excludedAccountBadge()
         await progressivePeopleDirectory()
         await missedInterpretationCompletion()

@@ -21,6 +21,10 @@ Coverage includes:
 - HTTP/live-event read confirmations in either order, duplicate confirmations,
   failed HTTP after successful live confirmation, failed reads and retries.
 - Read cards retained during the visit and removed at the next session boundary.
+- Durable scroll-read delivery across session changes, serial provider writes,
+  failure rollback and replay after cold launch.
+- Persisted display counts across tab changes and cold starts, exact midnight
+  bucket rollover, and invalidation when the time zone changes.
 - Cached cards, external reads beyond the first 200 IDs, complete and failed
   reconciliation batches, and counts for unloaded historical mail.
 - Duplicate-only pages, overlapping old/new pagination generations, and globally
@@ -42,3 +46,13 @@ Run `./apple/tests/run-notification-delegate-tests.sh` to exercise the productio
 notification delegate extension with platform doubles. Both callbacks enter
 from a background queue; checks require main-thread completion, routing before
 tap completion, and immediate foreground presentation before mailbox refresh.
+
+For an actual native layout/navigation check, launch a DEBUG build with
+`-verifyFeedNavigation` on a Simulator whose cached feed has at least 20 cards.
+The probe stages two existing unread cards as an in-memory arrival, moves to a
+later card, invokes the same admission handler as the bubble, and checks the
+resulting offset, ordered admission, unchanged unread state, and subsequent
+movement down and back to top. It logs only booleans and does not modify Gmail
+labels. This proves programmatic navigation through SwiftUI layout, not manual
+scroll gesture recognition or a provider-delivered arrival. Release builds do
+not contain the probe. Relaunch normally after the check.

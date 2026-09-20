@@ -21,7 +21,9 @@ final class FeedStore {
     }
     private var seenKeys = Set(UserDefaults.standard.stringArray(forKey: "feed.seenMessages") ?? [])
     private var markingSeen: Set<String> = []
-    private var failedSeen: [String: Message] = [:]
+    private var failedSeen: [String: FeedReadIntent] = [:]
+    private var recordedReads: [String: FeedReadIntent] = [:]
+    private var readDrain: Task<Void, Never>?
     private var readVersions: [String: Int] = [:]
     private var mailboxVersions: [String: Int] = [:]
     private var feedVersions: [String: Int] = [:]
@@ -37,7 +39,9 @@ final class FeedStore {
     private var countsRefresh: Task<Void, Never>?
     var seenFailure: String?
     private var session = FeedSession()
-    private var sectionCounts: [String: FeedSectionCounts] = [:]
+    private var sectionCounts: [String: FeedSectionCounts] = [:] {
+        didSet { persistProgress() }
+    }
     private var completeCounts: Set<String> = []
     private var pageLoaded: Set<String> = []
     private var nextCursors: [String: String] = [:]
@@ -61,7 +65,12 @@ final class FeedStore {
     func progressRemaining(in section: String) -> Int? {
         if isSample { return remaining(in: section) }
         guard !feedingIDs.isEmpty, feedingIDs.allSatisfy({ sectionCounts[$0] != nil }) else { return nil }
-        return feedingIDs.reduce(0) { $0 + (sectionCounts[$1]?[section] ?? 0) }
+        let baseline = feedingIDs.reduce(0) { $0 + (sectionCounts[$1]?[section] ?? 0) }
+        let saving = recordedReads.values.filter {
+            feedingIDs.contains($0.mailboxID) && $0.isFeedEligible && failedSeen[$0.key] == nil
+                && !seenKeys.contains($0.key) && session.section(for: $0.receivedAt) == section
+        }.count
+        return max(0, baseline - saving)
     }
     var remainingInFeed: Int? {
         guard let today = remaining(in: "TODAY"), let yesterday = remaining(in: "YESTERDAY"),
@@ -87,7 +96,7 @@ final class FeedStore {
     }
 
     var eligiblePending: [Message] {
-        pending.filter { feedingIDs.contains($0.mailboxID) && $0.isFeedEligible && !$0.isRead && !hasSeen($0) }
+        pending.filter { feedingIDs.contains($0.mailboxID) && $0.isFeedEligible && !$0.isRead && !hasSeen($0) && !hasRecordedRead($0) }
     }
 
     private func applyKnownReads(_ ids: [String], accountID: String) {
@@ -99,16 +108,18 @@ final class FeedStore {
 
     /// App/tab re-entry and an explicit refresh are the only session resets.
     /// Cached unread cards are available synchronously while the network catches up.
-    func beginFeedSession() {
+    func beginFeedSession(at date: Date = .now, calendar: Calendar = .current) {
         countsRefresh?.cancel()
         completeCounts.removeAll()
-        sectionCounts.removeAll() // A new session can cross a day/time-zone boundary.
-        let read = messages.filter { $0.isRead || hasSeen($0) }
+        let baseline = FeedProgressSnapshot(date: session.startedAt, timeZone: session.timeZone.identifier,
+                                            sections: sectionCounts).rebased(at: date, calendar: calendar)
+        let read = messages.filter { $0.isRead || hasSeen($0) || hasRecordedRead($0) }
         var known = Set(retained.map(seenKey))
         retained.append(contentsOf: read.filter { known.insert(seenKey($0)).inserted })
-        messages = (messages + pending).filter { !$0.isRead && !hasSeen($0) }
+        messages = (messages + pending).filter { !$0.isRead && !hasSeen($0) && !hasRecordedRead($0) }
         pending.removeAll()
-        session.restart(with: messages.filter { archiving[seenKey($0)] == nil })
+        session.restart(with: messages.filter { archiving[seenKey($0)] == nil }, at: date, calendar: calendar)
+        sectionCounts = baseline
         pageLoaded.removeAll()
         nextCursors.removeAll()
         pageFrontiers.removeAll()
@@ -176,8 +187,12 @@ final class FeedStore {
     }
 
     private func confirmRead(_ message: Message, decrement: Bool = true) {
-        let key = seenKey(message)
-        let alreadyRead = hasSeen(message) || currentVersion(of: message).isRead
+        confirmRead(FeedReadIntent(message), decrement: decrement)
+    }
+
+    private func confirmRead(_ message: FeedReadIntent, decrement: Bool = true) {
+        let key = message.key
+        let alreadyRead = seenKeys.contains(key) || (messages + pending + retained).first { $0.feedKey == key }?.isRead == true
         if decrement && !alreadyRead && message.isFeedEligible, sectionCounts[message.mailboxID] != nil {
             let name = session.section(for: message.receivedAt)
             sectionCounts[message.mailboxID]![name] -= 1
@@ -186,6 +201,8 @@ final class FeedStore {
         persistSeen()
         mutate(message.id, accountID: message.mailboxID) { $0.isRead = true }
         failedSeen.removeValue(forKey: key)
+        recordedReads.removeValue(forKey: key)
+        persistRecordedReads()
         seenFailure = failedSeen.isEmpty ? nil : "Some posts couldn’t be marked as read. Try again."
     }
 
@@ -193,7 +210,7 @@ final class FeedStore {
     func hasSeen(_ message: Message) -> Bool { seenKeys.contains(seenKey(message)) }
     var activeMessages: [Message] {
         let included = feedingIDs
-        return messages.filter { included.contains($0.mailboxID) && $0.isFeedEligible && !$0.isRead && !hasSeen($0) && archiving[seenKey($0)] == nil }
+        return messages.filter { included.contains($0.mailboxID) && $0.isFeedEligible && !$0.isRead && !hasSeen($0) && !hasRecordedRead($0) && archiving[seenKey($0)] == nil }
     }
     var hasPendingInFeed: Bool {
         !eligiblePending.isEmpty
@@ -207,7 +224,7 @@ final class FeedStore {
     }
 
     var completionVerified: Bool {
-        guard !hasPendingInFeed, !failedSeen.values.contains(where: { feedingIDs.contains($0.mailboxID) }) else { return false }
+        guard !recordedReads.values.contains(where: { feedingIDs.contains($0.mailboxID) }), !hasPendingInFeed, !failedSeen.values.contains(where: { feedingIDs.contains($0.mailboxID) }) else { return false }
         return remainingInFeed == 0 && (isSample || feedEndVerified)
     }
 
@@ -231,31 +248,83 @@ final class FeedStore {
         if !isSample { UserDefaults.standard.set(Array(seenKeys), forKey: "feed.seenMessages") }
     }
 
+    private func hasRecordedRead(_ message: Message) -> Bool {
+        recordedReads[message.feedKey] != nil && failedSeen[message.feedKey] == nil
+    }
+
+    private func persistRecordedReads() {
+        guard !isSample else { return }
+        UserDefaults.standard.set(try? JSONEncoder().encode(recordedReads), forKey: "feed.recordedReads")
+    }
+
+    private func persistProgress() {
+        guard !isSample else { return }
+        let snapshot = FeedProgressSnapshot(date: session.startedAt, timeZone: session.timeZone.identifier,
+                                            sections: sectionCounts)
+        UserDefaults.standard.set(try? JSONEncoder().encode(snapshot), forKey: "feed.progressSnapshot")
+    }
+
+    /// Record proven passes synchronously. The view only measures gestures;
+    /// the store owns their delivery, independent of the visible screen.
+    func recordSeen(_ messages: [Message]) {
+        for message in messages where !message.isRead && !hasSeen(message) {
+            recordedReads[message.feedKey] = FeedReadIntent(message)
+            failedSeen.removeValue(forKey: message.feedKey)
+        }
+        persistRecordedReads()
+        drainRecordedReads()
+    }
+
+    private func drainRecordedReads() {
+        guard readDrain == nil else { return }
+        recordedReads = recordedReads.filter { !seenKeys.contains($0.key) }
+        persistRecordedReads()
+        readDrain = Task { @MainActor in
+            while let intent = recordedReads.values.sorted(by: { $0.receivedAt > $1.receivedAt }).first(where: { intent in
+                failedSeen[intent.key] == nil && !markingSeen.contains(intent.key)
+                    && (isSample || auth.accounts.contains { $0.id == intent.mailboxID })
+            }) {
+                await markSeen(intent)
+            }
+            readDrain = nil
+        }
+    }
+
     /// A confirmed read changes progress, never this session’s membership.
-    func markSeen(_ message: Message) async {
-        let key = seenKey(message)
-        guard !hasSeen(message), markingSeen.insert(key).inserted else { return }
+    func markSeen(_ message: Message) async { await markSeen(FeedReadIntent(message)) }
+
+    private func markSeen(_ intent: FeedReadIntent) async {
+        let key = intent.key, accountID = intent.mailboxID
+        guard isSample || auth.accounts.contains(where: { $0.id == accountID }) else { return }
+        guard !seenKeys.contains(key), markingSeen.insert(key).inserted else { return }
+        recordedReads[key] = intent
+        failedSeen.removeValue(forKey: key)
+        persistRecordedReads()
         readVersions[key, default: 0] += 1
-        mailboxVersions[message.mailboxID, default: 0] += 1
+        mailboxVersions[accountID, default: 0] += 1
         do {
             let wasUnread: Bool?
-            if isSample { wasUnread = true } else { wasUnread = try await client(message.mailboxID).markRead(message.id) }
-            readVersions[key, default: 0] += 1
-            mailboxVersions[message.mailboxID, default: 0] += 1
-            confirmRead(message, decrement: wasUnread == true)
-            if wasUnread == nil { completeCounts.remove(message.mailboxID) }
-            unreadCounts[message.mailboxID] = nil
+            if isSample { wasUnread = true } else { wasUnread = try await client(accountID).markRead(intent.id) }
             markingSeen.remove(key)
+            guard isSample || auth.accounts.contains(where: { $0.id == accountID }) else { return }
+            readVersions[key, default: 0] += 1
+            mailboxVersions[accountID, default: 0] += 1
+            confirmRead(intent, decrement: wasUnread == true)
+            if wasUnread == nil { completeCounts.remove(accountID) }
+            unreadCounts[accountID] = nil
             scheduleBadgeRefresh()
             scheduleCountsRefresh()
         } catch {
             readVersions[key, default: 0] += 1
             markingSeen.remove(key)
-            // The SSE confirmation can beat a cancelled or lost HTTP reply.
-            if hasSeen(message) { failedSeen.removeValue(forKey: key); return }
-            guard !Task.isCancelled else { return }
-            failedSeen[key] = message
-            seenFailure = "Couldn’t mark that post as seen. It’s still in your feed."
+            if seenKeys.contains(key) { failedSeen.removeValue(forKey: key); return }
+            guard isSample || auth.accounts.contains(where: { $0.id == accountID }) else { return }
+            // Keep the intent on disk for retry, but restore its displayed count.
+            failedSeen[key] = intent
+            if let held = retained.first(where: { $0.feedKey == key }), !messages.contains(where: { $0.feedKey == key }) {
+                messages.append(held)
+            }
+            seenFailure = "Couldn’t save some read emails. Try again."
         }
     }
 
@@ -309,9 +378,11 @@ final class FeedStore {
                     }
                     for batch in batches {
                         let version = mailboxVersions[accountID, default: 0]
-                        guard let response = try? await client(accountID).feedCounts(sectionDate: session.startedAt, knownMessageIDs: batch),
-                              !Task.isCancelled, session.generation == generation,
-                              feedingIDs.contains(accountID),
+                        let wasSaving = markingSeen.contains { $0.hasPrefix(accountID + ":") }
+                        let response = try? await client(accountID).feedCounts(sectionDate: session.startedAt, knownMessageIDs: batch)
+                        guard !Task.isCancelled, session.generation == generation else { return }
+                        guard let response, feedingIDs.contains(accountID), !wasSaving,
+                              !markingSeen.contains(where: { $0.hasPrefix(accountID + ":") }),
                               version == mailboxVersions[accountID, default: 0] else {
                             completeCounts.remove(accountID)
                             break
@@ -420,6 +491,10 @@ final class FeedStore {
         self.auth = auth
         SenderIdentityStore.shared.configure(auth: auth, isSample: false)
         syncMailboxes()
+        if let data = UserDefaults.standard.object(forKey: "feed.recordedReads") as? Data,
+           let saved = try? JSONDecoder().decode([String: FeedReadIntent].self, from: data) {
+            recordedReads = saved.filter { entry in auth.accounts.contains { $0.id == entry.value.mailboxID } }
+        }
         var restored: [Message] = []
         for account in auth.accounts {
             guard let cached = FeedCache.load(for: account.id) else { continue }
@@ -434,7 +509,13 @@ final class FeedStore {
                 return message
             }
             .sorted { $0.receivedAt > $1.receivedAt }
-        session.restart(with: messages)
+        session.restart(with: messages.filter { !hasRecordedRead($0) })
+        if let data = UserDefaults.standard.object(forKey: "feed.progressSnapshot") as? Data,
+           let snapshot = try? JSONDecoder().decode(FeedProgressSnapshot.self, from: data) {
+            sectionCounts = snapshot.rebased(at: session.startedAt).filter { entry in
+                auth.accounts.contains { $0.id == entry.key }
+            }
+        }
         SenderIdentityStore.shared.remember(messages: messages)
         if let first = auth.accounts.first, let cached = FeedCache.loadConversations(for: first.id) {
             conversations = cached.map(Self.conversation(from:))
@@ -558,6 +639,8 @@ final class FeedStore {
     func start() async {
         if isSample { return }
         syncMailboxes()
+        failedSeen.removeAll()
+        drainRecordedReads()
         await withTaskGroup(of: Void.self) { group in
             for account in auth.accounts where !loaded.contains(account.id) {
                 loaded.insert(account.id)
@@ -844,6 +927,8 @@ final class FeedStore {
     func refresh() async {
         guard !isSample else { return }
         syncMailboxes()
+        failedSeen.removeAll()
+        drainRecordedReads()
         await withTaskGroup(of: Void.self) { group in
             for account in auth.accounts {
                 group.addTask { await self.load(account.id, admitDirectly: false) }
@@ -976,7 +1061,9 @@ final class FeedStore {
                 pageFrontiers[accountID] = incoming.last?.receivedAt ?? pageFrontiers[accountID]
                 if response.droppedCards > 0 { incompleteCards.insert(accountID) }
             }
-            if mailboxVersions[accountID, default: 0] == mailboxAtStart {
+            if mailboxVersions[accountID, default: 0] == mailboxAtStart,
+               !markingAtStart.contains(where: { $0.hasPrefix(accountID + ":") }),
+               !markingSeen.contains(where: { $0.hasPrefix(accountID + ":") }) {
                 unreadCounts[accountID] = response.unreadCount
                 if let counts = response.sections, response.countsComplete {
                     sectionCounts[accountID] = counts
@@ -1119,6 +1206,8 @@ final class FeedStore {
             pending.removeAll { $0.mailboxID == mailboxID }
             retained.removeAll { $0.mailboxID == mailboxID }
             failedSeen = failedSeen.filter { $0.value.mailboxID != mailboxID }
+            recordedReads = recordedReads.filter { $0.value.mailboxID != mailboxID }
+            persistRecordedReads()
             confirmedFeeds.remove(mailboxID)
             loadingFeeds.remove(mailboxID)
             feedFailures.removeValue(forKey: mailboxID)
@@ -1226,6 +1315,9 @@ final class FeedStore {
             mailboxVersions[accountID, default: 0] += 1
             if let message = (messages + pending + retained).first(where: { seenKey($0) == key }) {
                 confirmRead(message, decrement: wasUnread == true)
+                if wasUnread == nil { completeCounts.remove(accountID) }
+            } else if let intent = recordedReads[key] {
+                confirmRead(intent, decrement: wasUnread == true)
                 if wasUnread == nil { completeCounts.remove(accountID) }
             } else {
                 seenKeys.insert(key)
@@ -1410,7 +1502,7 @@ final class FeedStore {
 
     func markRead(_ message: Message) {
         guard !currentVersion(of: message).isRead else { return }
-        Task { await markSeen(message) }
+        recordSeen([message])
     }
 
     /// Marks a message with an emoji, or clears it. Nothing leaves the device.
@@ -1522,12 +1614,26 @@ final class FeedStore {
     /// Admits the pending batch at the top. Called only from the new-posts pill.
     func admitPending() {
         guard !pending.isEmpty else { return }
-        let eligible = pending.filter { !$0.isRead && !hasSeen($0) && feedingIDs.contains($0.mailboxID) }
+        let eligible = eligiblePending
         session.admit(eligible)
         let keys = Set(eligible.map(seenKey))
         messages.insert(contentsOf: eligible.sorted(by: FeedSession.newer), at: 0)
         pending.removeAll { keys.contains(seenKey($0)) }
     }
+
+    #if DEBUG
+    /// Stages existing unread cards as a deterministic arrival for a navigation
+    /// check. This changes only the current in-memory visit, never Gmail.
+    func stageNavigationProbeArrival() -> [String] {
+        let batch = Array(sessionMessages.filter { !$0.isRead && !hasSeen($0) }.prefix(2))
+        let keys = Set(batch.map(\.feedKey))
+        for key in keys { session.remove(key) }
+        messages.removeAll { keys.contains($0.feedKey) }
+        pending.removeAll { keys.contains($0.feedKey) }
+        pending.insert(contentsOf: batch, at: 0)
+        return batch.map(\.feedKey)
+    }
+    #endif
 
     func messages(groupedBy calendar: Calendar = .current) -> [(String, [Message])] {
         session.groups(included: feedingIDs)

@@ -11,11 +11,13 @@ struct FeedView: View {
     var scrollTopSignal: Int = 0
     var notificationRequest: NotificationOpenRequest? = nil
 
-    /// A `ScrollPosition` binding re-applies its last requested position on
-    /// re-render, so once anything asked it for `.top` the feed was pinned
-    /// there and could not be scrolled at all. An anchor id is a one-shot
-    /// request and cannot latch.
-    @State private var scroller: ScrollViewProxy?
+    // A one-shot request uses a permanent target outside the lazy rows. Never
+    // retain ScrollViewProxy across layout changes or bind the viewport to top.
+    @State private var scrollRequest = 0
+    @State private var animateScrollRequest = false
+    #if DEBUG
+    @State private var didRunNavigationProbe = false
+    #endif
     private static let topAnchor = "feed.top"
     @State private var open: Message?
     @State private var handledNotificationID: UUID?
@@ -31,8 +33,6 @@ struct FeedView: View {
     @State private var feedVisible = false
     @State private var footerVisible = false
     @State private var scrollSnapshot: ScrollSnapshot?
-    @State private var readCommitTask: Task<Void, Never>?
-    @State private var readQueue = ScrollReadQueue()
 
     /// Content can finish arriving while a finger or deceleration moves the
     /// feed. This visit's geometry stays fixed until that movement ends.
@@ -95,9 +95,10 @@ struct FeedView: View {
             ZStack(alignment: .top) {
                 ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        // This target always exists, even thousands of rows down.
                         // The space the pull strip holds open while it works.
-                        Color.clear.frame(height: stripHold)
+                        Color.clear.frame(height: stripHold).id(Self.topAnchor)
 
                         displayedMasthead
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
@@ -108,8 +109,8 @@ struct FeedView: View {
                         // action for free. Driving the pull by hand removes
                         // that, so it is put back explicitly rather than lost.
                         .accessibilityAction(named: "Refresh") { Task { await refreshNow() } }
-                        .id(Self.topAnchor)
 
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                         ForEach(displayedGroups, id: \.0) { section, items in
                             Section {
                             ForEach(items, id: \.feedKey) { message in
@@ -147,7 +148,7 @@ struct FeedView: View {
                                 .accessibilityAction(named: "Mark as seen") {
                                     Task { await store.markSeen(message) }
                                 }
-                                .opacity(admitted.contains(message.id) ? 0 : 1)
+                                .opacity(admitted.contains(message.feedKey) ? 0 : 1)
                                 .matchedTransitionSource(id: message.feedKey, in: feedZoom)
                             }
                             } header: {
@@ -183,8 +184,17 @@ struct FeedView: View {
                     // has to clear it itself or the last post sits underneath.
                     .scrollTargetLayout()
                     .safeAreaPadding(.bottom, Space.xxxl + Space.xl)
+                    }
                 }
                 .scrollIndicators(.hidden)
+                .task {
+                    #if DEBUG
+                    if !didRunNavigationProbe && ProcessInfo.processInfo.arguments.contains("-verifyFeedNavigation") {
+                        didRunNavigationProbe = true
+                        await verifyNavigation(using: proxy)
+                    }
+                    #endif
+                }
                 .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, value in
                     // This plain reference does not invalidate the view at scroll frequency.
                     progress.offset = Double(value)
@@ -198,7 +208,15 @@ struct FeedView: View {
                 // could sit in the notch and the dateline had bare white above
                 // it. Both edges dissolve now.
                 .feedEdges()
-                .onAppear { scroller = proxy }
+                .task(id: scrollRequest) {
+                    guard scrollRequest > 0 else { return }
+                    // Admission commits first; scroll only against the new tree.
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    if animateScrollRequest && !reduceMotion {
+                        withAnimation(Move.layout) { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                    } else { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                }
                 // Two geometry observers, both of which return a value that is
                 // CONSTANT during ordinary scrolling, so `body` is not
                 // re-evaluated on scroll frames. The old
@@ -273,7 +291,7 @@ struct FeedView: View {
                 .onChange(of: scrollTopSignal) { _, _ in scrollToTop() }
                 .onChange(of: store.feedSessionID) { _, _ in
                     cancelScrollReads()
-                    scroller?.scrollTo(Self.topAnchor, anchor: .top)
+                    scrollToTop(animated: false)
                 }
 
                 // Both live on the top edge, so they stack rather than
@@ -434,9 +452,8 @@ struct FeedView: View {
     }
 
     private func cancelScrollReads() {
-        // Already-sent reads finish: cancelling their response could leave
-        // Gmail read while the app incorrectly rolls its count back.
-        readQueue.cancelPending()
+        // Only incomplete gesture evidence is cancelled. Proven reads belong
+        // to the store and continue across navigation and session boundaries.
         scrollPass.cancel()
         releaseScrollSnapshot()
     }
@@ -450,38 +467,18 @@ struct FeedView: View {
     }
 
     private func displayedRemaining(in section: String) -> Int? {
-        let unread = Set(store.messages().first(where: { $0.0 == section })?.1
-            .filter { !$0.isRead }.map(\.feedKey) ?? [])
-        return readQueue.remaining(confirmed: store.progressRemaining(in: section), unreadKeys: unread)
+        store.progressRemaining(in: section)
     }
 
     private func enqueueScrollReads(_ keys: Set<String>) {
         guard canCommitScrollReads, !keys.isEmpty else { return }
-        let posts = store.sessionMessages.filter { keys.contains($0.feedKey) && !$0.isRead }
-        readQueue.enqueue(posts.map(\.feedKey), generation: store.feedSessionID)
-        guard readCommitTask == nil else { return }
-        readCommitTask = Task { @MainActor in
-            while canCommitScrollReads,
-                  let entry = readQueue.takeNext(generation: store.feedSessionID) {
-                if let current = store.sessionMessages.first(where: { $0.feedKey == entry.key }),
-                   !current.isRead {
-                    await store.markSeen(current)
-                }
-                // Success is already reflected in confirmed counts/read
-                // state. Failure releases the optimistic subtraction.
-                readQueue.finish(entry)
-            }
-            readQueue.cancelPending()
-            readCommitTask = nil
-        }
+        store.recordSeen(store.sessionMessages.filter { keys.contains($0.feedKey) && !$0.isRead })
     }
 
-    private func scrollToTop() {
+    private func scrollToTop(animated: Bool = true) {
         cancelScrollReads()
-        // A 2000pt animated camera move is the clearest vestibular trigger in
-        // this app, and the destination is what matters, not the journey.
-        guard !reduceMotion else { scroller?.scrollTo(Self.topAnchor, anchor: .top); return }
-        withAnimation(Move.layout) { scroller?.scrollTo(Self.topAnchor, anchor: .top) }
+        animateScrollRequest = animated
+        scrollRequest += 1
     }
 
     // MARK: The new-posts pill
@@ -507,36 +504,54 @@ struct FeedView: View {
         .animation(Move.resolved(Move.crisp, reduceMotion), value: showsPill)
     }
 
-    /// The pill's own tap used to shove the feed — it inserted at index 0 while
-    /// the reader was 260pt down, which is the exact failure the component
-    /// exists to prevent. The order below is the fix, and scrolling to an
-    /// **edge** rather than an ID is what makes it non-fragile: the target is
-    /// valid regardless of how much content was just inserted, so no delayed
-    /// callback is needed.
+    /// Both new-mail entry points admit the batch before requesting its new
+    /// layout's top. The target cannot disappear when lazy rows are recycled.
     private func admitPending() {
         cancelScrollReads()
-        let batch = Set(store.eligiblePending.map(\.id))
-
-        let land = {
-            scroller?.scrollTo(Self.topAnchor, anchor: .top)
-            store.admitPending()
-            pillVisible = false
-        }
-        // Reduce Motion takes the un-animated jump.
-        if reduceMotion { land() } else { withAnimation(Move.layout) { land() } }
-
-        // ONE opacity pass over the whole admitted block — not per post. A
-        // stagger over an unbounded batch is the waterfall tax. Deferred by a
-        // hop so the inserted rows commit at 0 before they animate to 1.
-        admitted = batch
+        admitted = Set(store.eligiblePending.map(\.feedKey))
+        store.admitPending()
+        pillVisible = false
+        scrollToTop()
         Task { @MainActor in
+            await Task.yield()
             withAnimation(Move.resolved(Move.reveal, reduceMotion)) { admitted = [] }
+            UIAccessibility.post(notification: .layoutChanged, argument: nil)
         }
-        // The tree under VoiceOver just changed wholesale and the viewport
-        // moved; without this the cursor stays on an element that is no longer
-        // where it was.
-        UIAccessibility.post(notification: .layoutChanged, argument: nil)
     }
+
+    #if DEBUG
+    /// Exercises actual SwiftUI layout with the signed-in cache. It deliberately
+    /// performs no user-scroll simulation and cannot establish gesture coverage.
+    private func verifyNavigation(using proxy: ScrollViewProxy) async {
+        for _ in 0..<60 where store.sessionMessages.count < 20 {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+        }
+        guard store.sessionMessages.count >= 20 else {
+            print("[navigation-probe] unavailable: fewer than 20 cached cards")
+            return
+        }
+        cancelScrollReads()
+        let incoming = store.stageNavigationProbeArrival()
+        let unseenBefore = store.sessionMessages.filter { !$0.isRead }.count + incoming.count
+        try? await Task.sleep(for: .milliseconds(300))
+        proxy.scrollTo(store.sessionMessages[15].feedKey, anchor: .top)
+        try? await Task.sleep(for: .seconds(1))
+        let reachedDepth = progress.offset > 500
+        let pendingBefore = store.hasPendingInFeed
+        admitPending()
+        try? await Task.sleep(for: .seconds(1))
+        let reachedTop = progress.offset < 10
+        let admittedCorrectly = Array(store.sessionMessages.prefix(incoming.count).map(\.feedKey)) == incoming
+        let noFalseReads = store.sessionMessages.filter { !$0.isRead }.count == unseenBefore
+        proxy.scrollTo(store.sessionMessages[10].feedKey, anchor: .top)
+        try? await Task.sleep(for: .seconds(1))
+        let canMoveAgain = progress.offset > 500
+        scrollToTop(animated: false)
+        try? await Task.sleep(for: .seconds(1))
+        print("[navigation-probe] depth=\(reachedDepth) pending=\(pendingBefore) top=\(reachedTop) admitted=\(admittedCorrectly) noFalseReads=\(noFalseReads) movable=\(canMoveAgain) returned=\(progress.offset < 10)")
+    }
+    #endif
 
     // MARK: Pull to refresh
     //
@@ -662,7 +677,7 @@ struct FeedView: View {
                 Text("No more emails.")
                     .typeStyle(Style.body).foregroundStyle(Ink.secondary)
                 if store.hasPendingInFeed {
-                    Button("See new posts") { store.admitPending() }.frame(minHeight: Metric.tapTarget)
+                    Button("See new posts", action: admitPending).frame(minHeight: Metric.tapTarget)
                 } else if store.completionVerified && store.showOldPosts {
                     Button("See old posts") { showingOldPosts = true }.frame(minHeight: Metric.tapTarget)
                 }

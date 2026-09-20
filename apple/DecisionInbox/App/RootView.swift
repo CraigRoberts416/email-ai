@@ -20,7 +20,10 @@ struct RootView: View {
     var body: some View {
         Group {
             if auth.isAuthenticated || store.isSample {
-                TabView(selection: $tab) {
+                TabView(selection: Binding(get: { tab }, set: { next in
+                    if tab == 0 && next == 0 { scrollTop += 1 }
+                    tab = next
+                })) {
                     Tab("Feed", systemImage: "house", value: 0) {
                         FeedView(scrollTopSignal: scrollTop, notificationRequest: notificationRequest)
                     }
@@ -45,7 +48,6 @@ struct RootView: View {
                 // Tapping Feed while already on Feed returns to the top —
                 // the one gesture every feed on the phone shares.
                 .onChange(of: tab) { previous, current in
-                    if previous == 0 && current == 0 { scrollTop += 1 }
                     if previous != 0 && current == 0 {
                         store.beginFeedSession()
                         Task { await store.refresh() }

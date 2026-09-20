@@ -91,3 +91,38 @@ struct FeedSectionCounts: Codable, Equatable {
 }
 
 extension Message { var feedKey: String { FeedSession.key(self) } }
+
+/// Durable evidence of an accepted read. No email body or sender data is needed
+/// to finish this write after a tab change, suspension, or process restart.
+struct FeedReadIntent: Codable {
+    let id: String
+    let mailboxID: String
+    let receivedAt: Date
+    let isFeedEligible: Bool
+    var key: String { mailboxID + ":" + id }
+    init(_ message: Message) {
+        id = message.id; mailboxID = message.mailboxID
+        receivedAt = message.receivedAt; isFeedEligible = message.isFeedEligible
+    }
+}
+
+/// A display baseline, never authority for inbox zero or the application badge.
+/// Date bands can be rolled forward exactly; a time-zone change needs a recount.
+struct FeedProgressSnapshot: Codable {
+    let date: Date
+    let timeZone: String
+    let sections: [String: FeedSectionCounts]
+
+    func rebased(at date: Date, calendar: Calendar = .current) -> [String: FeedSectionCounts] {
+        guard calendar.timeZone.identifier == timeZone,
+              let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: self.date),
+                                                 to: calendar.startOfDay(for: date)).day,
+              (0...7).contains(days) else { return [:] }
+        return sections.filter { $0.value.isValid }.mapValues { counts in
+            if days == 0 { return counts }
+            if days == 1 { return FeedSectionCounts(today: 0, yesterday: counts.today,
+                                                    earlier: counts.yesterday + counts.earlier) }
+            return FeedSectionCounts(today: 0, yesterday: 0, earlier: counts.total)
+        }
+    }
+}

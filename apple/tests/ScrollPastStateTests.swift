@@ -46,8 +46,7 @@ import Foundation
         state.moved("new-gesture", from: .visible, to: .above, at: 300)
         precondition(state.finish() == ["new-gesture"], "An interrupted gesture cannot leak candidates into the next touch")
         livePasses()
-        queuedCountdown()
-        print("Scroll-past and serial read-countdown behavior checks passed")
+        print("Scroll-past gesture evidence checks passed")
     }
 
     static func livePasses() {
@@ -72,41 +71,4 @@ import Foundation
         precondition(state.takePassed().isEmpty, "Cancellation clears unconsumed geometry evidence")
     }
 
-    static func queuedCountdown() {
-        var queue = ScrollReadQueue()
-        queue.enqueue(["a", "b", "a"], generation: 1)
-        precondition(queue.pending.map(\.key) == ["a", "b"], "Duplicate callbacks enqueue once in display order")
-        let first = queue.takeNext(generation: 1)!
-        precondition(first.key == "a" && queue.takeNext(generation: 1) == nil,
-                     "Only one provider request may be in flight")
-        queue.enqueue(["a", "b", "c"], generation: 1)
-        precondition(queue.pending.map(\.key) == ["b", "c"], "A new pass/touch adds work without replacing earlier saves")
-        precondition(queue.remaining(confirmed: 8, unreadKeys: ["a", "b", "c"]) == 5,
-                     "Queued and in-flight unread cards tick down immediately")
-        precondition(queue.remaining(confirmed: 7, unreadKeys: ["b", "c"]) == 5,
-                     "An SSE confirmation before HTTP completion does not double-subtract")
-        queue.finish(first)
-        precondition(queue.remaining(confirmed: 7, unreadKeys: ["b", "c"]) == 5,
-                     "Finishing a confirmed read leaves the displayed total unchanged")
-        let failed = queue.takeNext(generation: 1)!
-        queue.finish(failed)
-        precondition(queue.remaining(confirmed: 7, unreadKeys: ["b", "c"]) == 6,
-                     "A failed request restores exactly its optimistic count")
-        let third = queue.takeNext(generation: 1)!
-        queue.enqueue(["d", "e"], generation: 1)
-        queue.cancelPending()
-        precondition(queue.pending.isEmpty && queue.inFlight == third && queue.keys == ["c"],
-                     "Navigation cancels unstarted reads but lets an already-sent write finish")
-        queue.enqueue(["f"], generation: 2)
-        queue.finish(third)
-        precondition(queue.takeNext(generation: 2)?.key == "f", "A returned session can continue after the older write finishes")
-        queue.finish(ScrollReadQueue.Entry(key: "f", generation: 2))
-        queue.enqueue(["stale"], generation: 2)
-        queue.enqueue(["fresh"], generation: 3)
-        precondition(queue.takeNext(generation: 3)?.key == "fresh", "Unstarted work from an old session is discarded")
-        precondition(queue.remaining(confirmed: nil, unreadKeys: ["fresh"]) == nil,
-                     "An unknown provider total stays unknown")
-        precondition(queue.remaining(confirmed: 0, unreadKeys: ["fresh"]) == 0,
-                     "A temporarily stale total never produces negative remaining mail")
-    }
 }
