@@ -14,7 +14,8 @@ struct SavedView: View {
                 if store.saved.isEmpty {
                     EmptyStateView(
                         headline: "Nothing kept yet.",
-                        detail: "TAP THE BOOKMARK ON ANY CARD AND IT LANDS HERE."
+                        detail: "TAP THE BOOKMARK ON ANY CARD AND IT LANDS HERE.",
+                        illustration: .reading
                     )
                 } else {
                     ScrollView {

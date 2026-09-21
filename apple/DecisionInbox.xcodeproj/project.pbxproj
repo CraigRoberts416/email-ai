@@ -6,6 +6,26 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+        B2000000000000000000001 /* RiveRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = B2000000000000000000002 /* RiveRuntime */; };
+/* End PBXBuildFile section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+        B2000000000000000000003 /* rive-ios */ = {
+            isa = XCRemoteSwiftPackageReference;
+            repositoryURL = "https://github.com/rive-app/rive-ios";
+            requirement = {kind = exactVersion; version = 6.24.0; };
+        };
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+        B2000000000000000000002 /* RiveRuntime */ = {
+            isa = XCSwiftPackageProductDependency;
+            package = B2000000000000000000003 /* rive-ios */;
+            productName = RiveRuntime;
+        };
+/* End XCSwiftPackageProductDependency section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A1000000000000000000001 /* DecisionInbox */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -19,6 +39,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                B2000000000000000000001 /* RiveRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -60,6 +81,7 @@
 				A1000000000000000000001 /* DecisionInbox */,
 			);
 			name = DecisionInbox;
+			packageProductDependencies = (B2000000000000000000002 /* RiveRuntime */,);
 			productName = DecisionInbox;
 			productReference = A1000000000000000000004 /* DecisionInbox.app */;
 			productType = "com.apple.product-type.application";
@@ -90,6 +112,7 @@
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A1000000000000000000003 /* Products */;
+			packageReferences = (B2000000000000000000003 /* rive-ios */,);
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (

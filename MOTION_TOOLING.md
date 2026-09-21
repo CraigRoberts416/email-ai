@@ -109,3 +109,7 @@ The bridge supports editable layers and keyframes. Use its actual catalog schema
 - [Official Higgsfield After Effects bridge](https://github.com/higgsfield-ai/fnf-local-pluging-bridge-mcp), [After Effects integration](https://higgsfield.ai/plugins/after-effects).
 - [Spline Apple export](https://docs.spline.design/exporting-your-scene/apple-platform/i-os-app-generation), [LottieFiles runtime documentation](https://developers.lottiefiles.com/docs/).
 - [Mobbin iOS send-flow reference](https://mobbin.com/flows/bebefa25-db23-4a6a-8567-46ebbddfdc9d).
+
+## September 20: production illustrated layer
+
+The native runtime is no longer deferred: Rive Apple **6.24.0** is pinned through Swift Package Manager. Three original script-free artboards ship in `margin-studio.riv` (16,675 bytes), distinct from the tooling fixture. Real iOS loading, numeric/boolean bindings, interrupted state changes and configuration lifetime checks pass. Native static drawing handles Reduce Motion and failure. See [Margin Studio](design/motion/margin-studio/README.md) and [release 2609202100](product_docs/native-release-2609202100.md). The earlier “study only” entries are historical setup results.

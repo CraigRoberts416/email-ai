@@ -49,8 +49,8 @@ struct UnsubscribeTaskRow: View {
                     }
                 }
                 Spacer(minLength: Space.sm)
-                Image(systemName: run.isConfirmed ? "checkmark.circle" : (run.needsAttention ? "person.crop.circle" : "clock"))
-                    .accessibilityHidden(true)
+                PaperIllustration(art: .receipt, phase: run.isConfirmed ? 2 : (run.needsAttention ? 3 : (run.isTerminal ? 0 : 1)), pull: 100)
+                    .frame(width: 78, height: 52)
             }
             Text(run.title).typeStyle(Style.sectionHeader)
             Text(run.summary).typeStyle(Style.bodySmall).fixedSize(horizontal: false, vertical: true)

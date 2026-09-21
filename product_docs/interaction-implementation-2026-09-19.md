@@ -4,6 +4,10 @@ Updated September 20, 2026. The user approved the whole-app motion-and-delight a
 
 The guiding idea is continuity: the same message, account and task remain recognizable while the interface explains what happened and what can happen next. The implementation uses the shared calm, expressive native direction. Mutually exclusive signature alternatives are not combined into a single control. SwiftUI remains the product animation layer; no extra production animation runtime was added.
 
+## Illustrated layer follow-up — September 20
+
+The user subsequently asked to finish the illustrated signature layer and deploy it. Three production Rive artboards now implement the selected paper/margin direction: freshness receipt, source-to-reading illustration and a replay-guarded closing mark, with related loading, empty and recovery poses. The app now contains an official native Rive runtime, a bundled asset and real application-state bindings. [Release 2609202100](native-release-2609202100.md) records validation and distribution; [editable artwork and checks](../design/motion/margin-studio/README.md) distinguish this implementation from the earlier tooling fixture. The scope clarification below records the earlier release, not the current illustrated implementation.
+
 ## Scope clarification — September 20
 
 The twenty rows below describe the native interaction, state and recovery implementation. They do **not** mean that every creative direction or every capability in the original motion brief was delivered. The original completion wording was too broad for that larger brief.

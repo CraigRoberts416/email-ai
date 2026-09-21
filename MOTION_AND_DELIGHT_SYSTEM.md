@@ -8,6 +8,10 @@ Read the current native contract in `product_docs/Email App.md`, the `product_do
 
 The older unsubscribe spec describes local hiding and future automation. The current native app performs external unsubscribe attempts. The new implementation stores durable unsubscribe receipts and offers a fresh browser-page handoff. It does not preserve a remote browser session, block senders locally, or monitor future mail. The [unsubscribe audit](product_docs/unsubscribe-experience-audit-2026-09-19.md) records the conflicts and decisions still open.
 
+## September 20 illustrated implementation
+
+The user explicitly requested completing the illustrated signature layer and TestFlight deployment. [Margin Studio](design/motion/margin-studio/README.md) adds three original production Rive artboards with app-state/gesture binding and native static fallback. SwiftUI still owns layout, controls, navigation and all copy. Rive Apple 6.24.0 is now a production dependency; the historical stack/tooling observations below describe the audit baseline. [Release 2609202100](product_docs/native-release-2609202100.md) tracks shipping evidence.
+
 ## Existing-stack audit
 
 | Area | Observed state | Consequence |

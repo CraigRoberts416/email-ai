@@ -1,0 +1,2 @@
+[paper-motion] PASS: 84 native bindings; 12 hosts released
+[paper-motion] gallery interruption and mount cycle finished

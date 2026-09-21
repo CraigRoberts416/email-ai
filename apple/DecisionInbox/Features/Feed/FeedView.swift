@@ -323,7 +323,14 @@ struct FeedView: View {
                 }
             }
             .navigationBarHidden(true)
-            .onAppear { feedVisible = true }
+            .onAppear {
+                feedVisible = true
+                #if DEBUG
+                if store.isSample, ProcessInfo.processInfo.arguments.contains("-sampleRefresh") {
+                    refreshing = true; stripHold = refreshHeight
+                }
+                #endif
+            }
             .environment(\.motionIsActive, feedVisible && scenePhase == .active && open == nil && profile == nil && !showingOldPosts)
             .task(id: emptyLoading) {
                 firstWaitStage = 0
@@ -595,15 +602,11 @@ struct FeedView: View {
     @ViewBuilder private var pullStrip: some View {
         if pull > Move.Pull.showAt || stripHold > 0 {
             HStack(alignment: .center, spacing: Space.md) {
-                if refreshing {
-                    Caret(height: 20)
-                } else if settled == nil {
-                    RefreshMargin(tension: reduceMotion ? 0 : armingProgress)
-                        .stroke(Ink.primary, style: StrokeStyle(lineWidth: Metric.unreadBar, lineCap: .round))
-                        .frame(width: 10, height: 22)
-                        .opacity(0.3 + 0.7 * armingProgress)
-                        .accessibilityHidden(true)
-                }
+                PaperIllustration(art: .receipt,
+                    phase: refreshing ? 1 : (settled == nil ? 0 : (refreshFailed ? 3 : 2)),
+                    pull: Double(armingProgress * 100))
+                    .frame(width: 72, height: 48)
+                    .environment(\.illustrationMotionEnabled, feedVisible && open == nil && profile == nil && compose == nil && !store.activityPresented)
                 Text(pullLabel)
                     .typeStyle(Style.chip)
                     .foregroundStyle(Ink.secondary)
@@ -710,7 +713,7 @@ struct FeedView: View {
                            actionLabel: "Choose mailboxes", action: { choosingMailboxes = true })
         } else if store.sessionMessages.isEmpty, let failure = store.loadFailure {
             EmptyStateView(headline: "Couldn’t load your mail.", detail: failure,
-                           actionLabel: "Try again", action: { startRefresh() })
+                           actionLabel: "Try again", action: { startRefresh() }, illustration: .reading, illustrationPhase: 3)
         } else if store.isFirstSync && store.sessionMessages.isEmpty {
             initialLoading
         } else if store.hasMoreFeed {
@@ -728,7 +731,9 @@ struct FeedView: View {
             initialLoading
         } else if store.feedEndVerified {
             VStack(spacing: Space.md) {
-                CompletionPunctuation(verified: store.completionVerified)
+                CompletionIllustration(verified: store.completionVerified && !store.hasPendingInFeed,
+                    mailboxIDs: store.mailboxes.filter(\.includeInUnifiedFeed).map(\.id))
+                    .environment(\.illustrationMotionEnabled, feedVisible && open == nil && profile == nil && compose == nil && !store.activityPresented)
                 Text("No more emails.")
                     .typeStyle(Style.body).foregroundStyle(Ink.secondary)
                 if store.hasPendingInFeed {
@@ -754,7 +759,10 @@ struct FeedView: View {
 
     private var initialLoading: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            CaretLine(label: store.isFirstSync ? "Reading your mailbox…" : "Checking your inbox…")
+            PaperIllustration(art: .reading, phase: 1)
+                .frame(width: 180, height: 104)
+                .environment(\.illustrationMotionEnabled, feedVisible && open == nil && !store.activityPresented)
+            Text(store.isFirstSync ? "Reading your mailbox…" : "Checking your inbox…").typeStyle(Style.body)
             Text(firstWaitStage >= 30
                  ? "This is taking longer than expected. You can leave this screen; your mail will appear as it loads."
                  : (firstWaitStage >= 10 ? "Still waiting for your mailbox to respond."
@@ -1083,34 +1091,6 @@ private struct FeedPostGeometry: Equatable {
 
 
 /// The margin gathers tension under the finger; text never deforms.
-private struct RefreshMargin: Shape {
-    var tension: CGFloat
-    var animatableData: CGFloat { get { tension } set { tension = newValue } }
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: 0))
-        path.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.maxY),
-                         control: CGPoint(x: rect.midX + (1 - tension) * 5, y: rect.midY))
-        return path
-    }
-}
-
-/// A confirmed endpoint settles quietly. First appearance does not replay a reward.
-private struct CompletionPunctuation: View {
-    let verified: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        HStack(spacing: 4) {
-            Capsule().frame(width: verified ? 20 : 36, height: 2)
-            Circle().frame(width: 3, height: 3).opacity(verified ? 1 : 0)
-        }
-        .foregroundStyle(Ink.secondary)
-        .frame(width: 44, height: 16)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.65), value: verified)
-        .accessibilityHidden(true)
-    }
-}
-
 private struct FeedThreadTransition: ViewModifier {
     let sourceID: String
     let namespace: Namespace.ID

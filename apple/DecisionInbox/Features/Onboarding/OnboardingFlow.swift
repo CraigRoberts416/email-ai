@@ -214,6 +214,7 @@ struct OnboardingFlow: View {
 
     private var cancelled: some View {
         hero {
+            PaperIllustration(art: .reading, phase: 3).frame(width: 150, height: 92)
             Text(auth.lastError == nil ? "Connection cancelled." : "Connection could not finish.")
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
@@ -329,6 +330,8 @@ private struct ExamplePost: View {
             Text("SYNTHETIC EXAMPLE · NOT YOUR MAIL")
                 .typeStyle(Style.monoMicro)
                 .foregroundStyle(Ink.tertiary)
+            PaperIllustration(art: .reading, phase: showingMeaning ? 2 : 0)
+                .frame(maxWidth: .infinity).frame(height: typeSize.isAccessibilitySize ? 88 : 120)
             Text("Delta Air Lines")
                 .typeStyle(Style.sender)
                 .foregroundStyle(Ink.primary)
@@ -376,6 +379,11 @@ private struct ExamplePost: View {
         .padding(Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(RoundedRectangle(cornerRadius: Corner.md).strokeBorder(Ink.border, lineWidth: 1))
+        #if DEBUG
+        .onAppear {
+            if ProcessInfo.processInfo.arguments.contains("-sampleMeaning") { showingMeaning = true }
+        }
+        #endif
     }
 
     private func specimenButton(_ title: String, meaning: Bool) -> some View {

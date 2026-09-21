@@ -24,6 +24,7 @@ struct ActivityView: View {
                 LazyVStack(alignment: .leading, spacing: Space.lg) {
                     if store.receipts.isEmpty && store.unsubscribeRuns.isEmpty && store.visibleSendJobs.isEmpty && !hasDrafts {
                         VStack(alignment: .leading, spacing: Space.sm) {
+                            PaperIllustration(art: .reading, phase: 4).frame(width: 160, height: 92)
                             Text("Nothing in progress").typeStyle(Style.navAction)
                             Text("Sending, filing and unsubscribe attempts stay accessible here.")
                                 .typeStyle(Style.bodySmall).foregroundStyle(Ink.secondary)

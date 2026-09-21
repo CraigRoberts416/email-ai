@@ -1,20 +1,26 @@
 import SwiftUI
 
-/// Empty and error deliberately do not share a component. Reusing one shell
-/// teaches people that "nothing here" and "something broke" look alike, and
-/// they stop reading both.
+/// The native copy/actions distinguish absence from failure. Optional paper
+/// poses reinforce that distinction without becoming the only status signal.
 ///
-/// No illustration: scale is the illustration.
+/// Selected destinations add a quiet paper illustration; text remains primary.
 struct EmptyStateView: View {
     let headline: String
     let detail: String
     var actionLabel: String?
     var action: (() -> Void)?
 
+    var illustration: PaperArt? = nil
+    var illustrationPhase = 4
+
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
+            if let illustration {
+                PaperIllustration(art: illustration, phase: illustrationPhase)
+                    .frame(width: 180, height: typeSize.isAccessibilitySize ? 80 : 108)
+            }
             Text(headline)
                 .typeStyle(Style.display)
                 .foregroundStyle(Ink.primary)
@@ -43,6 +49,6 @@ struct EmptyStateView: View {
         // it — but at accessibility sizes the copy itself is the scale, and the
         // same 140 pushes the headline off-screen entirely. That turns "nothing
         // here" into "nothing at all".
-        .padding(.top, typeSize.isAccessibilitySize ? Space.xxl : 140)
+        .padding(.top, typeSize.isAccessibilitySize ? Space.xl : (illustration == nil ? 140 : 64))
     }
 }

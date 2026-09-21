@@ -28,8 +28,8 @@ struct UnsubscribeTray: View {
         HStack(alignment: .top, spacing: Space.sm) {
             Button(action: onOpenLog) {
                 HStack(spacing: Space.md) {
-                    Image(systemName: attention > 0 ? "person.crop.circle.badge.exclamationmark" : "arrow.trianglehead.2.clockwise.rotate.90")
-                        .font(.system(size: 20))
+                    PaperIllustration(art: .receipt, phase: attention > 0 ? 3 : (active > 0 ? 1 : (runs.allSatisfy(\.isConfirmed) ? 2 : 0)), pull: 100, inverted: true)
+                        .frame(width: 52, height: 40)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(dynamicType.isAccessibilitySize ? compactTitle : title).typeStyle(Style.navAction)
                         if !dynamicType.isAccessibilitySize, let current {

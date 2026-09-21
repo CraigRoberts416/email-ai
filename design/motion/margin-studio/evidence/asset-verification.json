@@ -1,0 +1,17 @@
+{
+  "checks": {
+    "gesture_continuity": true,
+    "Receipt_working_moves": true,
+    "Receipt_quiet_still": true,
+    "Receipt_outcomes_distinct": true,
+    "Reading_working_moves": true,
+    "Reading_quiet_still": true,
+    "Reading_outcomes_distinct": true,
+    "saved_empty_distinct": true,
+    "closing_moves": true,
+    "closing_finishes": true,
+    "reentry_matches_settled": true
+  },
+  "bytes": 16675,
+  "benchmark": "[20:58:06.046] rive  deferred replay: inline\n[20:58:06.108] rive  built /Users/craigroberts/email-ai/design/motion/margin-studio/build/margin-studio.riv (16675 bytes, 61ms, 0 errors, 0 warnings)\n[20:58:06.109] rive  data: phase = 1\n[20:58:06.109] rive  showing Reading [2/3]\n[20:58:06.109] rive  viewport 280x160 @1x\n[20:58:06.215] rive  bench advance: mean 0.004ms p50 0.002ms p95 0.012ms max 0.046ms\n[20:58:06.215] rive  bench render: mean 0.193ms p50 0.140ms p95 0.433ms max 2.454ms\n[20:58:06.215] rive  bench memory: 0 -> 0 wasm pages (+0) over 240 frames\n"
+}
