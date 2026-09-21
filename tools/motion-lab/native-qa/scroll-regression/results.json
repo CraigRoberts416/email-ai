@@ -1,0 +1,23 @@
+{
+  "source_commit": "427f495",
+  "build": "2609210445",
+  "baseline": {
+    "os": "iOS 26.5",
+    "test": "card-origin swipe",
+    "result": "failed before removal of the row-wide long press"
+  },
+  "fixed_native_gestures": {
+    "iOS 26.5": {
+      "passed": 4,
+      "failed": 0
+    },
+    "iOS 26.4.1": {
+      "passed": 4,
+      "failed": 0
+    }
+  },
+  "feed_store_checks": 156,
+  "archive": "passed; production asset and release-only contents verified",
+  "upload": "Xcode Organizer confirmed upload of 1.0 (2609210445) at 04:47 EDT on 2026-09-21",
+  "testflight_testing_status": "unverified; Chrome reports another extension UI open"
+}
