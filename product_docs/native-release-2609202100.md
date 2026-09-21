@@ -24,4 +24,14 @@ This delivers the selected illustrated layer in the approved calm native directi
 
 ## Distribution
 
-Release archive and TestFlight upload are in progress. App Store Connect browser verification is waiting for the user to finish sign-in and dismiss an extension panel that blocks automation. The prior backend `a6e9043` is already live; this release changes native UI/assets only and needs no new backend contract.
+Implementation commit **`b355452`** is pushed to `main`. The final release archive passed and is retained in Xcode's normal Organizer location:
+
+`~/Library/Developer/Xcode/Archives/2026-09-20/DecisionInbox 2026-09-20 21.00.xcarchive`
+
+The upload attempt at 21:04 EDT stopped before transfer with **`exportArchive Failed to Use Accounts`**. Xcode's distribution log says no account with App Store Connect access was available for team `48X38356RX`. Computer control then reported that the Mac was locked and could not be automatically unlocked. The user has been asked to unlock it; retry the prepared archive afterward. **Build 2609202100 has not been uploaded or verified available in TestFlight.**
+
+The earlier App Store Connect browser session also required sign-in and then reported a blocking extension panel. After unlocking, use the existing Xcode account to retry upload and confirm the processed build in the existing Internal group. Do not claim upload success as tester availability.
+
+Local evidence: `/tmp/di-signature-archive-final.log`, `/tmp/di-upload-2609202100.log`; uploaded build number must remain `2609202100` unless Apple has actually accepted it. The prior backend `a6e9043` is already live; this release changes native UI/assets only and needs no new backend contract.
+
+The uncompressed archived app is about 10.4 MiB versus 4.5 MiB for the previous build; most of the increase is the native runtime. This is not Apple's compressed TestFlight download size.
