@@ -33,7 +33,6 @@ struct PostView: View {
     /// Suspends feed read tracking and new-post entrances during a reaction interaction.
     var onSwiping: (Bool) -> Void = { _ in }
 
-    @GestureState(resetTransaction: Transaction(animation: Move.pressOut)) private var pressed = false
     @State private var linkFailed = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -67,22 +66,17 @@ struct PostView: View {
             // grammar switched off for the posts that mattered most.
             Rule()
         }
-        .background(pressed ? Ink.surfaceTertiary : Ink.surface)
+        .background(Ink.surface)
         .contentShape(.rect)
         // The whole card opens the thread, and it is a TapGesture rather than
         // a Button for exactly one reason: a scroll cancels it. The inner
         // controls — avatar, CTA, action row — are real Buttons and still take
         // their own taps first, so this only catches the reading surface.
         .onTapGesture { onOpen() }
-        // A non-recognizing hold observes touch-down; travel cancels it.
-        // Unlike a row DragGesture it never claims the scroll view's pan.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 60, maximumDistance: 8)
-                .updating($pressed) { down, state, transaction in
-                    transaction.animation = Move.pressIn
-                    state = down
-                }
-        )
+        // Keep touch-down feedback on the individual buttons. Even a
+        // simultaneous long press that never completes can prevent the
+        // ancestor scroll view from beginning its pan on iOS 26.
+        // FeedGestureTests exercises a real swipe beginning on this surface.
         // NO row-level DragGesture here, in either form. This was measured, not
         // reasoned about: with the same synthetic drag over the same feed, the
         // scroll offset reached 4681pt without it and exactly 0 with it —

@@ -6,6 +6,48 @@
 	objectVersion = 77;
 	objects = {
 
+        C3000000000000000000001 = {isa = PBXFileSystemSynchronizedRootGroup; path = DecisionInboxUITests; sourceTree = "<group>"; };
+        C3000000000000000000002 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DecisionInboxUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+        C3000000000000000000003 = {
+            isa = PBXNativeTarget;
+            buildConfigurationList = C3000000000000000000004;
+            buildPhases = (C3000000000000000000005, C3000000000000000000006, C3000000000000000000007,);
+            buildRules = ();
+            dependencies = (C3000000000000000000008,);
+            fileSystemSynchronizedGroups = (C3000000000000000000001,);
+            name = DecisionInboxUITests;
+            productName = DecisionInboxUITests;
+            productReference = C3000000000000000000002;
+            productType = "com.apple.product-type.bundle.ui-testing";
+        };
+        C3000000000000000000004 = {isa = XCConfigurationList; buildConfigurations = (C3000000000000000000010,C3000000000000000000011,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        C3000000000000000000005 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C3000000000000000000006 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C3000000000000000000007 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        C3000000000000000000008 = {isa = PBXTargetDependency; target = A1000000000000000000005; targetProxy = C3000000000000000000009; };
+        C3000000000000000000009 = {isa = PBXContainerItemProxy; containerPortal = A1000000000000000000007; proxyType = 1; remoteGlobalIDString = A1000000000000000000005; remoteInfo = DecisionInbox; };
+        C3000000000000000000010 = {isa = XCBuildConfiguration; name = Debug; buildSettings = {
+            CODE_SIGN_STYLE = Automatic;
+            DEVELOPMENT_TEAM = 48X38356RX;
+            GENERATE_INFOPLIST_FILE = YES;
+            PRODUCT_BUNDLE_IDENTIFIER = com.craigroberts.decisioninbox.uitests;
+            PRODUCT_NAME = "$(TARGET_NAME)";
+            SWIFT_VERSION = 5.0;
+            TARGETED_DEVICE_FAMILY = 1;
+            TEST_TARGET_NAME = DecisionInbox;
+        }; };
+        C3000000000000000000011 = {isa = XCBuildConfiguration; name = Release; buildSettings = {
+            CODE_SIGN_STYLE = Automatic;
+            DEVELOPMENT_TEAM = 48X38356RX;
+            GENERATE_INFOPLIST_FILE = YES;
+            PRODUCT_BUNDLE_IDENTIFIER = com.craigroberts.decisioninbox.uitests;
+            PRODUCT_NAME = "$(TARGET_NAME)";
+            SWIFT_VERSION = 5.0;
+            TARGETED_DEVICE_FAMILY = 1;
+            TEST_TARGET_NAME = DecisionInbox;
+        }; };
+
+
 /* Begin PBXBuildFile section */
         B2000000000000000000001 /* RiveRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = B2000000000000000000002 /* RiveRuntime */; };
 /* End PBXBuildFile section */
@@ -50,6 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000000000000000000001 /* DecisionInbox */,
+                C3000000000000000000001 /* DecisionInboxUITests */,
 				A1000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -58,6 +101,7 @@
 			isa = PBXGroup;
 			children = (
 				A1000000000000000000004 /* DecisionInbox.app */,
+                C3000000000000000000002 /* DecisionInboxUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -116,6 +160,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+                C3000000000000000000003 /* DecisionInboxUITests */,
 				A1000000000000000000005 /* DecisionInbox */,
 			);
 		};

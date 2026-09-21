@@ -22,6 +22,10 @@ This delivers the selected illustrated layer in the approved calm native directi
 - No real sends, unsubscribes or account disconnects were used for testing.
 - Headless desktop asset rendering: 0.193 ms mean / 0.433 ms p95 over 240 frames, no WASM-page growth. Native Instruments could not attach to the Simulator process; no physical-device performance or VoiceOver pass is claimed.
 
+## Superseded before upload
+
+The user reported the feed scrolling regression on September 21. Build `2609202100` was never uploaded. The replacement [2609210445](native-release-2609210445.md) includes this entire illustrated layer and the gesture repair. The distribution notes below describe the original attempt.
+
 ## Distribution
 
 Implementation commit **`b355452`** is pushed to `main`. The final release archive passed and is retained in Xcode's normal Organizer location:
@@ -32,6 +36,6 @@ The upload attempt at 21:04 EDT stopped before transfer with **`exportArchive Fa
 
 The earlier App Store Connect browser session also required sign-in and then reported a blocking extension panel. After unlocking, use the existing Xcode account to retry upload and confirm the processed build in the existing Internal group. Do not claim upload success as tester availability.
 
-Local evidence: `/tmp/di-signature-archive-final.log`, `/tmp/di-upload-2609202100.log`; uploaded build number must remain `2609202100` unless Apple has actually accepted it. The prior backend `a6e9043` is already live; this release changes native UI/assets only and needs no new backend contract.
+Local evidence: `/tmp/di-signature-archive-final.log`, `/tmp/di-upload-2609202100.log`; the original archive was superseded before any successful transfer. The prior backend `a6e9043` is already live; this release changes native UI/assets only and needs no new backend contract.
 
 The uncompressed archived app is about 10.4 MiB versus 4.5 MiB for the previous build; most of the increase is the native runtime. This is not Apple's compressed TestFlight download size.
