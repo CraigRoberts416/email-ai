@@ -4,6 +4,14 @@ Updated September 20, 2026. The user approved the whole-app motion-and-delight a
 
 The guiding idea is continuity: the same message, account and task remain recognizable while the interface explains what happened and what can happen next. The implementation uses the shared calm, expressive native direction. Mutually exclusive signature alternatives are not combined into a single control. SwiftUI remains the product animation layer; no extra production animation runtime was added.
 
+## Scope clarification — September 20
+
+The twenty rows below describe the native interaction, state and recovery implementation. They do **not** mean that every creative direction or every capability in the original motion brief was delivered. The original completion wording was too broad for that larger brief.
+
+There are no production Rive assets or Rive runtime in the app. The Rive state-machine fixture, Motion/Motion+ web lab and After Effects receipt study verify authoring tools separately from shipping features. Illustrated loaders/empty states, a Rive freshness-receipt signature and other ambitious illustrated alternatives remain unbuilt. The app currently uses SwiftUI for the selected margin, control, navigation and typography motion. Premium Motion MCP access and the unverified device checks remain open as recorded below.
+
+The user subsequently requested TestFlight distribution of the implemented work. Build 2609202041 combines this implementation with the later feed reliability and People badge fixes; its distribution result is tracked in `native-release-2609202041.md`.
+
 ## Coverage of the twenty opportunities
 
 | Audited moment | Implemented result | Boundary / tradeoff |
