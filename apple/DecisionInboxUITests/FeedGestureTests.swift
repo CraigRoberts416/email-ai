@@ -127,5 +127,9 @@ final class FeedGestureTests: XCTestCase {
         XCTAssertFalse(app.buttons["Hide activity summary"].exists, "Completed work leaves the global banner")
         app.buttons["Activity"].tap()
         XCTAssertTrue(app.staticTexts["Marked complete by you"].waitForExistence(timeout: 5), "The honest receipt remains in Activity")
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Completed banner dismissed; user-reported receipt retained"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
     }
 }
