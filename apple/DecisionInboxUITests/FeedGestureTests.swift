@@ -105,6 +105,22 @@ final class FeedGestureTests: XCTestCase {
     }
 
     @MainActor
+    func testImageArrivingDuringSwipeDoesNotDiscardReads() {
+        let app = launch(["-sampleLatePromo"])
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.82))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: 0.12))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.05)
+        app.tabBars.buttons["Feed"].tap()
+        let first = firstCard(in: app)
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        expectation(for: NSPredicate { _, _ in first.value as? String == "Read" }, evaluatedWith: nil)
+        waitForExpectations(timeout: 5)
+        app.tabBars.buttons["Saved"].tap()
+        app.tabBars.buttons["Feed"].tap()
+        XCTAssertFalse(firstCard(in: app).exists, "An image finishing must not lose a proven read")
+    }
+
+    @MainActor
     func testSwipeWhileIllustratedRefreshIsWorking() {
         let app = launch(["-sampleRefresh"])
         XCTAssertTrue(app.staticTexts["CHECKING YOUR MAILBOX…"].waitForExistence(timeout: 5))

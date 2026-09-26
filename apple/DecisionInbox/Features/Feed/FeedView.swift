@@ -154,6 +154,7 @@ struct FeedView: View {
                                     onReact: { store.react(message, $0) },
                                     onSwiping: { swiping = $0 }
                                 )
+                                .environment(\.holdsFeedMediaLayout, scrollSnapshot != nil)
                                 .id(message.feedKey)
                                 .onGeometryChange(for: FeedPostGeometry.self) { geometry in
                                     let frame = geometry.frame(in: .scrollView(axis: .vertical))

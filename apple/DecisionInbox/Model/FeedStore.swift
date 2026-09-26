@@ -593,6 +593,12 @@ final class FeedStore {
         self.auth = AuthService()
         self.mailboxes = Sample.mailboxes
         self.messages = Sample.messages
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-sampleLatePromo") {
+            self.messages[1].shape = .media([URL(string: "feed-fixture://late-promotion")!])
+            self.messages[1].unsubscribeURL = URL(string: "https://example.invalid/unsubscribe")
+        }
+        #endif
         self.seenKeys = []
         SenderIdentityStore.shared.configure(auth: auth, isSample: true)
         SenderIdentityStore.shared.remember(messages: messages)
@@ -743,7 +749,16 @@ final class FeedStore {
         // Registering hands the server a refresh token so it can keep syncing
         // while the app is closed. It also kicks off the first backlog pull,
         // so it has to happen before the feed is worth reading.
-        try? await client(accountID).register()
+        do {
+            try await client(accountID).register()
+            mark(accountID, healthy: true)
+        } catch AuthError.signedOut, APIError.unauthorized {
+            mark(accountID, healthy: false, reason: "needs reconnecting")
+            resolveCondition()
+        } catch {
+            // Cached mail remains readable during a temporary network failure.
+            // A cached feed response does not prove the Gmail grant works.
+        }
         guard auth.accounts.contains(where: { $0.id == accountID }), !disconnectingMailboxes.contains(accountID) else { return }
         #if DEBUG
         print("[feed] registration finished")
@@ -1161,7 +1176,9 @@ final class FeedStore {
             confirmedFeeds.insert(accountID)
             feedFailures.removeValue(forKey: accountID)
             offlineMailboxes.remove(accountID)
-            mark(accountID, healthy: true)
+            if !needsReconnect.contains(where: { $0.id == accountID }) {
+                mark(accountID, healthy: true)
+            }
             lastSynced = .now
             loadFailure = feedingIDs.compactMap { feedFailures[$0] }.first
             if cursor == nil { FeedCache.save(response.cards, recap: recap, for: accountID) }
@@ -1355,6 +1372,7 @@ final class FeedStore {
             auth.lastError = "Google connected, but our server could not finish reconnecting. Try again when online."
             return
         }
+        mark(target, healthy: true)
         await load(target, admitDirectly: true)
         // Reads accepted before the connection expired remain durable. Finish
         // them after consent instead of asking the reader to scroll past again.

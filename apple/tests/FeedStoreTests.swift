@@ -683,6 +683,9 @@ import Foundation
         check(f.store.needsReconnect.map(\.id) == f.ids, "An unauthorized read exposes mailbox reconnection")
         check(f.store.seenFailure?.contains("Reconnect") == true, "Read failure offers consent recovery rather than an impossible retry")
         check(!f.store.hasSeen(message) && !f.store.completionVerified, "Expired credentials cannot confirm a read or inbox zero")
+        await f.store.refresh()
+        check(f.store.needsReconnect.map(\.id) == f.ids,
+              "A cached feed response cannot clear the reconnect required by a rejected read")
         f.store.auth.reconnectsSuccessfully = true
         a.read = { _ in HarnessReply(json: ["wasUnread": true]) }
         await f.store.reconnect(f.ids[0])

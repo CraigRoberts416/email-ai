@@ -1,5 +1,9 @@
 import SwiftUI
 
+extension EnvironmentValues {
+    @Entry var holdsFeedMediaLayout = false
+}
+
 /// A promotion's picture, at the proportions the sender actually sent.
 ///
 /// Forcing every promo image into one ratio breaks them in two different ways,
@@ -19,6 +23,7 @@ import SwiftUI
 /// first and the small print last.
 struct PromoMedia: View {
     let url: URL
+    @Environment(\.holdsFeedMediaLayout) private var holdsLayout
 
     /// The tallest a promo may be, as a multiple of the card's width. 1.25 is
     /// 4:5 — the portrait shape a phone-first marketing email is built to —
@@ -26,6 +31,7 @@ struct PromoMedia: View {
     private static let heightCap: CGFloat = 1.25
 
     @State private var loaded: UIImage?
+    @State private var pending: UIImage?
 
     var body: some View {
         Color.clear
@@ -45,6 +51,25 @@ struct PromoMedia: View {
             }
             .clipped()
             .task(id: url) { await load() }
+            .onChange(of: holdsLayout) { _, held in
+                guard !held, let pending else { return }
+                loaded = pending
+                self.pending = nil
+            }
+            #if DEBUG
+            .task(id: holdsLayout) {
+                // An image response during a real pan, independent of network
+                // speed. Only this reserved synthetic URL enters the fixture.
+                guard url.scheme == "feed-fixture", holdsLayout, loaded == nil else { return }
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                let image = UIGraphicsImageRenderer(size: CGSize(width: 400, height: 100)).image { context in
+                    UIColor.systemBlue.setFill()
+                    context.fill(CGRect(x: 0, y: 0, width: 400, height: 100))
+                }
+                receive(image)
+            }
+            #endif
             .animation(Move.crossfade, value: loaded == nil)
     }
 
@@ -61,6 +86,9 @@ struct PromoMedia: View {
 
     private func load() async {
         guard loaded == nil else { return }
+        #if DEBUG
+        if url.scheme == "feed-fixture" { return }
+        #endif
         // `URLSession.shared` reads and writes `URLCache.shared`, so a post
         // scrolled past and back does not refetch. The reason this is not
         // `AsyncImage` is that AsyncImage hands back an `Image`, which has no
@@ -68,6 +96,14 @@ struct PromoMedia: View {
         guard let (data, _) = try? await URLSession.shared.data(from: url),
               let image = UIImage(data: data)
         else { return }
-        loaded = image
+        receive(image)
+    }
+
+    private func receive(_ image: UIImage) {
+        // Keep the measured card bounds stable from touch-down through
+        // deceleration. Publish the image's own proportions once the gesture
+        // ends, so its arrival cannot invalidate unrelated scroll-past reads.
+        if holdsLayout { pending = image }
+        else { loaded = image }
     }
 }

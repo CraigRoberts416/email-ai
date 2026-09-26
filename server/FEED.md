@@ -65,6 +65,9 @@ returned labels. Already-read mail succeeds with both flags false. The
 transition should decrement a live count; unknown flags require reconciliation.
 Requests for the same account/message are serialized to avoid duplicate
 transitions. Gmail failures do not emit a successful read event.
+An expired/revoked server refresh grant returns HTTP 401 with
+`error: "mailbox-reconnect-required"`. Clients retain the durable read intent
+and request reconnection; cached feed success does not prove grant recovery.
 
 Completion requires `countsComplete`, zero eligible section totals, no pending
 read failures, and no unread pages/arrivals awaiting the client's review.
@@ -85,6 +88,10 @@ one-minute retry cooldown measured from completion or failure. A temporarily
 unavailable provider count does not restart a completed import. The regular
 periodic sweep also refreshes unread
 membership independently of the history stream.
+Within the existing quota/concurrency budget, background jobs waiting five
+seconds receive a turn ahead of newer body/history work. Urgent counter reads
+retain priority. This prevents continual foreground loading from starving
+unread reconciliation until its request deadline expires.
 
 Run `node --test tests/*.test.js` from `server`. Feed tests execute production
 SQL in an isolated in-memory PostgreSQL instance (PGlite, dev dependency), and
