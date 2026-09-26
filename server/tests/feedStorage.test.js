@@ -174,12 +174,17 @@ test('late backlog metadata cannot undo a confirmed read; reconciliation protect
   assert.deepEqual((await messages.getMessage('a', 'read-race')).labelIds, []);
   await add('stale-unread', '2025-01-01T00:00:00Z');
   await add('new-spam', '2025-01-01T00:00:00Z');
+  await add('unchanged', '2025-01-01T00:00:00Z', ['UNREAD', 'INBOX']);
+  const unchangedBefore = (await query("SELECT labels_updated_at, xmin::text AS version FROM messages WHERE message_id='unchanged'")).rows[0];
   await add('other-account', '2025-01-01T00:00:00Z', ['UNREAD'], 'b');
-  await messages.reconcileUnreadLabels('a', ['read-race', 'new-spam'], new Date('2026-11-02T05:10:00Z'), { SPAM: ['new-spam'] });
+  await messages.reconcileUnreadLabels('a', ['read-race', 'new-spam', 'unchanged'], new Date('2026-11-02T05:10:00Z'), { SPAM: ['new-spam'] });
   assert.deepEqual((await messages.getMessage('a', 'read-race')).labelIds, []);
   assert.deepEqual((await messages.getMessage('a', 'stale-unread')).labelIds, []);
   assert.deepEqual((await messages.getMessage('a', 'new-spam')).labelIds, ['UNREAD', 'SPAM']);
   assert.deepEqual((await messages.getMessage('b', 'other-account')).labelIds, ['UNREAD']);
+  const unchangedAfter = (await query("SELECT labels_updated_at, xmin::text AS version FROM messages WHERE message_id='unchanged'")).rows[0];
+  assert.deepEqual(unchangedAfter, unchangedBefore,
+    'An unchanged mailbox entry is not rewritten by every reconciliation pass');
 });
 
 test('older Gmail revisions cannot undo a read even when fetched later; a newer unread revision still can', async () => {

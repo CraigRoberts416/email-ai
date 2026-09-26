@@ -134,16 +134,18 @@ async function unreadMetadataNeeded(userId, ids) {
 async function reconcileUnreadLabels(userId, ids, startedAt, excluded = {}) {
   // Listed IDs that were locally read have already had metadata fetched.
   // Keep that versioned state: a stale list alone must not re-add UNREAD.
-  await query(`
-    UPDATE messages SET
-      label_ids = CASE WHEN message_id = ANY($2::text[]) THEN
+  const reconciledLabels = `CASE WHEN message_id = ANY($2::text[]) THEN
         array_remove(array_remove(label_ids, 'SPAM'), 'TRASH')
         || CASE WHEN message_id = ANY($4::text[]) THEN ARRAY['SPAM']::text[] ELSE '{}'::text[] END
         || CASE WHEN message_id = ANY($5::text[]) THEN ARRAY['TRASH']::text[] ELSE '{}'::text[] END
-        ELSE array_remove(label_ids, 'UNREAD') END,
+        ELSE array_remove(label_ids, 'UNREAD') END`;
+  await query(`
+    UPDATE messages SET
+      label_ids = ${reconciledLabels},
       labels_updated_at = $3::timestamptz
     WHERE user_id = $1 AND labels_updated_at <= $3::timestamptz
       AND ('UNREAD' = ANY(label_ids) OR message_id = ANY($2::text[]))
+      AND label_ids IS DISTINCT FROM (${reconciledLabels})
   `, [userId, ids, startedAt, excluded.SPAM ?? [], excluded.TRASH ?? []], { mailboxWriteUserId: userId });
 }
 

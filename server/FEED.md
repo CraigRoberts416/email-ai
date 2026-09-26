@@ -100,6 +100,9 @@ Within the existing quota/concurrency budget, background jobs waiting five
 seconds receive a turn ahead of newer body/history work. Urgent counter reads
 retain priority. This prevents continual foreground loading from starving
 unread reconciliation until its request deadline expires.
+Reconciliation writes only rows whose labels actually change. A matching
+23k-message unread inventory must not create 23k new database row versions,
+hold row locks, and invalidate the index-only count scan on every sweep.
 
 Run `node --test tests/*.test.js` from `server`. Feed tests execute production
 SQL in an isolated in-memory PostgreSQL instance (PGlite, dev dependency), and
