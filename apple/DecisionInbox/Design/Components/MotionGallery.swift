@@ -17,6 +17,8 @@ struct MotionGallery: View {
                 Text("Native Rive verification").typeStyle(Style.body)
                 Text(report).font(.caption.monospaced()).foregroundStyle(.secondary)
                 if showArt {
+                    PaperIllustration(art: .mailroom, phase: phase, pull: progress, motion: motion)
+                        .frame(width: 288, height: 196)
                     HStack {
                         PaperIllustration(art: .receipt, phase: min(phase, 3), pull: progress, motion: motion).frame(width: 144,height: 100)
                         PaperIllustration(art: .closing, phase: min(phase, 2), motion: motion).frame(width:144,height:100)
@@ -77,7 +79,8 @@ private enum PaperRuntimeProbe {
                     let board = try await file.createArtboard(art.rawValue)
                     let configuration = try await Rive(file: file, artboard: board)
                     guard let data = configuration.viewModelInstance else { throw ProbeError.missingData }
-                    for value in [0, 1, 3, 0, 2] {
+                    let phases = art == .mailroom ? [0, 1, 3, 0, 2, 4] : [0, 1, 3, 0, 2]
+                    for value in phases {
                         data.setValue(of: NumberProperty(path: "phase"), to: Float(value))
                         configuration.stateMachine.advance(by: 0.1)
                         let actual = try await data.value(of: NumberProperty(path: "phase"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Author the three production Margin Studio artboards; no scripts or external assets.
+"""Author the production Margin Studio artboards; no scripts or external assets.
 
 The RML and this source are editable. Native code owns all words and actions.
 Run from anywhere; `rive . --once` compiles the generated source separately.
@@ -189,5 +189,8 @@ static=timeline(a,'Closing still',closing(True))
 machine(a,v,phase,pull,active,[opened,close,closed,static])
 
 E.indent(ROOT,space='  ')
+from build_mailroom import author
+author(ROOT, el, board)
+E.indent(ROOT,space='  ')
 Path(__file__).with_name('scene.rml').write_text(E.tostring(ROOT,encoding='unicode')+'\n')
-print('Authored Receipt, Reading, Closing — script-free vector state machines')
+print('Authored Receipt, Reading, Closing, Mailroom — script-free vector state machines')

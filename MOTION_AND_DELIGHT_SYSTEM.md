@@ -12,6 +12,8 @@ The older unsubscribe spec describes local hiding and future automation. The cur
 
 The user explicitly requested completing the illustrated signature layer and TestFlight deployment. [Margin Studio](design/motion/margin-studio/README.md) adds three original production Rive artboards with app-state/gesture binding and native static fallback. SwiftUI still owns layout, controls, navigation and all copy. Rive Apple 6.24.0 is now a production dependency; the historical stack/tooling observations below describe the audit baseline. [Release 2609202100](product_docs/native-release-2609202100.md) tracks shipping evidence.
 
+On September 26, the user explicitly replaced the refresh receipt with a cute 8-bit robot banging a stick upward, then supplied the selected robot and specified hitting the phone edge with mail arriving from the cloud. This selected character direction supersedes the earlier paper-only/no-automatic-mascot rule for pull refresh. Mail falls only when new message identities are available; a no-arrival refresh lowers the stick with no falling mail. Other illustrations, controls, haptic policies and reduced-motion behavior remain as documented. See [the robot implementation and verification](product_docs/mailroom-robot-2026-09-26.md).
+
 ## Existing-stack audit
 
 | Area | Observed state | Consequence |

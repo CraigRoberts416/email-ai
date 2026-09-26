@@ -91,11 +91,15 @@ struct FeedView: View {
     @State private var stripHold: CGFloat = 0
     @State private var settled: String?
     @State private var refreshFailed = false
+    @State private var refreshHasArrivals = false
     @State private var refreshWaitStage = 0
     @State private var firstWaitStage = 0
     @State private var refreshID = UUID()
     @State private var refreshTask: Task<Void, Never>?
-    @ScaledMetric(relativeTo: .caption) private var refreshHeight: CGFloat = 56
+    @State private var refreshTopBleed: CGFloat = 0
+    @ScaledMetric(relativeTo: .caption) private var refreshCaptionHeight: CGFloat = 44
+    private var refreshSceneHeight: CGFloat { 152 + refreshCaptionHeight }
+    private var refreshHeight: CGFloat { max(refreshCaptionHeight, refreshSceneHeight - refreshTopBleed) }
 
     /// Post → Thread is parent → child of the *same* entity, so it is a zoom
     /// shared container rather than a push. Nothing else in the feed is a
@@ -609,40 +613,61 @@ struct FeedView: View {
 
     @ViewBuilder private var pullStrip: some View {
         if pull > Move.Pull.showAt || stripHold > 0 {
-            HStack(alignment: .center, spacing: Space.md) {
-                PaperIllustration(art: .receipt,
-                    phase: refreshing ? 1 : (settled == nil ? 0 : (refreshFailed ? 3 : 2)),
+            ZStack(alignment: .top) {
+                let stageHeight = refreshing || settled != nil ? refreshSceneHeight : pull + refreshTopBleed
+                let scale = min(1, max(0, stageHeight / 196))
+                PaperIllustration(art: .mailroom,
+                    phase: refreshing ? 1 : (settled == nil ? 0 : (refreshFailed ? 3 : (refreshHasArrivals ? 2 : 4))),
                     pull: Double(armingProgress * 100))
-                    .frame(width: 72, height: 48)
+                    .frame(width: 288, height: 196)
+                    .scaleEffect(scale, anchor: .top)
+                    .frame(width: 288, height: 196 * scale, alignment: .top)
                     .environment(\.illustrationMotionEnabled, feedVisible && open == nil && profile == nil && compose == nil && !store.activityPresented)
-                Text(pullLabel)
-                    .typeStyle(Style.chip)
-                    .foregroundStyle(Ink.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                if refreshFailed && !refreshing {
-                    Button(store.needsReconnect.isEmpty ? "Retry" : "Reconnect") {
-                        if store.needsReconnect.isEmpty { startRefresh() }
-                        else {
-                            Task {
-                                await store.reconnect()
-                                if store.loadFailure == nil { dismissRefreshStatus() }
+                HStack(spacing: Space.sm) {
+                    Text(pullLabel)
+                        .typeStyle(Style.chip)
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: refreshFailed ? .leading : .center)
+                    if refreshFailed && !refreshing {
+                        Button(store.needsReconnect.isEmpty ? "Retry" : "Reconnect") {
+                            if store.needsReconnect.isEmpty { startRefresh() }
+                            else {
+                                Task {
+                                    await store.reconnect()
+                                    if store.loadFailure == nil { dismissRefreshStatus() }
+                                }
                             }
                         }
-                    }
                         .typeStyle(Style.bodySmall)
                         .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
                         .buttonStyle(TapStyle())
-                    Button { dismissRefreshStatus() } label: {
-                        Image(systemName: "xmark").frame(width: Metric.tapTarget, height: Metric.tapTarget)
+                        Button { dismissRefreshStatus() } label: {
+                            Image(systemName: "xmark").frame(width: Metric.tapTarget, height: Metric.tapTarget)
+                        }
+                        .buttonStyle(TapStyle()).accessibilityLabel("Dismiss refresh status")
                     }
-                    .buttonStyle(TapStyle()).accessibilityLabel("Dismiss refresh status")
                 }
+                .frame(minHeight: refreshCaptionHeight)
+                .frame(maxHeight: .infinity, alignment: .bottom)
             }
+            .frame(height: refreshing || settled != nil ? refreshSceneHeight : pull + refreshTopBleed, alignment: .top)
+            // Draw under the top safe area so the pole meets the physical
+            // screen edge. Native status text/actions remain below the robot.
+            .padding(.top, -refreshTopBleed)
             .padding(.horizontal, Metric.gutter)
-            .frame(height: refreshing || settled != nil ? stripHold : pull, alignment: .center)
+            // The scene ends at the feed edge, so freed mail falls into it.
+            // No recognizer is attached to the illustration or the feed cards.
+            .frame(maxWidth: .infinity)
+            .frame(height: refreshing || settled != nil ? stripHold : pull, alignment: .top)
             .background(Ink.surface)
-            .clipped()
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                max(0, proxy.frame(in: .global).minY)
+            } action: { top in
+                guard abs(top - refreshTopBleed) > 0.5 else { return }
+                refreshTopBleed = top
+                if refreshing || settled != nil { stripHold = refreshHeight }
+            }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("feed.refresh.status")
         }
@@ -672,6 +697,7 @@ struct FeedView: View {
         refreshID = id
         refreshing = true
         refreshFailed = false
+        refreshHasArrivals = false
         refreshWaitStage = 0
         settled = nil
         armed = false
@@ -681,6 +707,9 @@ struct FeedView: View {
 
     private func runRefresh(id: UUID) async {
         let began = ContinuousClock.now
+        let arrivals = RefreshArrivalSnapshot(
+            known: Set((store.messages + store.pending).map(\.feedKey)),
+            waiting: Set(store.eligiblePending.map(\.feedKey)))
         await refreshNow()
         guard !Task.isCancelled, id == refreshID else { return }
         let elapsed = began.duration(to: .now)
@@ -690,10 +719,13 @@ struct FeedView: View {
         }
         guard !Task.isCancelled, id == refreshID else { return }
         let failure = store.loadFailure != nil
+        let foundMail = !failure && arrivals.hasArrivals(
+            available: Set((store.activeMessages + store.eligiblePending).map(\.feedKey)))
         if failure && feedVisible { Haptics.needsYou() }
         withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
             refreshing = false
             refreshFailed = failure
+            refreshHasArrivals = foundMail
             settled = failure ? (store.needsReconnect.isEmpty ? "COULDN’T REACH YOUR MAILBOX" : "RECONNECT TO CHECK YOUR MAIL")
                 : "CURRENT AS OF \(Date.now.formatted(date: .omitted, time: .shortened).uppercased())"
         }
