@@ -40,6 +40,32 @@
     "providerCountState": "fresh",
     "eligible": 22103
   },
+  "serverCommit": "31eef549a39a4ab1812ab74abedd6d6471e01b57",
+  "onlineDatabaseMaintenance": {
+    "completed": true,
+    "milliseconds": 100992,
+    "earlierAttemptTimedOutAfterMs": 60000
+  },
+  "finalLiveFeed": {
+    "status": 200,
+    "milliseconds": 365,
+    "cards": 200,
+    "uniqueCards": 200,
+    "allCardsEligibleUnread": true,
+    "readPromotionAbsent": true,
+    "readPromotionExplicitlyConfirmed": true,
+    "countsComplete": true,
+    "eligible": 22104,
+    "providerUnread": 22104
+  },
+  "finalLiveCount": {
+    "status": 200,
+    "milliseconds": 191,
+    "directDatabaseMilliseconds": 113,
+    "countsComplete": true,
+    "eligible": 22104,
+    "providerUnread": 22104
+  },
   "build": "2609261850",
   "uploaded": false,
   "realNativeSignIn": "pending"
