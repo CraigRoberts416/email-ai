@@ -16,7 +16,7 @@ function gmailReadError(response, operation) {
 // https://developers.google.com/workspace/gmail/api/reference/quota
 function createGmailReadTransport({ fetch: request = (...args) => fetch(...args),
   now = () => Date.now(), random = Math.random, maxConcurrent = 4, unitsPerSecond = 80,
-  maxAttempts = 4, logger = console, retryBaseMs = 1000 } = {}) {
+  maxAttempts = 4, logger = console, retryBaseMs = 1000, starvationAfterMs = 5000 } = {}) {
   const accounts = new Map();
 
   function account(userId) {
@@ -31,8 +31,13 @@ function createGmailReadTransport({ fetch: request = (...args) => fetch(...args)
       state.timer = setTimeout(() => { state.timer = null; pump(state); }, pause);
       return;
     }
-    // Foreground reads cannot be trapped behind queued archive batches.
-    state.queue.sort((a, b) => b.priority - a.priority);
+    // Keep urgent counts first, but let an aged background job take a turn.
+    // Strict priority lets a steady stream of body/history work postpone the
+    // unread repair indefinitely, until its overall deadline expires.
+    const queuedAt = now();
+    const rank = job => job.priority >= 3 ? 4
+      : queuedAt - job.enqueuedAt >= starvationAfterMs ? 3 : job.priority;
+    state.queue.sort((a, b) => rank(b) - rank(a) || a.enqueuedAt - b.enqueuedAt);
     const job = state.queue.shift();
     job.signal.removeEventListener('abort', job.abort);
     if (job.signal.aborted) { job.reject(job.signal.reason); pump(state); return; }
@@ -48,7 +53,7 @@ function createGmailReadTransport({ fetch: request = (...args) => fetch(...args)
   function schedule(state, run, { units, priority, signal }) {
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {
-      const job = { run, resolve, reject, units, priority, signal };
+      const job = { run, resolve, reject, units, priority, signal, enqueuedAt: now() };
       job.abort = () => {
         const index = state.queue.indexOf(job);
         if (index >= 0) state.queue.splice(index, 1);

@@ -140,6 +140,14 @@ async function getValidAccessToken(userId, { signal } = {}) {
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (res.status === 400 && err.error === 'invalid_grant') {
+      // The phone may still have a usable access token while the server's
+      // saved refresh grant has expired. Surface the same reconnect contract
+      // as a rejected client token; retrying this grant cannot repair it.
+      throw Object.assign(new Error('Mailbox needs reconnect: Google grant expired or revoked'), {
+        code: 'MAILBOX_RECONNECT_REQUIRED', statusCode: 401,
+      });
+    }
     throw new Error(`Token refresh failed: ${JSON.stringify(err)}`);
   }
 

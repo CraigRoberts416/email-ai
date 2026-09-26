@@ -51,6 +51,28 @@ test('queued abort never sends a request and one mailbox cannot hold another mai
   assert.deepEqual(started, ['first', 'independent', 'next']);
 });
 
+test('continuous higher-priority work cannot starve unread reconciliation past its deadline', async () => {
+  const started = []; let release;
+  let clock = 0;
+  const read = createGmailReadTransport({ now: () => clock, maxConcurrent: 1, unitsPerSecond: Infinity, logger: quiet,
+    fetch: async path => {
+      started.push(path);
+      if (path === 'current') await new Promise(resolve => { release = resolve; });
+      return response();
+    },
+  });
+  const current = read('a', 'current', 'secret');
+  const repair = read('a', 'unread-repair', 'secret', { priority: 0 });
+  await wait(5);
+  clock = 6000;
+  const messages = Array.from({ length: 20 }, (_, i) => read('a', `body-${i}`, 'secret', { priority: 2 }));
+  const count = read('a', 'visible-count', 'secret', { priority: 3 });
+  release();
+  await Promise.all([current, repair, count, ...messages]);
+  assert.deepEqual(started.slice(0, 3), ['current', 'visible-count', 'unread-repair'],
+    'An aged repair gets a turn after the urgent counter, before the next body batch');
+});
+
 test('a read slot remains occupied until the full response body is consumed', async () => {
   const started = []; let finishBody;
   const read = createGmailReadTransport({ maxConcurrent: 1, unitsPerSecond: Infinity, logger: quiet,

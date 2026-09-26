@@ -4,7 +4,7 @@ const { once } = require('node:events');
 const express = require('express');
 const { createMarkReadHandler } = require('../messageRead');
 
-async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, modifyFailure = false } = {}) {
+async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, modifyFailure = false, tokenFailure = null } = {}) {
   const requests = [];
   const stored = [];
   const events = [];
@@ -13,7 +13,10 @@ async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, m
   const app = express();
   app.patch('/messages/:messageId/read', createMarkReadHandler({
     resolveUserId: async req => req.get('test-auth') === 'yes' ? 'account-a' : null,
-    userStore: { getValidAccessToken: async () => 'isolated-test-token' },
+    userStore: { getValidAccessToken: async () => {
+      if (tokenFailure) throw tokenFailure;
+      return 'isolated-test-token';
+    } },
     messageStore: { updateLabelIds: async (userId, id, next) => stored.push({ userId, id, labels: next }) },
     emitSSE: (_id, event) => events.push(event),
     notifyMailbox: async () => {},
@@ -85,4 +88,16 @@ test('unauthorized read requests do not contact Gmail', async t => {
   assert.equal((await h.request(false)).status, 401);
   assert.equal(h.requests.length, 0);
   assert.equal(h.invalidations.length, 0);
+});
+
+test('expired server grant asks the app to reconnect without confirming a read', async t => {
+  const h = await fixture(t, { tokenFailure: Object.assign(new Error('Mailbox needs reconnect'), {
+    code: 'MAILBOX_RECONNECT_REQUIRED', statusCode: 401,
+  }) });
+  const response = await h.request();
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), { error: 'mailbox-reconnect-required' });
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.stored.length, 0);
+  assert.equal(h.events.length, 0);
 });

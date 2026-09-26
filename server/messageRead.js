@@ -55,6 +55,9 @@ function createMarkReadHandler({ resolveUserId, userStore, messageStore, emitSSE
         .catch(error => logger.warn('[push] read badge failed:', error.message));
     } catch (error) {
       logger.error('[read] failed:', error.message);
+      if (error.code === 'MAILBOX_RECONNECT_REQUIRED') {
+        return res.status(401).json({ error: 'mailbox-reconnect-required' });
+      }
       res.status(error.statusCode === 502 ? 502 : 500).json({ error: 'mark-read failed' });
     }
   };
