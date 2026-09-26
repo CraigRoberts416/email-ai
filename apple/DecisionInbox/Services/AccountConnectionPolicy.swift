@@ -2,6 +2,15 @@ import Foundation
 
 /// Pure account rules shared by the UI, auth boundary and synthetic tests.
 enum AccountConnectionPolicy {
+    /// Only a rejected refresh grant requires renewed consent. A bad one-time
+    /// sign-in code, server failure, or malformed response remains retryable.
+    static func requiresReconnect(tokenResponse: Data, statusCode: Int, grantType: String?) -> Bool {
+        struct Failure: Decodable { let error: String }
+        guard statusCode == 400, grantType == "refresh_token",
+              let failure = try? JSONDecoder().decode(Failure.self, from: tokenResponse) else { return false }
+        return failure.error == "invalid_grant"
+    }
+
     static func scopes(includeGooglePhotos: Bool) -> String {
         var result = ["openid", "profile", "email", "https://mail.google.com/"]
         if includeGooglePhotos {

@@ -13,3 +13,5 @@ The suite launches `-sampleFeed`, which uses synthetic mail and skips authentica
 This suite reproduced the September 21 regression before its repair: the card-wide simultaneous long press prevented the parent pan, even though the long press never completed. Do not replace these gestures with `scrollTo` or view-model-only checks; those bypass gesture recognition. Keep button feedback scoped to its individual control.
 
 The test target is separate from the shipping app and excluded from release archives. The existing command-line model suites remain under `apple/tests`.
+
+The September 26 regression checks also scroll whole cards above the viewport, return to the top, and assert both the retained card's **Read** state and a smaller **TODAY** count. The same checks run while refresh is held open. Switching away/back then removes the confirmed-read card. These assertions distinguish a functioning pan from a functioning scroll-to-read pipeline.

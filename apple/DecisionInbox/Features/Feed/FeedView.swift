@@ -66,8 +66,11 @@ struct FeedView: View {
         return store.seenFailure
     }
     private var canCommitScrollReads: Bool {
+        // A mailbox request may run while the reader continues through cached
+        // cards. The refresh boundary/layout change cancels stale evidence;
+        // the request's lifetime must not disable later reading gestures.
         feedVisible && scenePhase == .active && open == nil && profile == nil
-            && compose == nil && !showingOldPosts && !choosingMailboxes && !swiping && !refreshing && !notificationLoading
+            && compose == nil && !showingOldPosts && !choosingMailboxes && !swiping && !notificationLoading
     }
 
 
@@ -179,7 +182,12 @@ struct FeedView: View {
                         if let failure = displayedSeenFailure {
                             VStack(alignment: .leading, spacing: Space.sm) {
                                 Text(failure).typeStyle(Style.body).foregroundStyle(Ink.secondary)
-                                Button("Try again") { Task { await store.retrySeen() } }
+                                Button(store.needsReconnect.isEmpty ? "Try again" : "Reconnect") {
+                                    Task {
+                                        if store.needsReconnect.isEmpty { await store.retrySeen() }
+                                        else { await store.reconnect() }
+                                    }
+                                }
                                     .frame(minHeight: Metric.tapTarget)
                             }
                             .padding(Metric.gutter)
@@ -613,7 +621,15 @@ struct FeedView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if refreshFailed && !refreshing {
-                    Button("Retry") { startRefresh() }
+                    Button(store.needsReconnect.isEmpty ? "Retry" : "Reconnect") {
+                        if store.needsReconnect.isEmpty { startRefresh() }
+                        else {
+                            Task {
+                                await store.reconnect()
+                                if store.loadFailure == nil { dismissRefreshStatus() }
+                            }
+                        }
+                    }
                         .typeStyle(Style.bodySmall)
                         .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
                         .buttonStyle(TapStyle())
@@ -678,7 +694,7 @@ struct FeedView: View {
         withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
             refreshing = false
             refreshFailed = failure
-            settled = failure ? "COULDN’T REACH YOUR MAILBOX"
+            settled = failure ? (store.needsReconnect.isEmpty ? "COULDN’T REACH YOUR MAILBOX" : "RECONNECT TO CHECK YOUR MAIL")
                 : "CURRENT AS OF \(Date.now.formatted(date: .omitted, time: .shortened).uppercased())"
         }
         if feedVisible { UIAccessibility.post(notification: .announcement, argument: settled) }

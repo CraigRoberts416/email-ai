@@ -90,7 +90,7 @@ struct GlobalActivityTray: View {
     @Environment(FeedStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drag: CGFloat = 0
-    private var count: Int { store.receipts.count + store.unsubscribeRuns.count + store.visibleSendJobs.count }
+    private var count: Int { store.receipts.count + store.summaryUnsubscribeRuns.count + store.visibleSendJobs.count }
     private var title: String {
         if let job = store.visibleSendJobs.first { return job.isRunning ? "Sending activity" : "Send result available" }
         return store.receipt?.message ?? "Activity"
@@ -99,8 +99,8 @@ struct GlobalActivityTray: View {
         Group {
             if store.isActivityTrayVisible && count > 0 {
                 Group {
-                    if !store.unsubscribeRuns.isEmpty && store.receipts.isEmpty && store.visibleSendJobs.isEmpty {
-                        UnsubscribeTray(runs: store.unsubscribeRuns, onOpenLog: { store.activityPresented = true }, onClose: hide)
+                    if !store.summaryUnsubscribeRuns.isEmpty && store.receipts.isEmpty && store.visibleSendJobs.isEmpty {
+                        UnsubscribeTray(runs: store.summaryUnsubscribeRuns, onOpenLog: { store.activityPresented = true }, onClose: hide)
                     } else {
                         HStack(spacing: Space.sm) {
                             Button { store.activityPresented = true } label: {

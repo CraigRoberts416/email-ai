@@ -649,12 +649,58 @@ import Foundation
         f.stop()
     }
 
+    static func completedActivityStaysDismissed() {
+        let f = fixture()
+        let run = UnsubscribeRun(messageId: "completed", senderName: "Example", status: "needs_you",
+            mailboxID: f.ids[0], runId: "run-1", attemptId: "attempt-1", updatedAt: 100)
+        f.store.receiveUnsubscribe(run, accountID: f.ids[0])
+        f.store.isActivityTrayVisible = true
+        f.store.markUnsubscribeComplete(run.id)
+        check(!f.store.isActivityTrayVisible, "Marking the last pending task complete dismisses its banner")
+        check(f.store.unsubscribeRuns.count == 1 && f.store.unsubscribeRuns[0].userReportedComplete == true,
+              "Dismissal preserves the honest user-reported receipt in Activity")
+        let restored = FeedStore(auth: AuthService(accounts: f.ids))
+        check(!restored.isActivityTrayVisible, "Completed tasks cannot reopen the banner after relaunch")
+        restored.receiveUnsubscribe(run, accountID: f.ids[0])
+        check(restored.unsubscribeRuns[0].userReportedComplete == true && !restored.isActivityTrayVisible,
+              "Replaying the same provider status preserves completion and dismissal")
+        var other = run
+        other.messageId = "other"; other.runId = "run-2"; other.attemptId = "attempt-2"
+        f.store.receiveUnsubscribe(other, accountID: f.ids[0])
+        f.store.isActivityTrayVisible = true
+        f.store.markUnsubscribeComplete(run.id)
+        check(f.store.isActivityTrayVisible, "Completing one task does not hide another pending task")
+        f.stop()
+    }
+
+    static func reconnectFinishesRecordedReads() async {
+        let f = fixture(), a = f.accounts[0]
+        a.feed = { _, _ in page([card("expired-read")], total: 1) }
+        await f.store.start()
+        let message = f.store.sessionMessages[0]
+        a.read = { _ in HarnessReply(status: 401, json: [:]) }
+        await f.store.markSeen(message)
+        check(f.store.needsReconnect.map(\.id) == f.ids, "An unauthorized read exposes mailbox reconnection")
+        check(f.store.seenFailure?.contains("Reconnect") == true, "Read failure offers consent recovery rather than an impossible retry")
+        check(!f.store.hasSeen(message) && !f.store.completionVerified, "Expired credentials cannot confirm a read or inbox zero")
+        f.store.auth.reconnectsSuccessfully = true
+        a.read = { _ in HarnessReply(json: ["wasUnread": true]) }
+        await f.store.reconnect(f.ids[0])
+        check(f.store.hasSeen(message) && f.store.seenFailure == nil, "Reconnection delivers the saved read without another scroll")
+        check(f.store.needsReconnect.isEmpty && f.store.remainingInFeed == 0, "Recovered connection restores accurate confirmed progress")
+        check(f.store.sessionMessages.count == 1, "Reconnection preserves the current reading session")
+        f.stop()
+        check(f.store.sessionMessages.isEmpty, "Recovered read leaves at the next session boundary")
+    }
+
     static func main() async {
         let drafts = FileManager.default.temporaryDirectory.appendingPathComponent("send-fixture-\(UUID().uuidString)")
         MailDraftStore.directoryOverride = drafts
         DiscussionStore.directoryOverride = drafts
         defer { try? FileManager.default.removeItem(at: drafts) }
         check(URLProtocol.registerClass(HarnessURLProtocol.self), "Transport interception installed")
+        completedActivityStaysDismissed()
+        await reconnectFinishesRecordedReads()
         await readRaceAndSession()
         await alreadyReadAndFailure()
         await cachedCountsAndScope()

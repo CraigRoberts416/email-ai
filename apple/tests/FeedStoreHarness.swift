@@ -24,7 +24,10 @@ final class AuthService {
     func refreshToken(for id: String) -> String? { "fixture-refresh" }
     func expiresAt(for id: String) -> Double { Date().timeIntervalSince1970 + 3600 }
     var lastError: String?
-    func connect(expectedAccountID: String? = nil, includeGooglePhotos: Bool = false) async -> Account? { nil }
+    var reconnectsSuccessfully = false
+    func connect(expectedAccountID: String? = nil, includeGooglePhotos: Bool = false) async -> Account? {
+        reconnectsSuccessfully ? accounts.first { $0.id == expectedAccountID } : nil
+    }
     func disconnect(_ id: String) { accounts.removeAll { $0.id == id } }
     func rename(_ id: String, tag: String) {
         if let index = accounts.firstIndex(where: { $0.id == id }) { accounts[index].tag = tag }

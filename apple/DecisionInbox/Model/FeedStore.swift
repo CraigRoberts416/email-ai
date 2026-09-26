@@ -329,6 +329,13 @@ final class FeedStore {
                 messages.append(held)
             }
             seenFailure = "Couldn’t save some read emails. Try again."
+            switch error {
+            case AuthError.signedOut, APIError.unauthorized:
+                mark(accountID, healthy: false, reason: "needs reconnecting")
+                seenFailure = "Reconnect to save your read emails. Your progress is kept on this device."
+                resolveCondition()
+            default: break
+            }
         }
     }
 
@@ -442,6 +449,10 @@ final class FeedStore {
     var unsubscribeRuns: [UnsubscribeRun] {
         unsubscribes.values.sorted { $0.date > $1.date }
     }
+    /// A completed handoff remains in Activity without occupying the feed.
+    var summaryUnsubscribeRuns: [UnsubscribeRun] {
+        unsubscribeRuns.filter { $0.userReportedComplete != true }
+    }
 
     /// Each action owns its receipt. Hiding a surface never cancels its work.
     var receipts: [Receipt] = []
@@ -543,7 +554,7 @@ final class FeedStore {
             }
             return run
         }
-        isActivityTrayVisible = unsubscribes.values.contains { !$0.isTerminal || $0.needsAttention }
+        isActivityTrayVisible = summaryUnsubscribeRuns.contains { !$0.isTerminal || $0.needsAttention }
         var restored: [Message] = []
         for account in auth.accounts {
             guard let cached = FeedCache.load(for: account.id) else { continue }
@@ -1345,6 +1356,12 @@ final class FeedStore {
             return
         }
         await load(target, admitDirectly: true)
+        // Reads accepted before the connection expired remain durable. Finish
+        // them after consent instead of asking the reader to scroll past again.
+        for intent in Array(recordedReads.values) where intent.mailboxID == target {
+            await markSeen(intent)
+        }
+        await reopen(target)
     }
 
     private func mark(_ mailboxID: String, healthy: Bool, reason: String = "") {
@@ -1808,7 +1825,14 @@ final class FeedStore {
     }
 
     func openedUnsubscribePage(_ id: String) { unsubscribes[id]?.openedByUserAt = .now }
-    func markUnsubscribeComplete(_ id: String) { unsubscribes[id]?.userReportedComplete = true }
+    func markUnsubscribeComplete(_ id: String) {
+        guard unsubscribes[id] != nil else { return }
+        unsubscribes[id]?.userReportedComplete = true
+        if !summaryUnsubscribeRuns.contains(where: { !$0.isTerminal || $0.needsAttention }),
+           receipts.isEmpty, visibleSendJobs.isEmpty {
+            isActivityTrayVisible = false
+        }
+    }
     func removeUnsubscribeReceipt(_ id: String) {
         guard let run = unsubscribes[id], run.isTerminal else { return }
         unsubscribes[id] = nil
