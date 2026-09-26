@@ -2,6 +2,12 @@ import Foundation
 
 @main struct AccountConnectionPolicyTests {
     static func main() {
+        let invalidGrant = Data(#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#.utf8)
+        precondition(AccountConnectionPolicy.requiresReconnect(tokenResponse: invalidGrant, statusCode: 400, grantType: "refresh_token"))
+        precondition(!AccountConnectionPolicy.requiresReconnect(tokenResponse: invalidGrant, statusCode: 400, grantType: "authorization_code"))
+        precondition(!AccountConnectionPolicy.requiresReconnect(tokenResponse: invalidGrant, statusCode: 503, grantType: "refresh_token"))
+        precondition(!AccountConnectionPolicy.requiresReconnect(tokenResponse: Data(#"{"error":"temporarily_unavailable"}"#.utf8), statusCode: 400, grantType: "refresh_token"))
+        precondition(!AccountConnectionPolicy.requiresReconnect(tokenResponse: Data("not JSON".utf8), statusCode: 400, grantType: "refresh_token"))
         let base = AccountConnectionPolicy.scopes(includeGooglePhotos: false)
         precondition(base.contains("https://mail.google.com/"))
         precondition(!base.contains("contacts"), "Photos must not be requested implicitly")
@@ -24,6 +30,6 @@ import Foundation
         precondition(AccountConnectionPolicy.included("personal", defaults: relaunched))
         AccountConnectionPolicy.setIncluded(false, accountID: "personal", defaults: relaunched)
         precondition(!AccountConnectionPolicy.included("work", defaults: relaunched) && !AccountConnectionPolicy.included("personal", defaults: relaunched))
-        print("Account connection policy: 13 synthetic checks passed")
+        print("Account connection policy: 18 synthetic checks passed")
     }
 }

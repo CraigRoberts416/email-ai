@@ -295,7 +295,10 @@ final class AuthService: NSObject {
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            // A revoked grant surfaces here; the caller reconnects rather than looping.
+            if AccountConnectionPolicy.requiresReconnect(tokenResponse: data,
+                statusCode: (response as? HTTPURLResponse)?.statusCode ?? 0, grantType: fields["grant_type"]) {
+                throw AuthError.signedOut
+            }
             throw AuthError.tokenEndpoint(String(decoding: data, as: UTF8.self))
         }
         return try JSONDecoder().decode(TokenResponse.self, from: data)

@@ -178,6 +178,9 @@ private final class AppContext: ObservableObject {
                     mailboxID: account, runId: "sample-request-run", updatedAt: now - 5000,
                     outcome: "request_sent", evidence: "The provider accepted the request email.")
                 store.unsubscribes = [handoff.id: handoff, sent.id: sent]
+                if ProcessInfo.processInfo.arguments.contains("-sampleActivityReturned") {
+                    store.openedUnsubscribePage(handoff.id)
+                }
                 store.isActivityTrayVisible = true
                 if ProcessInfo.processInfo.arguments.contains("-sampleActivityExpanded") { store.activityPresented = true }
             }
