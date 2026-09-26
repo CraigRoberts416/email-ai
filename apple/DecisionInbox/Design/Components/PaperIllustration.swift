@@ -5,7 +5,7 @@ import RiveRuntime
 /// Every status/action stays native. Each visible host gets its own state
 /// machine; the small immutable file and its worker are shared.
 enum PaperArt: String, CaseIterable {
-    case receipt = "Receipt", reading = "Reading", closing = "Closing"
+    case receipt = "Receipt", reading = "Reading", closing = "Closing", mailroom = "Mailroom"
 }
 
 private struct IllustrationMotionKey: EnvironmentKey { static let defaultValue = true }
@@ -64,6 +64,8 @@ struct PaperIllustration: View {
                     .frameRate(.fps(60))
                     .paused(paused)
                     .modifier(PaperInversion(inverted: inverted))
+            } else if art == .mailroom {
+                MailroomStill(phase: phase)
             } else {
                 PaperStill(art: art, phase: phase)
                     .foregroundStyle(inverted ? Ink.onInverse : Ink.primary)
@@ -92,7 +94,7 @@ struct PaperIllustration: View {
                 loaded.viewModelInstance?.setValue(of: BoolProperty(path: "active"), to: true)
                 // On re-entry, render the current pose instead of replaying
                 // an entrance. A newly earned closing mark is the exception.
-                if art != .closing || desiredPhase != 1 {
+                if art != .mailroom && (art != .closing || desiredPhase != 1) {
                     loaded.stateMachine.advance(by: 0)
                     loaded.stateMachine.advance(by: 1)
                 }

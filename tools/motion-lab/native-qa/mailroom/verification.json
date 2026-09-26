@@ -1,0 +1,34 @@
+{
+  "checks": {
+    "gesture_continuity": true,
+    "Receipt_working_moves": true,
+    "Receipt_quiet_still": true,
+    "Receipt_outcomes_distinct": true,
+    "Reading_working_moves": true,
+    "Reading_quiet_still": true,
+    "Reading_outcomes_distinct": true,
+    "saved_empty_distinct": true,
+    "closing_moves": true,
+    "closing_finishes": true,
+    "reentry_matches_settled": true,
+    "mailroom_pull_poses": true,
+    "mailroom_knocks": true,
+    "mailroom_quiet_still": true,
+    "mailroom_arrivals_fall": true,
+    "mailroom_no_mail_settles": true,
+    "mailroom_endings_distinct": true,
+    "mailroom_letters_require_arrivals": true
+  },
+  "bytes": 203169,
+  "benchmark": "[12:29:50.325] rive  deferred replay: inline\n[12:29:51.213] rive  built /Users/craigroberts/email-ai/design/motion/margin-studio/build/margin-studio.riv (203169 bytes, 888ms, 0 errors, 0 warnings)\n[12:29:51.217] rive  data: phase = 1\n[12:29:51.217] rive  showing Reading [2/4]\n[12:29:51.217] rive  viewport 280x160 @1x\n[12:29:51.348] rive  bench advance: mean 0.004ms p50 0.002ms p95 0.012ms max 0.083ms\n[12:29:51.348] rive  bench render: mean 0.228ms p50 0.130ms p95 0.671ms max 2.634ms\n[12:29:51.348] rive  bench memory: 0 -> 0 wasm pages (+0) over 240 frames\n",
+  "asset_sha256": "144d63f650f48438b469872c2efe82eaf406d1e4f58846fdab98543d563c1e4f",
+  "native_bindings": 116,
+  "native_released_hosts": 16,
+  "gesture_tests": {
+    "count": 4,
+    "failures": 0,
+    "os": "iOS 26.5",
+    "result_bundle": "/tmp/di-mailroom-edge-gestures.xcresult"
+  },
+  "arrival_identity_checks": 7
+}
