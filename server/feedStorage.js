@@ -85,15 +85,15 @@ function createFeedStorage({ query, toRecord }) {
           (EXTRACT(EPOCH FROM ((($3::timestamptz AT TIME ZONE $2)::date)::timestamp AT TIME ZONE $2)) * 1000)::bigint AS today,
           (EXTRACT(EPOCH FROM ((($3::timestamptz AT TIME ZONE $2)::date - 1)::timestamp AT TIME ZONE $2)) * 1000)::bigint AS yesterday
       ), unread AS (
-        SELECT internal_date,
-          NOT ('SPAM' = ANY(label_ids)) AND NOT ('TRASH' = ANY(label_ids)) AS eligible
+        SELECT internal_date
         FROM messages WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)
+          AND NOT ('SPAM' = ANY(label_ids)) AND NOT ('TRASH' = ANY(label_ids))
       ), totals AS (
-        SELECT COUNT(*) AS all_unread_total,
-          COUNT(*) FILTER (WHERE eligible) AS total,
-          COUNT(*) FILTER (WHERE eligible AND internal_date >= boundaries.today) AS today,
-          COUNT(*) FILTER (WHERE eligible AND internal_date >= boundaries.yesterday AND internal_date < boundaries.today) AS yesterday,
-          COUNT(*) FILTER (WHERE eligible AND internal_date < boundaries.yesterday) AS earlier
+        SELECT (SELECT COUNT(*) FROM messages WHERE user_id = $1 AND 'UNREAD' = ANY(label_ids)) AS all_unread_total,
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE internal_date >= boundaries.today) AS today,
+          COUNT(*) FILTER (WHERE internal_date >= boundaries.yesterday AND internal_date < boundaries.today) AS yesterday,
+          COUNT(*) FILTER (WHERE internal_date < boundaries.yesterday) AS earlier
         FROM unread CROSS JOIN boundaries
       )${pageCTE}
       SELECT totals.*${pageColumn},

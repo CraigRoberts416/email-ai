@@ -40,6 +40,9 @@ Responses retain `cards` and provider `unreadCount`, and add:
 metadata without cards or a cursor. This allows live counts without replacing
 the client's reading-session list. A confirmed local read can update a visible
 counter immediately; use this endpoint to reconcile that counter.
+Section aggregation scans an index containing eligible unread dates; the raw
+unread diagnostic scans the existing unread index. Both remain in the same SQL
+snapshot as the page. Neither needs to open every stored email to check labels.
 
 Neither feed endpoint waits for Gmail's count request. A cold, expired, failed,
 or invalidated provider sample returns `unreadCount: null` and

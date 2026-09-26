@@ -66,6 +66,15 @@ async function runMigrations() {
       ON messages(user_id, internal_date DESC, message_id COLLATE "C" DESC)
       WHERE 'UNREAD' = ANY(label_ids)
   `);
+  // Section totals must not fetch 23k large mail rows just to inspect labels.
+  // Eligibility is encoded in this small index, so totals can scan dates only.
+  // Build beside the serving process without blocking its mailbox writes.
+  await migrationQuery(`
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_feed_unread
+      ON messages(user_id, internal_date DESC, message_id COLLATE "C" DESC)
+      WHERE 'UNREAD' = ANY(label_ids)
+        AND NOT ('SPAM' = ANY(label_ids)) AND NOT ('TRASH' = ANY(label_ids))
+  `);
   await migrationQuery(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS all_mail_sync_state TEXT NOT NULL DEFAULT 'pending',
       ADD COLUMN IF NOT EXISTS all_mail_sync_completed_at TIMESTAMPTZ,

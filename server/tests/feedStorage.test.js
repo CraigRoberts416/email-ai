@@ -231,11 +231,20 @@ test('23k unread mailbox keeps cached bodies out of page/count database payloads
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_unread_cursor
     ON messages(user_id, internal_date DESC, message_id COLLATE "C" DESC)
     WHERE 'UNREAD' = ANY(label_ids)`);
+  await db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_feed_unread
+    ON messages(user_id, internal_date DESC, message_id COLLATE "C" DESC)
+    WHERE 'UNREAD' = ANY(label_ids)
+      AND NOT ('SPAM' = ANY(label_ids)) AND NOT ('TRASH' = ANY(label_ids))`);
   await db.query(`INSERT INTO messages(user_id,message_id,internal_date,label_ids,first_synced_at,body_text)
     SELECT 'a', n::text, 1760000000000+n, ARRAY['UNREAD'], '2025-01-01'::timestamptz,
       CASE WHEN n > 22800 THEN repeat(md5(n::text),4096) ELSE NULL END
     FROM generate_series(1,23000) n`);
-  await db.exec('ANALYZE messages');
+  // Most of a long-lived mailbox is read history. A fixture containing only
+  // unread rows hides the production cost of fetching widely scattered rows.
+  await db.query(`INSERT INTO messages(user_id,message_id,internal_date,label_ids,snippet)
+    SELECT 'a', 'read-' || n::text, 1700000000000+n, ARRAY['INBOX'], repeat(md5(n::text),32)
+    FROM generate_series(1,50000) n`);
+  await db.exec('VACUUM ANALYZE messages');
   let sql, params, raw;
   const measured = createFeedStorage({ query: async (statement, bindings) => {
     sql = statement; params = bindings;
@@ -249,6 +258,12 @@ test('23k unread mailbox keeps cached bodies out of page/count database payloads
   t.diagnostic(`Synthetic counts: ${Math.round(performance.now() - start)}ms; database JSON ${countBytes} bytes`);
   assert.equal(counts.feedUnreadCount, 23000);
   assert.ok(countBytes < 1024, 'Counts payload remains constant-size without card/body materialization');
+  const countExplain = await query('EXPLAIN (FORMAT JSON, COSTS FALSE) ' + sql, params);
+  function nodes(node) { return [node, ...(node.Plans ?? []).flatMap(nodes)]; }
+  const countNodes = nodes(countExplain.rows[0]['QUERY PLAN'][0].Plan);
+  assert.ok(countNodes.some(node => node['Node Type'] === 'Index Only Scan'
+    && node['Index Name'] === 'idx_messages_feed_unread'),
+  'Section totals read the eligible-mail index without inspecting the full message rows');
   start = performance.now();
   const page = await measured.page('a', {}, anchor);
   const pageBytes = Buffer.byteLength(JSON.stringify(raw));
@@ -260,8 +275,7 @@ test('23k unread mailbox keeps cached bodies out of page/count database payloads
   assert.ok(pageBytes < 200000, '128 KiB cached bodies never inflate the 201-row card transfer');
   const explained = await query('EXPLAIN (FORMAT JSON, COSTS FALSE) ' + sql, params);
   const plan = explained.rows[0]['QUERY PLAN'][0].Plan;
-  function nodes(node) { return [node, ...(node.Plans ?? []).flatMap(nodes)]; }
-  assert.ok(nodes(plan).some(node => node['Index Name'] === 'idx_messages_unread_cursor'),
+  assert.ok(nodes(plan).some(node => ['idx_messages_unread_cursor', 'idx_messages_feed_unread'].includes(node['Index Name'])),
     'Page selection can stop on the chronological unread index');
 });
 
