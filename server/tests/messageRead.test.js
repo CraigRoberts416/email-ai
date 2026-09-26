@@ -4,12 +4,14 @@ const { once } = require('node:events');
 const express = require('express');
 const { createMarkReadHandler } = require('../messageRead');
 
-async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, modifyFailure = false, tokenFailure = null } = {}) {
+async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, modifyFailure = false, tokenFailure = null, staleLookup = false } = {}) {
   const requests = [];
   const stored = [];
   const events = [];
   const invalidations = [];
   let current = labels;
+  let currentHistory = '100';
+  let mirror = { labelIds: [...labels], historyId: '100' };
   const app = express();
   app.patch('/messages/:messageId/read', createMarkReadHandler({
     resolveUserId: async req => req.get('test-auth') === 'yes' ? 'account-a' : null,
@@ -17,7 +19,13 @@ async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, m
       if (tokenFailure) throw tokenFailure;
       return 'isolated-test-token';
     } },
-    messageStore: { updateLabelIds: async (userId, id, next) => stored.push({ userId, id, labels: next }) },
+    messageStore: {
+      getReadState: async () => mirror,
+      updateLabelIds: async (userId, id, next, historyId) => {
+        stored.push({ userId, id, labels: next });
+        mirror = { labelIds: [...next], historyId };
+      },
+    },
     emitSSE: (_id, event) => events.push(event),
     notifyMailbox: async () => {},
     invalidateUnreadCount: userId => invalidations.push({ userId, requests: requests.length, stored: stored.length }),
@@ -28,8 +36,11 @@ async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, m
         if (modifyFailure) return { ok: false };
         assert.deepEqual(JSON.parse(options.body), { removeLabelIds: ['UNREAD'] });
         current = current.filter(label => label !== 'UNREAD');
+        currentHistory = String(BigInt(currentHistory) + 100n);
       } else if (readFailure) { return { ok: false }; }
-      return { ok: true, json: async () => ({ id: 'message-a', labelIds: [...current] }) };
+      const stale = staleLookup && options.method !== 'POST';
+      return { ok: true, json: async () => ({ id: 'message-a', labelIds: [...(stale ? labels : current)],
+        historyId: stale ? '100' : currentHistory }) };
     },
     logger: { error() {}, warn() {} },
   }));
@@ -38,7 +49,8 @@ async function fixture(t, { labels = ['UNREAD', 'INBOX'], readFailure = false, m
   t.after(() => new Promise(resolve => server.close(resolve)));
   const url = `http://127.0.0.1:${server.address().port}/messages/message-a/read`;
   const request = (authorized = true) => fetch(url, { method: 'PATCH', headers: authorized ? { 'test-auth': 'yes' } : {} });
-  return { request, requests, stored, events, invalidations };
+  return { request, requests, stored, events, invalidations,
+    providerMarkUnread: () => { current = [...current, 'UNREAD']; currentHistory = String(BigInt(currentHistory) + 100n); } };
 }
 
 test('read API confirms provider wasUnread in HTTP and SSE and saves the provider label set', async t => {
@@ -71,6 +83,22 @@ test('concurrent read retries serialize, with only one confirmed unread transiti
   assert.equal(results.filter(result => result.wasUnread).length, 1);
   assert.equal(h.requests.filter(method => method === 'POST').length, 1);
   assert.equal(h.events.filter(event => event.wasUnread).length, 1);
+});
+
+test('a lagging Gmail lookup cannot repeat a confirmed read transition', async t => {
+  const h = await fixture(t, { staleLookup: true });
+  assert.equal((await (await h.request()).json()).wasUnread, true);
+  assert.deepEqual(await (await h.request()).json(), { success: true, wasUnread: false, readChanged: false });
+  assert.deepEqual(h.requests, ['GET', 'POST', 'GET'], 'Older provider revision cannot trigger another modify');
+  assert.equal(h.events.filter(event => event.wasUnread).length, 1);
+});
+
+test('an explicit newer mark-unread can be read again', async t => {
+  const h = await fixture(t);
+  assert.equal((await (await h.request()).json()).wasUnread, true);
+  h.providerMarkUnread();
+  assert.equal((await (await h.request()).json()).wasUnread, true);
+  assert.equal(h.requests.filter(method => method === 'POST').length, 2);
 });
 
 test('lookup or write failures never publish success, change the mirror, or emit a read event', async t => {

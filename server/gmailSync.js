@@ -1,6 +1,7 @@
 const userStore   = require('./userStore');
 const messageStore = require('./messageStore');
 const { createUnreadBacklog } = require('./unreadBacklog');
+const { atOrBefore } = require('./gmailHistory');
 const { createGmailReadTransport, gmailReadError } = require('./gmailReadTransport');
 const gmailRead = createGmailReadTransport();
 const accountAccess = require('./accountAccess');
@@ -279,7 +280,7 @@ async function incrementalSync(userId) {
       for (const [field, adding] of [['labelsAdded', true], ['labelsRemoved', false]]) {
         for (const { message, labelIds } of event[field] ?? []) {
           const changes = labelChanges.get(message.id) ?? new Map();
-          for (const label of labelIds ?? []) changes.set(label, adding);
+          for (const label of labelIds ?? []) changes.set(label, { adding, historyId: event.id ?? message.historyId ?? null });
           labelChanges.set(message.id, changes);
         }
       }
@@ -307,8 +308,15 @@ async function incrementalSync(userId) {
     const existing = await messageStore.getMessage(userId, messageId);
     if (!existing) continue;
     const labelSet = new Set(existing.labelIds);
-    for (const [label, adding] of changes) { if (adding) labelSet.add(label); else labelSet.delete(label); }
-    await messageStore.updateLabelIds(userId, messageId, Array.from(labelSet));
+    let latest = existing.historyId ?? null;
+    let changed = false;
+    for (const [label, { adding, historyId }] of changes) {
+      if (atOrBefore(historyId, existing.historyId)) continue;
+      if (adding) labelSet.add(label); else labelSet.delete(label);
+      if (historyId && !atOrBefore(historyId, latest)) latest = historyId;
+      changed = true;
+    }
+    if (changed) await messageStore.updateLabelIds(userId, messageId, Array.from(labelSet), latest);
   }
 
   if (deletedMessageIds.size) await messageStore.removeMessages(userId, [...deletedMessageIds]);

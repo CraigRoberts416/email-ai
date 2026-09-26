@@ -65,6 +65,11 @@ returned labels. Already-read mail succeeds with both flags false. The
 transition should decrement a live count; unknown flags require reconciliation.
 Requests for the same account/message are serialized to avoid duplicate
 transitions. Gmail failures do not emit a successful read event.
+Confirmed Gmail history revisions are retained with label state. A later
+lookup carrying an equal or older revision cannot undo an acknowledged read
+or decrement again. Metadata imports and history replay also respect provider
+revision order; a newer explicit mark-unread remains valid. Unread-list
+membership never overrides the newer metadata fetched for a locally read row.
 An expired/revoked server refresh grant returns HTTP 401 with
 `error: "mailbox-reconnect-required"`. Clients retain the durable read intent
 and request reconnection; cached feed success does not prove grant recovery.

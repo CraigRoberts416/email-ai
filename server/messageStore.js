@@ -1,6 +1,13 @@
 const { query } = require('./db');
 const { CARD_COLUMNS, createFeedStorage } = require('./feedStorage');
 
+// A later HTTP response may carry an older Gmail revision. Prefer provider
+// ordering when both revisions exist; legacy rows still use observation time.
+const currentIncomingLabels = `CASE
+  WHEN EXCLUDED.history_id ~ '^[0-9]+$' AND messages.history_id ~ '^[0-9]+$'
+    THEN EXCLUDED.history_id::numeric >= messages.history_id::numeric
+  ELSE EXCLUDED.labels_updated_at >= messages.labels_updated_at END`;
+
 function rowToRecord(row) {
   return {
     messageId:         row.message_id,
@@ -57,7 +64,7 @@ async function upsertMessages(userId, records) {
       ) VALUES ${values.join(',')}
       ON CONFLICT (user_id, message_id) DO UPDATE SET
         thread_id     = EXCLUDED.thread_id,
-        label_ids     = CASE WHEN EXCLUDED.labels_updated_at >= messages.labels_updated_at
+        label_ids     = CASE WHEN ${currentIncomingLabels}
           THEN EXCLUDED.label_ids ELSE messages.label_ids END,
         labels_updated_at = GREATEST(messages.labels_updated_at, EXCLUDED.labels_updated_at),
         subject       = EXCLUDED.subject,
@@ -65,7 +72,8 @@ async function upsertMessages(userId, records) {
         from_email    = EXCLUDED.from_email,
         snippet       = EXCLUDED.snippet,
         internal_date = EXCLUDED.internal_date,
-        history_id    = EXCLUDED.history_id,
+        history_id    = CASE WHEN ${currentIncomingLabels}
+          THEN COALESCE(EXCLUDED.history_id, messages.history_id) ELSE messages.history_id END,
         -- Only when the new row actually carries them: a metadata refresh
         -- that predates this column must not blank what is already stored.
         participants  = COALESCE(EXCLUDED.participants, messages.participants),
@@ -80,6 +88,12 @@ async function getMessage(userId, messageId) {
     [userId, messageId]
   );
   return rows[0] ? rowToRecord(rows[0]) : null;
+}
+
+async function getReadState(userId, messageId) {
+  const { rows } = await query('SELECT label_ids, history_id FROM messages WHERE user_id = $1 AND message_id = $2',
+    [userId, messageId]);
+  return rows[0] ? { labelIds: rows[0].label_ids ?? [], historyId: rows[0].history_id } : null;
 }
 
 const feedStorage = createFeedStorage({ query, toRecord: rowToRecord });
@@ -118,11 +132,12 @@ async function unreadMetadataNeeded(userId, ids) {
 }
 
 async function reconcileUnreadLabels(userId, ids, startedAt, excluded = {}) {
+  // Listed IDs that were locally read have already had metadata fetched.
+  // Keep that versioned state: a stale list alone must not re-add UNREAD.
   await query(`
     UPDATE messages SET
       label_ids = CASE WHEN message_id = ANY($2::text[]) THEN
-        array_remove(array_remove(array_remove(label_ids, 'UNREAD'), 'SPAM'), 'TRASH')
-        || ARRAY['UNREAD']::text[]
+        array_remove(array_remove(label_ids, 'SPAM'), 'TRASH')
         || CASE WHEN message_id = ANY($4::text[]) THEN ARRAY['SPAM']::text[] ELSE '{}'::text[] END
         || CASE WHEN message_id = ANY($5::text[]) THEN ARRAY['TRASH']::text[] ELSE '{}'::text[] END
         ELSE array_remove(label_ids, 'UNREAD') END,
@@ -209,10 +224,13 @@ async function setAiFields(userId, messageId, { quote, summary, action, actionUr
   `, [userId, messageId, quote ?? null, summary ?? null, action ?? null, actionUrl ?? null, requiresAttention ?? false]);
 }
 
-async function updateLabelIds(userId, messageId, labelIds) {
+async function updateLabelIds(userId, messageId, labelIds, historyId = null) {
   await query(
-    'UPDATE messages SET label_ids = $3, labels_updated_at = NOW() WHERE user_id = $1 AND message_id = $2',
-    [userId, messageId, labelIds]
+    `UPDATE messages SET label_ids = $3, labels_updated_at = NOW(), history_id = COALESCE($4, history_id)
+      WHERE user_id = $1 AND message_id = $2 AND CASE
+        WHEN $4::text ~ '^[0-9]+$' AND history_id ~ '^[0-9]+$'
+          THEN $4::numeric >= history_id::numeric ELSE TRUE END`,
+    [userId, messageId, labelIds, historyId]
   );
 }
 
@@ -382,7 +400,7 @@ async function finishNotification(userId, messageId, delivered) {
 
 module.exports = {
   archiveMetadataNeeded,
-  upsertMessages, getMessage, getMessagesByIds, getHistoryPageRecords, saveProfileSource,
+  upsertMessages, getMessage, getReadState, getMessagesByIds, getHistoryPageRecords, saveProfileSource,
   getUnread, getUnreadPage, getUnreadCounts, getAll, unreconciled,
   unreadMetadataNeeded, reconcileUnreadLabels,
   getNextToProcess, setAiStatus, failAttempt, setAiField, setAiFields, updateLabelIds,

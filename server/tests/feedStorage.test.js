@@ -182,6 +182,27 @@ test('late backlog metadata cannot undo a confirmed read; reconciliation protect
   assert.deepEqual((await messages.getMessage('b', 'other-account')).labelIds, ['UNREAD']);
 });
 
+test('older Gmail revisions cannot undo a read even when fetched later; a newer unread revision still can', async () => {
+  const dbPath = require.resolve('../db'), previous = require.cache[dbPath];
+  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { query } };
+  delete require.cache[require.resolve('../messageStore')];
+  const messages = require('../messageStore');
+  if (previous) require.cache[dbPath] = previous; else delete require.cache[dbPath];
+  await add('revision-race', '2025-01-01T00:00:00Z', ['UNREAD']);
+  await messages.updateLabelIds('a', 'revision-race', ['INBOX'], '200');
+  const later = new Date(Date.now() + 1000);
+  await messages.upsertMessages('a', [{ messageId: 'revision-race', labelIds: ['UNREAD','INBOX'],
+    historyId: '100', labelsObservedAt: later }]);
+  assert.deepEqual((await messages.getReadState('a', 'revision-race')).labelIds, ['INBOX']);
+  await messages.updateLabelIds('a', 'revision-race', ['UNREAD','INBOX'], '150');
+  assert.deepEqual((await messages.getReadState('a', 'revision-race')).labelIds, ['INBOX'], 'Old history replay is ignored');
+  await messages.reconcileUnreadLabels('a', ['revision-race'], later);
+  assert.deepEqual((await messages.getReadState('a', 'revision-race')).labelIds, ['INBOX'], 'A stale list cannot override newer metadata');
+  await messages.upsertMessages('a', [{ messageId: 'revision-race', labelIds: ['UNREAD','INBOX'],
+    historyId: '300', labelsObservedAt: new Date(Date.now() + 2000) }]);
+  assert.deepEqual((await messages.getReadState('a', 'revision-race')).labelIds, ['UNREAD','INBOX'], 'Explicit later mark-unread remains authoritative');
+});
+
 test('counts-only query needs no card or body columns and returns identical metadata', async () => {
   await add('today', '2026-11-02T05:00:00Z');
   await add('yesterday', '2026-11-01T04:30:00Z');

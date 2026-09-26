@@ -1,3 +1,5 @@
+const { atOrBefore } = require('./gmailHistory');
+
 function createMarkReadHandler({ resolveUserId, userStore, messageStore, emitSSE,
   notifyMailbox, invalidateUnreadCount = () => {}, fetch: providerFetch = fetch, logger = console }) {
   const queues = new Map();
@@ -14,6 +16,15 @@ function createMarkReadHandler({ resolveUserId, userStore, messageStore, emitSSE
     if (!valid(message)) throw Object.assign(new Error('Invalid Gmail read state'), { statusCode: 502 });
     const wasUnread = (message.labelIds ?? []).includes('UNREAD');
     if (wasUnread) {
+      const saved = await messageStore.getReadState(userId, messageId);
+      if (saved && !saved.labelIds.includes('UNREAD') && atOrBefore(message.historyId, saved.historyId)) {
+        // Gmail can acknowledge modify before its next GET reflects it. The
+        // durable newer revision is already read; retries must not decrement
+        // again or overwrite it with the lagging response.
+        return { success: true, wasUnread: false, readChanged: false };
+      }
+    }
+    if (wasUnread) {
       const changed = await providerFetch(`${url}/modify`, {
         method: 'POST', headers, body: JSON.stringify({ removeLabelIds: ['UNREAD'] }),
         signal: AbortSignal.timeout(15000),
@@ -27,7 +38,7 @@ function createMarkReadHandler({ resolveUserId, userStore, messageStore, emitSSE
     // Use the provider's current label set, including archive/folder changes.
     // An already-read cached post is a successful reconciliation, not another
     // decrement of the mailbox's unread count.
-    await messageStore.updateLabelIds(userId, messageId, message.labelIds ?? []);
+    await messageStore.updateLabelIds(userId, messageId, message.labelIds ?? [], message.historyId);
     return { success: true, wasUnread, readChanged: wasUnread };
   }
 

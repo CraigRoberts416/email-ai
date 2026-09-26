@@ -40,7 +40,7 @@ function harness(respond) {
         json: async () => result.body ?? {} };
     },
     require: name => {
-      if (name === './accountAccess') return require(name);
+      if (name === './accountAccess' || name === './gmailHistory') return require(name);
       if (name === './userStore') return users;
       if (name === './messageStore') return messages;
       if (name === './unreadBacklog') return { createUnreadBacklog: () => ({ ensure() {} }) };
@@ -115,6 +115,21 @@ test('later history pages apply label order and provider deletions before final 
   assert.deepEqual(plain(effects.labels), [['a','kept',['UNREAD','INBOX']]]);
   assert.equal(effects.writes.length, 0, 'Deleted message is not fetched or resurrected');
   assert.deepEqual(plain(effects.checkpoints), [['a','final']]);
+});
+
+test('history replay ignores labels older than a confirmed read and applies later changes', async () => {
+  const h = harness(async () => ({ body: { historyId: '9007199254741030', history: [
+    { id: '9007199254740999', labelsAdded: [{ message: { id: 'kept' }, labelIds: ['UNREAD','STARRED'] }] },
+    { id: '9007199254741020', labelsAdded: [{ message: { id: 'kept' }, labelIds: ['IMPORTANT'] }] },
+  ] } }));
+  h.messages.getMessage = async () => ({ labelIds: ['INBOX'], historyId: '9007199254741010' });
+  let revision;
+  h.messages.updateLabelIds = async (id, message, labels, historyId) => {
+    h.effects.labels.push([id,message,labels]); revision = historyId;
+  };
+  await h.sync.incrementalSync('a');
+  assert.deepEqual(plain(h.effects.labels), [['a','kept',['INBOX','IMPORTANT']]]);
+  assert.equal(revision, '9007199254741020');
 });
 
 test('failed later history page cannot advance checkpoint or apply a partial update', async () => {

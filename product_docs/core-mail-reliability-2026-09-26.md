@@ -11,6 +11,15 @@ Craig reported that showing and marking email read still failed in TestFlight. T
 
 ## Evidence and limits
 
+The first live read check exposed a further failure absent from the original
+fixtures: Gmail acknowledged removing UNREAD, but its immediately following
+minimal GET still returned UNREAD. Repeating the request returned
+`wasUnread: true` twice even though the provider total fell only once. A later
+lookup settled to read. The server now retains Gmail's revision with confirmed
+labels, ignores older metadata/history replay, and makes this retry return no
+second decrement. A newer explicit mark-unread still takes effect. The stale
+provider regression failed before the revision-aware correction.
+
 - Production Render logs showed repeated expired-grant failures through 18:29 EDT, followed by unread-reconciliation timeouts. Matching OAuth client IDs ruled out client-ID mismatch. This is evidence of server failures, not proof that every iPhone symptom has the same cause.
 - Read-only real mailbox audit: Gmail enumerated **22,901** unread identities including excluded folders; the database contained exactly the same set, with **0 missing and 0 stale IDs**. Gmail's eligible count and the database's eligible count both equalled **22,105**. The database held 277,861 total messages. These are point-in-time checks, not permanent mailbox totals.
 - The saved unread reconciliation state was `error`; its last completed checkpoint was September 21. Matching totals alone did not override that failed checkpoint or assert completion.
