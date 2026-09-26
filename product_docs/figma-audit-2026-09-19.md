@@ -110,3 +110,8 @@ That feedback does not establish the new read-delivery or navigation fixes.
 ## People tab badge · September 20
 
 The canonical main-board tabbed screens now include an illustrative native People badge of 2, matching the People masthead example. It counts conversations, independently of the app-icon email total. The runtime badge loads before People is visited, follows confirmed unread reconciliation, hides at zero, and preserves known state on failure. Partial history uses loaded unread conversations until the aggregate is verified. Native Simulator showed 9 on the tab and 9 UNREAD LOADED inside People; the design illustration is not a mailbox total. Opening a conversation's read policy remains a separate user question.
+
+
+## Feed recovery and robot refresh · September 26
+
+Updated current session, Activity receipt and recovery annotations (`341:1070`, `341:1071`, `339:811`, `348:1137`) to match refresh-time reading, durable reconnection and completed-banner dismissal. Added a [native verification board](https://www.figma.com/design/LlstGMGXZrDiY2Ee4dd3yl/Email-App-Component-Library?node-id=380-1879) on the existing Native screens page. It contains two genuine synthetic XCTest captures from the combined recovery + robot implementation: reduced TODAY count with a retained read card during refresh, and the honest Activity receipt after banner dismissal. Seven actual-touch tests passed. Arrival/no-arrival, static reduced-motion and expired-consent rules are annotated. This is verification evidence alongside the editable design boards, not an editable screenshot reconstruction or a physical-device performance claim. Both image placeholders are cleared; the rendered board has no clipped annotations.

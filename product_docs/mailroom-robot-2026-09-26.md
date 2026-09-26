@@ -36,7 +36,7 @@ Reduce Motion and renderer failure use `MailroomStill.swift`, generated from the
 - The robot's headless 240-frame benchmark reported mean render 0.275 ms, p95 0.548 ms and no WASM-page growth. This is desktop evidence, not an iPhone battery/frame-pacing measurement. The asset is 203,169 bytes; SHA-256 `144d63f650f48438b469872c2efe82eaf406d1e4f58846fdab98543d563c1e4f`.
 - An initial Simulator attempt stalled before launch. The Main task recovered CoreSimulator; running just the iOS 26.5 QA runtime then allowed installation and the successful suite above. The interrupted attempt is not counted as a test pass. All art/gesture checks use synthetic mail; no authenticated mailbox was used.
 
-No TestFlight upload was performed for this change. The Main task owns the coordinated release with its separate recovery fixes, after native verification is available. Previous release records are not evidence that this robot has shipped.
+The Main task subsequently combined this artwork with the recovery fixes, passed all seven native touch checks, and uploaded **1.0 (2609261241)** at 12:47 EDT on September 26. See the [combined release record](native-release-2609261241.md) for archive validation, upload evidence and the distinction between upload and verified tester availability.
 
 Reproduce the identity checks:
 
