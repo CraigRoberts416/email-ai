@@ -1,0 +1,24 @@
+{
+  "checks": {
+    "gesture_continuity": true,
+    "Receipt_working_moves": true,
+    "Receipt_quiet_still": true,
+    "Receipt_outcomes_distinct": true,
+    "Reading_working_moves": true,
+    "Reading_quiet_still": true,
+    "Reading_outcomes_distinct": true,
+    "saved_empty_distinct": true,
+    "closing_moves": true,
+    "closing_finishes": true,
+    "reentry_matches_settled": true,
+    "mailroom_pull_poses": true,
+    "mailroom_knocks": true,
+    "mailroom_quiet_still": true,
+    "mailroom_arrivals_fall": true,
+    "mailroom_no_mail_settles": true,
+    "mailroom_endings_distinct": true,
+    "mailroom_letters_require_arrivals": true
+  },
+  "bytes": 691018,
+  "benchmark": "[16:20:47.298] rive  deferred replay: inline\n[16:20:50.114] rive  built /Users/craigroberts/email-ai/design/motion/margin-studio/build/margin-studio.riv (691018 bytes, 2815ms, 0 errors, 0 warnings)\n[16:20:50.125] rive  data: phase = 1\n[16:20:50.125] rive  showing Reading [2/4]\n[16:20:50.125] rive  viewport 280x160 @1x\n[16:20:50.250] rive  bench advance: mean 0.003ms p50 0.002ms p95 0.008ms max 0.061ms\n[16:20:50.250] rive  bench render: mean 0.213ms p50 0.145ms p95 0.659ms max 2.712ms\n[16:20:50.250] rive  bench memory: 0 -> 0 wasm pages (+0) over 240 frames\n"
+}

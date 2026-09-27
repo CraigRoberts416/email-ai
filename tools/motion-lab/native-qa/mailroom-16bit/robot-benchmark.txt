@@ -1,0 +1,8 @@
+[16:20:18.040] rive  deferred replay: inline
+[16:20:21.160] rive  built design/motion/margin-studio/build/margin-studio.riv (691018 bytes, 3120ms, 0 errors, 0 warnings)
+[16:20:21.191] rive  data: phase = 1
+[16:20:21.192] rive  showing Mailroom [4/4]
+[16:20:21.192] rive  viewport 144x98 @1x
+[16:20:21.488] rive  bench advance: mean 0.015ms p50 0.003ms p95 0.027ms max 0.315ms
+[16:20:21.489] rive  bench render: mean 0.410ms p50 0.338ms p95 0.928ms max 2.623ms
+[16:20:21.489] rive  bench memory: 0 -> 0 wasm pages (+0) over 240 frames

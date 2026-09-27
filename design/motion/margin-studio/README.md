@@ -8,7 +8,9 @@ The visual language is paper, editorial margins, a held place and a full stop. R
 
 The user explicitly replaced the refresh receipt with a cute 8-bit robot banging a long stick upward, trying to unstick mail. They then supplied [the selected robot](references/robot.png) and removed the drawn ceiling: the stick must hit the phone's top edge, and mail must arrive from the cloud/offscreen. This is a deliberate exception to the earlier paper-only direction, limited to pull refresh. Receipt, Reading and Closing retain their original drawings and behavior.
 
-`build_mailroom.py` authors ten robot poses on a 144 × 98 pixel grid. The large round helmet, navy face, two light eyes, compact armored body and pale waist belt follow the supplied reference; no antenna or mouth is added. Rive Solo switches drawings at 12 fps with held keys. The first impact lands after 250 ms; a second harder hit follows, then a pause. Contact glints stay at the screen edge; there is no ceiling, trapped pile or falling debris. A successful refresh with new message identities uses the falling-envelope ending; successful refresh with no arrivals lowers the stick and releases **no envelopes**. The four envelopes are an illustration of arrivals, not an exact message count.
+The September 27 user revision changes this to 16-bit styling and fuller character acting. `build_mailroom.py` now authors thirteen poses on a 288 × 196 pixel grid inside the same 144 × 98 logical artboard, with a 28-color palette. The large round helmet, navy face, light eyes, compact armor and pale belt retain the supplied character. A wooden branch has an irregular outline, bark knots, a trimmed twig and a cut end. He faces the reader, turns through three-quarter/profile to a fully rear-facing helmet, shifts his hips, bends his knees and rises onto his rear toe to strike, then turns back. Only new-mail arrivals trigger wide eyes, a sideways duck, a peek and a step back.
+
+Rive Solo switches drawings at 12 fps with held keys. The first impact lands after 250 ms; a second harder hit follows, then a pause. Contact glints stay at the screen edge; there is no ceiling, trapped pile or falling debris. Successful refresh with no arrivals lowers the stick and releases **no envelopes**. The four envelopes are an illustration of arrivals, not an exact message count. No antenna or mouth is added.
 
 ## Four authored artboards
 
@@ -21,7 +23,7 @@ The user explicitly replaced the refresh receipt with a cute 8-bit robot banging
 
 Pull does not indicate network progress. Checking loops only move a small margin. Unknown and human-reported outcomes never select the confirmed pose. Pending arrivals reopen the completion mark. Returning to an already-shown completion uses a static composition.
 
-`build_art.py` and `build_mailroom.py` are editable vector/timing source; they write editable `scene.rml` and the matching `MailroomStill.swift` static drawing. `rive.yaml` is the CLI project. The bundled asset is `apple/DecisionInbox/Resources/Motion/margin-studio.riv`. It is 203,169 bytes and contains **zero scripts, fonts, images, audio or remote resources**. CLI signing is unnecessary for a script-free file, per the official CLI publishing documentation. It loads in the unmodified official Apple runtime; no tools-enabled runtime or script-verification override is used.
+`build_art.py` and `build_mailroom.py` are editable vector/timing source; they write editable `scene.rml` and the matching `MailroomStill.swift` static drawing. `rive.yaml` is the CLI project. The bundled asset is `apple/DecisionInbox/Resources/Motion/margin-studio.riv`. The revised file is 691,018 bytes and contains **zero scripts, fonts, images, audio or remote resources**. CLI signing is unnecessary for a script-free file, per the official CLI publishing documentation. It loads in the unmodified official Apple runtime; no tools-enabled runtime or script-verification override is used.
 
 ## Reproduce
 

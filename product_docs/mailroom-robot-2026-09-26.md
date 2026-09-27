@@ -4,9 +4,11 @@ September 26, 2026. User-selected direction: the [supplied round-helmet robot](.
 
 ## Drawing and performance
 
-Ten pixel poses preserve the reference's large round helmet, navy face, two pale eyes, blue ear caps, compact armored body and pale waist belt. Planted feet, anticipation, contact, recoil and a harder second knock give the robot effort. There is no antenna, added mouth, drawn ceiling, trapped mail pile or falling debris. A few contact glints stay at the phone edge. Four staggered envelopes enter from above the screen and tumble toward the feed only in the arrival ending. Their number is illustrative, not a count of messages.
+The September 27 revision follows the user's request for 16-bit styling, a recognizable wooden stick, a full head turn, feet/hip movement and a startled dodge when mail appears. Thirteen pixel poses retain the reference's round helmet, navy face, pale eyes, blue ear caps, compact armor and pale waist belt. He starts facing the reader, turns through three-quarter and profile views to show the back of his helmet while knocking, then turns back. His stance widens, knees bend, hips shift and his rear heel lifts as he pushes into the harder strike. The slightly crooked stick has bark knots, a trimmed twig and a lighter cut end.
 
-The 144 × 98 scene uses vector rectangles and Rive Solo, with 12 fps held keys. `build_mailroom.py` is the editable art source; the generated `scene.rml` remains editable in Rive's authoring pipeline. The supplied image is preserved unmodified as a reference. No new runtime, remote resource, sound or per-hit haptic is introduced.
+Only the arrival ending adds widened eyes, a sideways duck into the clear lane between the envelopes, a peek upward and a step back to rest. No-arrival refreshes lower the stick and return calmly, without falling mail. There is no antenna, added mouth, drawn ceiling, trapped mail pile or falling debris. Contact glints stay at the phone edge. Four staggered envelopes enter from above the screen; their number is illustrative, not a count of messages.
+
+The 144 × 98 artboard now contains a finer 288 × 196 pixel drawing with a 28-color palette, preserving its 288 × 196-point native footprint. Vector pixel contours and Rive Solo use 12 fps held keys. `build_mailroom.py` is the editable art source; the generated `scene.rml` remains editable in Rive's authoring pipeline. The supplied image is preserved unmodified as a reference. No new runtime, remote resource, sound or per-hit haptic is introduced.
 
 The first contact is at 250 ms. A loop takes three seconds, with a pause after the double knock. The September 27 repair gives the checking presentation 1.6 seconds from renderer readiness, covering both knocks and recoil even when the network responds immediately. The arrival ending takes about 1.17 seconds; its native caption stays for 1.8 seconds and the mailroom player pauses after 1.3 seconds. All envelopes leave the drawing by 1.08 seconds. Fetched mail becomes usable immediately; only the nonblocking status presentation waits. Reduce Motion retains a shorter checking hold with static artwork.
 
@@ -16,11 +18,11 @@ A later September 27 native video review exposed a second issue: Metal can tempo
 
 | Phase | Meaning | Art |
 | --- | --- | --- |
-| 0 | Actual pull distance, 0–100 | Watch / brace / wind up at 33 and 70 |
-| 1 | Existing refresh is running | Two knocks, then rest; repeats |
-| 2 | Successful refresh with arrivals | Final hit, falling envelopes, pleased robot |
+| 0 | Actual pull distance, 0–100 | Face reader / turn and brace / profile wind-up at 33 and 70 |
+| 1 | Existing refresh is running | Turn fully away, push from feet/hips into two knocks, turn back; repeats |
+| 2 | Successful refresh with arrivals | Final hit, startled eyes, sideways duck, peek, return to rest |
 | 3 | Existing refresh reports failure | Rest the stick; native Retry/dismiss actions |
-| 4 | Successful refresh without arrivals | Lower the stick; all envelopes stay hidden |
+| 4 | Successful refresh without arrivals | Lower the stick and turn back calmly; all envelopes stay hidden |
 
 `RefreshArrivalSnapshot` compares mailbox-qualified message identities before and after refresh, including waiting mail admitted by the explicit refresh. It never interprets a changed unread total as an arrival. The after-set contains eligible unread cards actually admitted to the session, so deselected or removed waiting mail does not trigger the ending. Refresh now admits newly fetched pending cards before it reports **N NEW EMAILS**; the quiet ending says **NO NEW EMAILS**. Any reported refresh failure takes precedence over arrival art. Background arrivals continue waiting for explicit bubble admission.
 
@@ -28,7 +30,15 @@ The drawing is 288 × 196 points at rest, with native status/actions over the em
 
 Reduce Motion and renderer failure use `MailroomStill.swift`, generated from the same pixel drawings with no Rive player. Existing visibility, app-background and route gates remain. Receipt, Reading and Closing art/timing are unchanged.
 
-## Verification and handoff
+## September 27 revised-art verification
+
+- All **18 Rive rendering/structure checks passed** on the final thirteen-pose asset. Compile/inspection report zero errors or warnings. Receipt, Reading and Closing artboard XML matches the prior revision exactly.
+- The **four focused native FeedGestures tests passed**, zero failures, in 43.393 seconds on iPhone 17 Pro / iOS 26.5: fast arrivals, fast no-arrivals, continued pixel animation after a transient drawable miss, and free scrolling while the illustration is active. Result: `/tmp/di-16bit-acting-native.xcresult`. This is the final head-turn/body/surprise revision; the earlier four-test run covered an intermediate drawing.
+- Native arrival and no-arrival captures were visually inspected. The generated Reduce Motion composition was inspected in the native gallery, whose probe passed **116 bindings and release of 16 hosts**. The app's controls, gesture code, refresh data/arrival rules, hold durations and lifetime gates were not changed.
+- The final Mailroom 240-frame headless benchmark reports mean render **0.410 ms**, p95 **0.928 ms**, and zero reported WASM-page growth. This is desktop evidence, not an iPhone performance claim. The bundled script-free asset is **691,018 bytes**, SHA-256 `ff47052b5b7c47f0beff099cf6ef90e82230a640880fffb7ab951d7d7ef94ea9`.
+- [Updated portable preview and synthetic native evidence](../tools/motion-lab/native-qa/mailroom-16bit/README.md). Both outcome buttons were checked in the browser. The new artwork is installed in the native source bundle; **this September 27 artwork revision has not been uploaded to TestFlight**. The prior release records describe earlier artwork.
+
+## September 26 verification and handoff
 
 - Debug iOS Simulator compilation passed. All four original `FeedGestures` native touch tests passed on iOS 26.5, including card-origin scrolling during active robot refresh, return to top, thread return and tab return. Result bundle: `/tmp/di-mailroom-edge-gestures.xcresult`.
 - Seven arrival-identity checks passed: unchanged mail, removed/read mail, empty response, equal total with replacement identity, mailbox-qualified IDs, waiting arrivals, and removed/deselected waiting mail.
