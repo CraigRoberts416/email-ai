@@ -579,23 +579,14 @@ struct FeedView: View {
         .animation(Move.resolved(Move.crisp, reduceMotion), value: showsPill)
     }
 
-    /// Navigate to the batch we actually admitted, including delayed mail
-    /// grouped into Yesterday or Earlier. Feed retap still uses the fixed top.
+    /// Genuine arrivals go above the current visit. Historical discovery
+    /// cannot turn a top-of-feed notification into a jump to Earlier.
     private func admitPending() {
         cancelScrollReads()
         let incoming = store.admitPending()
         admitted = Set(incoming.map(\.feedKey))
         pillVisible = false
-        if let first = incoming.first {
-            // The permanent anchor is already laid out when a brand-new
-            // first row is not. Later date bands use their containing section.
-            let groups = store.messages()
-            if let group = groups.first(where: { $0.1.contains(where: { $0.feedKey == first.feedKey }) }) {
-                // Admission puts this card first within its date band. Target
-                // the band so its pinned header cannot cover the sender.
-                requestScroll(to: groups.first?.0 == group.0 ? Self.topAnchor : "feed.section.\(group.0)")
-            }
-        }
+        if !incoming.isEmpty { scrollToTop() }
         Task { @MainActor in
             await Task.yield()
             withAnimation(Move.resolved(Move.reveal, reduceMotion)) { admitted = [] }
@@ -746,6 +737,7 @@ struct FeedView: View {
 
     private func runRefresh(id: UUID) async {
         let began = ContinuousClock.now
+        let isArrival = store.arrivalSnapshot()
         let arrivals = RefreshArrivalSnapshot(
             known: Set((store.messages + store.pending).map(\.feedKey)),
             waiting: Set(store.eligiblePending.map(\.feedKey)))
@@ -767,7 +759,9 @@ struct FeedView: View {
         guard !Task.isCancelled, id == refreshID else { return }
         let failure = store.loadFailure != nil
         let arrivalCount = failure ? 0 : arrivals.count(
-            available: Set(store.sessionMessages.filter { !$0.isRead && $0.isFeedEligible }.map(\.feedKey)))
+            available: Set(store.sessionMessages.filter {
+                !$0.isRead && $0.isFeedEligible && isArrival($0)
+            }.map(\.feedKey)))
         let foundMail = arrivalCount > 0
         if failure && feedVisible { Haptics.needsYou() }
         withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
@@ -804,7 +798,7 @@ struct FeedView: View {
         // Mail discovered by this explicit refresh belongs in the refreshed
         // feed, even if the reader moved while the request was in flight.
         // Ordinary background arrivals continue waiting behind their bubble.
-        store.admitPending()
+        store.admitPending(includingHistory: true)
     }
 
     @ViewBuilder private var feedFooter: some View {
@@ -825,6 +819,13 @@ struct FeedView: View {
                 } else {
                     ProgressView("Loading older emails…")
                 }
+            }
+            .frame(maxWidth: .infinity, minHeight: 100)
+        } else if store.hasDeferredHistory {
+            VStack(spacing: Space.md) {
+                Text("Older emails synced.").typeStyle(Style.body).foregroundStyle(Ink.secondary)
+                Button("Refresh to include them", action: startRefresh)
+                    .frame(minHeight: Metric.tapTarget)
             }
             .frame(maxWidth: .infinity, minHeight: 100)
         } else if store.checkingCompletion && store.sessionMessages.isEmpty {

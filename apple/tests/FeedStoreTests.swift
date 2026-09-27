@@ -263,13 +263,13 @@ import Foundation
         a.feed = { _, _ in page([card("visible")], total: 1) }
         await f.store.start()
         let original = f.store.sessionMessages[0]
-        let older = wire(card("delayed-arrival", age: 86400)).asMessage(mailboxID: f.ids[0])
-        f.store.pending = [original, older, older]
-        check(f.store.eligiblePending.map(\.id) == ["delayed-arrival"],
+        let arrival = wire(card("new-arrival", age: -60)).asMessage(mailboxID: f.ids[0])
+        f.store.pending = [original, arrival, arrival]
+        check(f.store.eligiblePending.map(\.id) == ["new-arrival"],
               "The bubble counts unique emails absent from the visible session")
         let admitted = f.store.admitPending()
-        check(admitted.map(\.id) == ["delayed-arrival"],
-              "Admission returns the actual announced target, including older mail")
+        check(admitted.map(\.id) == ["new-arrival"],
+              "Admission returns the genuine announced arrival")
         check(Set(f.store.sessionMessages.map(\.feedKey)).count == f.store.sessionMessages.count,
               "Admission cannot duplicate an already visible card")
         check(!f.store.hasPendingInFeed && f.store.pending.isEmpty,
@@ -278,6 +278,44 @@ import Foundation
               "Bubble navigation never creates read evidence")
         check(f.store.admitPending().isEmpty, "Repeated admission cannot invent another target")
         f.stop()
+    }
+
+    static func historicalDiscoveryIsNotANewArrival() async {
+        let f = fixture(), a = f.accounts[0]
+        a.feed = { _, _ in page([card("head"), card("tail", age: 4 * 86400)], total: 4) }
+        await f.store.start()
+        let original = f.store.sessionMessages.map(\.id)
+        f.store.noteFeedInteraction()
+        await a.emit(.messageAdded(wire(card("earlier-backfill", age: 3 * 86400))))
+        await a.emit(.messageAdded(wire(card("today-backfill", age: 60))))
+        check(f.store.eligiblePending.isEmpty, "Historical discoveries, including today's gaps, never announce NEW")
+        check(f.store.hasDeferredHistory && !f.store.feedEndVerified,
+              "Recovered history remains accounted for and cannot claim a complete visible feed")
+        check(f.store.sessionMessages.map(\.id) == original, "Backfill cannot move the reader's current cards")
+        await a.emit(.messageAdded(wire(card("actual-arrival", age: -60))))
+        check(f.store.eligiblePending.map(\.id) == ["actual-arrival"], "Mixed batches count genuine arrivals only")
+        let admitted = f.store.admitPending()
+        check(admitted.map(\.id) == ["actual-arrival"], "Bubble never admits the historical part of a mixed batch")
+        check(f.store.sessionMessages.map(\.id) == ["actual-arrival"] + original,
+              "A real arrival stays at the top even when the reader is in Earlier")
+        check(f.store.hasDeferredHistory, "Admitting an arrival does not lose waiting history")
+        f.store.beginFeedSession()
+        check(f.store.sessionMessages.map(\.id) == ["actual-arrival", "head", "today-backfill", "earlier-backfill", "tail"],
+              "The next session includes every recovered email in chronological order")
+        check(!f.store.hasDeferredHistory && !f.store.hasPendingInFeed, "History is neither hidden nor reannounced after re-entry")
+        f.stop()
+
+        let refresh = fixture(), b = refresh.accounts[0]
+        b.feed = { _, _ in page([card("head"), card("tail", age: 4 * 86400)], total: 3) }
+        await refresh.store.start()
+        let isArrival = refresh.store.arrivalSnapshot()
+        refresh.store.beginFeedSession()
+        b.feed = { _, _ in page([card("head"), card("recovered", age: 3 * 86400), card("tail", age: 4 * 86400)], total: 3) }
+        await refresh.store.refresh()
+        refresh.store.admitPending(includingHistory: true)
+        check(refresh.store.sessionMessages.map(\.id) == ["head", "recovered", "tail"], "Explicit refresh includes out-of-order fetched history immediately")
+        check(!refresh.store.sessionMessages.contains(where: isArrival), "Recovered history cannot trigger refresh arrival art")
+        refresh.stop()
     }
 
     static func explicitRefreshAdmitsFetchedMailAcrossAccounts() async {
@@ -751,6 +789,7 @@ import Foundation
         await multiAccountOrdering()
         await staleResponseAndPendingAdmission()
         await pendingAdmissionReturnsOnlyNewIdentities()
+        await historicalDiscoveryIsNotANewArrival()
         await explicitRefreshAdmitsFetchedMailAcrossAccounts()
         await batchedKnownReadReconciliation()
         await displayProgressDuringRevalidation()

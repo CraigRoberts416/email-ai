@@ -8,6 +8,7 @@ struct FeedSession {
     private(set) var generation = 0
     private(set) var hasInteracted = false
     private var calendar = Calendar.current
+    private var arrivalWatermarks: [String: Date] = [:]
     var timeZone: TimeZone { calendar.timeZone }
 
     static func key(_ message: Message) -> String { message.mailboxID + ":" + message.id }
@@ -17,6 +18,13 @@ struct FeedSession {
         startedAt = date
         self.calendar = calendar
         hasInteracted = false
+        // Clearing read cards must not move the arrival boundary backward:
+        // a recovered gap behind a just-read head is still historical mail.
+        for (account, known) in Dictionary(grouping: cards + messages, by: \.mailboxID) {
+            if let newest = known.map(\.receivedAt).max() {
+                arrivalWatermarks[account] = max(arrivalWatermarks[account] ?? .distantPast, newest)
+            }
+        }
         var known: Set<String> = []
         cards = messages.filter { !$0.isRead && $0.isFeedEligible && known.insert(Self.key($0)).inserted }
             .sorted(by: Self.newer)
@@ -34,10 +42,31 @@ struct FeedSession {
 
     /// Pagination only appends. A duplicate read card stays in the session.
     mutating func append(_ messages: [Message]) {
+        // Each mailbox's initial head is a snapshot, not an arrival event.
+        for (account, batch) in Dictionary(grouping: messages, by: \.mailboxID)
+            where arrivalWatermarks[account] == nil {
+            arrivalWatermarks[account] = batch.map(\.receivedAt).max()
+        }
         var known = Set(cards.map(Self.key))
         cards.append(contentsOf: messages.sorted(by: Self.newer).filter {
             !$0.isRead && known.insert(Self.key($0)).inserted
         })
+    }
+
+    /// "New" is newer than this mailbox's opening snapshot and belongs to
+    /// this visit's Today band. Discovering an older identity is backfill.
+    func isArrival(_ message: Message) -> Bool {
+        section(for: message.receivedAt) == "TODAY"
+            && message.receivedAt > (arrivalWatermarks[message.mailboxID] ?? startedAt)
+    }
+
+    /// Explicit refresh may incorporate recovered history. Merge it by date
+    /// without discarding cards read during the in-flight refresh.
+    mutating func admitHistory(_ messages: [Message]) {
+        var known = Set(cards.map(Self.key))
+        let fresh = messages.filter { !$0.isRead && known.insert(Self.key($0)).inserted }
+        cards.append(contentsOf: fresh)
+        cards.sort(by: Self.newer)
     }
 
     mutating func update(_ key: String, _ change: (inout Message) -> Void) {

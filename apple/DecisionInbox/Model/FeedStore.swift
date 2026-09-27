@@ -83,6 +83,7 @@ final class FeedStore {
     }
     var hasMoreFeed: Bool { !Set(nextCursors.keys).isDisjoint(with: feedingIDs) }
     var feedEndVerified: Bool {
+        guard !hasDeferredHistory else { return false }
         if isSample { return true }
         return !feedingIDs.isEmpty && feedingIDs.isSubset(of: pageLoaded)
             && feedingIDs.isSubset(of: completeCounts) && !hasMoreFeed
@@ -99,13 +100,17 @@ final class FeedStore {
         }
     }
 
-    var eligiblePending: [Message] {
+    private var waitingForFeed: [Message] {
         var known = Set(session.cards.map(\.feedKey))
         return pending.filter {
             feedingIDs.contains($0.mailboxID) && $0.isFeedEligible && !$0.isRead
                 && !hasSeen($0) && !hasRecordedRead($0) && known.insert($0.feedKey).inserted
         }
     }
+
+    var eligiblePending: [Message] { waitingForFeed.filter { session.isArrival($0) } }
+    var hasDeferredHistory: Bool { waitingForFeed.contains { !session.isArrival($0) } }
+    func arrivalSnapshot() -> (Message) -> Bool { let snapshot = session; return snapshot.isArrival }
 
     private func applyKnownReads(_ ids: [String], accountID: String) {
         let keys = Set(ids.map { accountID + ":" + $0 })
@@ -232,7 +237,7 @@ final class FeedStore {
     }
 
     var completionVerified: Bool {
-        guard !recordedReads.values.contains(where: { feedingIDs.contains($0.mailboxID) }), !hasPendingInFeed, !failedSeen.values.contains(where: { feedingIDs.contains($0.mailboxID) }) else { return false }
+        guard !recordedReads.values.contains(where: { feedingIDs.contains($0.mailboxID) }), !hasPendingInFeed, !hasDeferredHistory, !failedSeen.values.contains(where: { feedingIDs.contains($0.mailboxID) }) else { return false }
         return remainingInFeed == 0 && (isSample || feedEndVerified)
     }
 
@@ -604,12 +609,23 @@ final class FeedStore {
         }
         #endif
         self.seenKeys = []
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-sampleHistoryRecovery") {
+            messages = Array(messages.prefix(2))
+            messages[1].receivedAt = Date.now.addingTimeInterval(-5 * 86400)
+        }
+        #endif
         SenderIdentityStore.shared.configure(auth: auth, isSample: true)
         SenderIdentityStore.shared.remember(messages: messages)
         session.restart(with: messages)
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-samplePendingArrival") {
             pending = [sampleArrival(older: ProcessInfo.processInfo.arguments.contains("-sampleOlderArrival"))]
+        }
+        if ProcessInfo.processInfo.arguments.contains("-sampleHistoryRecovery") {
+            var history = sampleArrival(id: "sample-history", older: true)
+            history.sender.name = "History Test"
+            pending.append(history)
         }
         #endif
     }
@@ -1986,11 +2002,12 @@ final class FeedStore {
         receipt = Receipt(id: id, message: message, detail: detail, undo: undo)
     }
 
-    /// Returns exactly the cards admitted by this action, so navigation can
-    /// reach an announced email even when it belongs to an older date section.
-    @discardableResult func admitPending() -> [Message] {
-        let eligible = eligiblePending
-        session.admit(eligible)
+    /// Background arrival admission never sweeps older history into "NEW".
+    /// Explicit refresh may merge the history too, without dropping live reads.
+    @discardableResult func admitPending(includingHistory: Bool = false) -> [Message] {
+        let eligible = includingHistory ? waitingForFeed : eligiblePending
+        if includingHistory { session.admitHistory(eligible) }
+        else { session.admit(eligible) }
         let keys = Set(eligible.map(seenKey))
         messages.removeAll { keys.contains(seenKey($0)) }
         messages.insert(contentsOf: eligible.sorted(by: FeedSession.newer), at: 0)
@@ -2000,19 +2017,22 @@ final class FeedStore {
     }
 
     #if DEBUG
-    private func sampleArrival(older: Bool = false) -> Message {
-        Message(id: "sample-arrival", mailboxID: "mb1",
+    private func sampleArrival(id: String = "sample-arrival", older: Bool = false) -> Message {
+        Message(id: id, mailboxID: "mb1",
                 sender: Sender(name: "Arrival Test", address: "arrival@example.invalid", kind: .person),
                 subject: "Arrival fixture", snippet: "The announced email is here.",
-                receivedAt: older ? Calendar.current.startOfDay(for: .now).addingTimeInterval(-3600) : .now,
+                receivedAt: older ? Date.now.addingTimeInterval(-3 * 86400) : .now,
                 quote: "The announced email is here.", kicker: .fyi, shape: .text,
                 isRead: false, threadCount: 1, isInterpreting: false)
     }
 
-    /// Stages existing unread cards as a deterministic arrival for a navigation
-    /// check. This changes only the current in-memory visit, never Gmail.
+    /// Stages today's existing unread cards with an in-memory arrival time for
+    /// navigation QA. This does not test arrival classification or change Gmail.
     func stageNavigationProbeArrival(limit: Int = 2) -> [String] {
-        let batch = Array(sessionMessages.filter { !$0.isRead && !hasSeen($0) }.prefix(limit))
+        var batch = Array(sessionMessages.filter {
+            !$0.isRead && !hasSeen($0) && session.section(for: $0.receivedAt) == "TODAY"
+        }.prefix(limit))
+        for index in batch.indices { batch[index].receivedAt = .now }
         let keys = Set(batch.map(\.feedKey))
         for key in keys { session.remove(key) }
         messages.removeAll { keys.contains($0.feedKey) }

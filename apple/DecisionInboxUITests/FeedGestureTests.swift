@@ -67,9 +67,13 @@ final class FeedGestureTests: XCTestCase {
     }
 
     @MainActor
-    private func assertBubbleShowsArrival(older: Bool) {
-        let app = launch(["-samplePendingArrival"] + (older ? ["-sampleOlderArrival"] : []))
+    private func assertBubbleShowsArrival(fromEarlier: Bool) {
+        let app = launch(["-samplePendingArrival"] + (fromEarlier ? ["-sampleHistoryRecovery"] : []))
         app.swipeUp()
+        if fromEarlier {
+            for _ in 0..<2 { app.swipeUp() }
+            XCTAssertTrue(app.staticTexts["Older emails synced."].exists, "The reader has reached the older-mail end")
+        }
         let bubble = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "1 new emails, from Arrival Test")).firstMatch
         XCTAssertTrue(bubble.waitForExistence(timeout: 5))
         bubble.tap()
@@ -85,7 +89,7 @@ final class FeedGestureTests: XCTestCase {
         XCTAssertEqual(arrival.value as? String, "Unread", "Bubble navigation must not mark the new email read")
         XCTAssertFalse(bubble.exists)
         let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = older ? "Bubble to older date section" : "Bubble to today arrival"
+        shot.name = fromEarlier ? "Real arrival from Earlier returns to top" : "Bubble to today arrival"
         shot.lifetime = .keepAlways
         add(shot)
         arrival.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
@@ -96,11 +100,23 @@ final class FeedGestureTests: XCTestCase {
         expectation(for: NSPredicate { _, _ in !arrival.exists || arrival.frame.minY < before - 80 }, evaluatedWith: nil)
         waitForExpectations(timeout: 5)
         app.tabBars.buttons["Feed"].tap()
-        if older { XCTAssertTrue(firstCard(in: app).isHittable, "Feed retap still reaches the real top") }
     }
 
-    @MainActor func testBubbleShowsTodayArrival() { assertBubbleShowsArrival(older: false) }
-    @MainActor func testBubbleShowsArrivalInOlderSection() { assertBubbleShowsArrival(older: true) }
+    @MainActor func testBubbleShowsTodayArrival() { assertBubbleShowsArrival(fromEarlier: false) }
+    @MainActor func testRealArrivalFromEarlierReturnsToTop() { assertBubbleShowsArrival(fromEarlier: true) }
+
+    @MainActor func testHistoricalRecoveryNeverCreatesNewBubble() {
+        let app = launch(["-sampleHistoryRecovery"])
+        for _ in 0..<3 { app.swipeUp() }
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "new emails, from")).firstMatch.exists)
+        let include = app.buttons["Refresh to include them"]
+        XCTAssertTrue(include.waitForExistence(timeout: 5), "Recovered history stays available without a false NEW announcement")
+        include.tap()
+        let history = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "History Test, fyi.")).firstMatch
+        XCTAssertTrue(history.waitForExistence(timeout: 5), "Refresh includes the recovered unread email")
+        XCTAssertTrue(app.staticTexts["NO NEW EMAILS"].exists || app.staticTexts["NO NEW EMAILS"].waitForExistence(timeout: 5))
+    }
 
     @MainActor
     private func assertFastRefresh(arrival: Bool) {

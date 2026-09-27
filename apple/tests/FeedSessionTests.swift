@@ -21,6 +21,10 @@ import Foundation
         session.restart(with: [old, b, a, a, mail("read", now, read: true)], at: now, calendar: calendar)
         check(session.cards.map(\.id) == ["a", "b", "old"], "Start sorts unread and deduplicates")
         check(session.groups(included: ["a"]).map(\.0) == ["TODAY", "YESTERDAY", "EARLIER"], "Exactly three date sections")
+        check(!session.isArrival(mail("recovered", yesterday)), "Historical identity discovery is not an arrival")
+        check(!session.isArrival(mail("today-gap", now.addingTimeInterval(-60))), "A gap before today's opening head is not new mail")
+        check(session.isArrival(mail("incoming", now.addingTimeInterval(60))), "Mail newer than the opening head is an arrival")
+        check(session.isArrival(mail("tomorrow", now.addingTimeInterval(86400))), "Midnight does not disable arrivals in the anchored session")
         session.interacted()
         session.update(a.feedKey) { $0.isRead = true }
         check(session.cards.map(\.id) == ["a", "b", "old"], "Read never removes or reorders")
@@ -33,6 +37,8 @@ import Foundation
         check(session.cards.map(\.id) == ["new", "a", "b", "old", "older"], "Explicit bubble admission preserves existing order")
         let previous = session.cards
         session.restart(with: previous, at: now, calendar: calendar)
+        check(!session.isArrival(mail("recovered-behind-read-head", now.addingTimeInterval(15))),
+              "Removing a read head cannot turn a historical gap into a new arrival")
         check(session.cards.map(\.id) == ["new", "b", "old", "older"], "Next session removes read cards only")
         check(!session.hasInteracted, "New visit resets interaction state")
         check(session.section(for: today.addingTimeInterval(-1)) == "YESTERDAY", "Local midnight boundary")
@@ -40,6 +46,9 @@ import Foundation
         check(session.section(for: now.addingTimeInterval(86400)) == "TODAY", "New mail across midnight does not reshuffle active visit")
         session.restart(with: [a, mail("a", now, account: "b")], at: now, calendar: calendar)
         check(session.cards.count == 2, "Message identity is namespaced by account")
+        var independent = FeedSession()
+        independent.restart(with: [a, mail("b-head", now.addingTimeInterval(-3600), account: "b")], at: now, calendar: calendar)
+        check(independent.isArrival(mail("b-new", now.addingTimeInterval(-1800), account: "b")), "Each mailbox compares with its own snapshot")
         check(session.groups(included: ["a"])[0].1.count == 1, "Excluded account does not enter feed section")
         session.remove(a.feedKey)
         check(session.cards.count == 1, "Explicit archive removes just its own account record")
