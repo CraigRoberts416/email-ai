@@ -67,6 +67,8 @@ class Pixels:
 
 
 def character(pose):
+    shake={'nope_left':-1,'nope_right':1}.get(pose,0)
+    if shake:pose='tired'
     p=Pixels()
     # head origin, torso squat, pole endpoints, rear/front elbows and hands.
     poses={
@@ -105,6 +107,12 @@ def character(pose):
     }[pose]
     if pose=='duck':hip_shift,lean,left_step,right_step,heel=3,5,-5,8,0
     def finish():
+        if shake:
+            # Yaw just the helmet around its neck; the lowered stick, hands,
+            # torso and feet stay still, so this reads as "nope," not a sway.
+            head=p.p
+            if shake<0:head={(2*(xx+25)-x,y):c for (x,y),c in head.items()}
+            p.p=body_pixels|head
         # Step into the clear center lane between the falling envelopes.
         offset={'duck':26,'peek':22,'settle':10}.get(pose,0)
         if offset:p.p={(x+offset,y):c for (x,y),c in p.p.items()}
@@ -177,12 +185,16 @@ def character(pose):
     limb((148+hip_shift+lean,98+s),elbow,hand)
     # Turn through front, three-quarter, profile and a fully rear-facing
     # helmet. The eyes disappear while he watches the stick hit the phone.
+    if shake:
+        body_pixels=p.p.copy()
+        p=Pixels()
     xx,yy=(hx-5)*2+hip_shift+lean,(hy+1)*2-2
     lift=pose in ['watch','lift','hit','hard','recoil','proud','startled','peek']
     tilt=-2 if lift else (2 if pose in ['duck','tired'] else 0)
+    if shake:tilt=0
     def poly(points,c):p.poly([(xx+x,yy+y+round(tilt*(x-25)/25)) for x,y in points],c)
     def box(x,y,w,h,c):p.box(xx+x,yy+y+round(tilt*(x-25)/25),w,h,c)
-    front=pose in ['watch','proud','tired','settle']
+    front=pose in ['watch','proud','tired','settle'] and not shake
     profile=pose in ['windup','recoil']
     away=pose in ['lift','hit','hard']
     if front:
@@ -303,7 +315,7 @@ def author(root,el,board):
     for aa,bb in [((104,2),(101,4)),((114,2),(117,4)),((109,3),(109,5))]:sparkle.line(aa,bb,SKY)
     hit=pixels(a,'Contact sparks',sparkle.doubled())
     hit.set('opacity','0')
-    hero,poses=swap(a,'Little robot poses',{name:character(name) for name in ['watch','brace','windup','lift','hit','recoil','hard','duck','proud','tired','startled','peek','settle']})
+    hero,poses=swap(a,'Little robot poses',{name:character(name) for name in ['watch','brace','windup','lift','hit','recoil','hard','duck','proud','tired','startled','peek','settle','nope_left','nope_right']})
     floor=Pixels();floor.box(54,65,31,1,STONE);floor.box(48,65,3,1,CHALK);floor.box(89,65,7,1,CHALK)
     floor=floor.doubled()
     pixels(a,'Footing',floor)
@@ -338,7 +350,7 @@ def author(root,el,board):
     work=timeline('Knock, recoil, knock harder',36,True,pose_keys=[(0,'brace'),(1,'windup'),(2,'lift'),(3,'hit'),(5,'recoil'),(8,'brace'),(10,'windup'),(11,'lift'),(12,'hard'),(14,'recoil'),(16,'brace'),(18,'watch'),(36,'brace')],impact_keys=[(0,0),(3,1),(5,0),(12,1),(14,0)])
     done=timeline('Mail breaks loose',14,pose_keys=[(0,'hard'),(2,'recoil'),(3,'startled'),(5,'duck'),(8,'peek'),(10,'settle'),(13,'proud')],impact_keys=[(0,1),(2,0)],mail=True)
     attention=timeline('Rest the stick',pose='tired')
-    empty=timeline('Nothing to dislodge',10,pose_keys=[(0,'brace'),(3,'watch'),(6,'tired')])
+    empty=timeline('Nothing to dislodge',14,pose_keys=[(0,'brace'),(2,'tired'),(4,'nope_left'),(6,'nope_right'),(8,'nope_left'),(10,'nope_right'),(12,'tired')])
     still=timeline('Working held',pose='watch')
     m=el(a,'StateMachine',name='Motion');a.set('defaultStateMachineId',m.attrib['id'])
     layer=el(m,'StateMachineLayer',name='Pixel performance')
