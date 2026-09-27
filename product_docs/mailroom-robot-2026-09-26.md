@@ -10,6 +10,8 @@ The 144 × 98 scene uses vector rectangles and Rive Solo, with 12 fps held keys.
 
 The first contact is at 250 ms. A loop takes three seconds, with a pause after the double knock. The September 27 repair gives the checking presentation 1.6 seconds from renderer readiness, covering both knocks and recoil even when the network responds immediately. The arrival ending takes about 1.17 seconds; its native caption stays for 1.8 seconds and the mailroom player pauses after 1.3 seconds. All envelopes leave the drawing by 1.08 seconds. Fetched mail becomes usable immediately; only the nonblocking status presentation waits. Reduce Motion retains a shorter checking hold with static artwork.
 
+A later September 27 native video review exposed a second issue: Metal can temporarily have no drawable while the pull overlay becomes an inset. Treating Rive's `noDrawable` callback as fatal replaced the whole sequence with static poses. The host now leaves that player alive for the next display tick; actual asset/device/renderer failures retain the native static fallback. A pixel-based native regression test reproduced the freeze with the old policy. The illustration still owns no controls or gestures.
+
 ## State contract
 
 | Phase | Meaning | Art |

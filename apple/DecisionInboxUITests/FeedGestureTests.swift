@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 
 /// Uses synthetic mail and native touch delivery. scrollTo alone cannot catch
 /// a row recognizer stealing the scroll view's pan.
@@ -126,6 +127,28 @@ final class FeedGestureTests: XCTestCase {
 
     @MainActor func testFastRefreshShowsNoArrivalSequence() { assertFastRefresh(arrival: false) }
     @MainActor func testFastRefreshShowsArrivalSequence() { assertFastRefresh(arrival: true) }
+
+    @MainActor
+    func testRefreshKeepsAnimatingAfterTemporaryDrawableMiss() {
+        let app = launch(["-sampleRefresh", "-sampleDrawableMiss"])
+        XCTAssertTrue(app.staticTexts["CHECKING YOUR MAILBOX…"].waitForExistence(timeout: 3))
+        Thread.sleep(forTimeInterval: 0.25)
+        // Compare only the robot area, excluding the clock, caption and feed.
+        // Native status text alone cannot prove the GPU player is advancing.
+        var frames = Set<Data>()
+        for _ in 0..<12 {
+            let shot = app.screenshot()
+            if let image = shot.image.cgImage {
+                let rect = CGRect(x: Double(image.width) * 0.25, y: Double(image.height) * 0.055,
+                                  width: Double(image.width) * 0.5, height: Double(image.height) * 0.095)
+                if let crop = image.cropping(to: rect), let data = UIImage(cgImage: crop).pngData() {
+                    frames.insert(data)
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        XCTAssertGreaterThan(frames.count, 1, "A missed drawable must not turn the checking animation into a still image")
+    }
 
     @MainActor
     private func scrollPastFirstCard(in app: XCUIApplication) {

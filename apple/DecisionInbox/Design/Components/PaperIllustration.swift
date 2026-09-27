@@ -1,5 +1,8 @@
 import SwiftUI
 import RiveRuntime
+import OSLog
+
+private let paperLog = Logger(subsystem: "com.craigroberts.decisioninbox", category: "paper-motion")
 
 /// Illustrations never own a product outcome, a gesture recognizer, or text.
 /// Every status/action stays native. Each visible host gets its own state
@@ -106,8 +109,14 @@ struct PaperIllustration: View {
                 paused = false
                 rive = loaded
                 loadedGeneration += 1
+                #if DEBUG
+                if art == .mailroom && ProcessInfo.processInfo.arguments.contains("-sampleDrawableMiss") {
+                    renderer.receive(.noDrawable)
+                }
+                #endif
             } catch is CancellationError {} catch {
                 renderFailed = true
+                paperLog.error("asset fallback \(String(describing: error), privacy: .public)")
                 #if DEBUG
                 print("[paper-motion] asset fallback: \(error)")
                 #endif
@@ -140,7 +149,16 @@ private struct PaperInversion: ViewModifier {
 private final class PaperRenderStatus: RiveUIViewDelegate {
     var failed = false
     nonisolated func view(_ view: RiveUIView, didReceiveError error: RiveUIViewError) {
-        Task { @MainActor [weak self] in self?.failed = true }
+        Task { @MainActor [weak self] in self?.receive(error) }
+    }
+
+    func receive(_ error: RiveUIViewError) {
+        // Metal can miss a drawable while the pull overlay becomes an inset,
+        // or while its window is changing. Rive retries on its next display
+        // tick; destroying that player here would freeze the entire refresh.
+        if case .noDrawable = error { return }
+        paperLog.error("renderer fallback \(String(describing: error), privacy: .public)")
+        failed = true
     }
 }
 

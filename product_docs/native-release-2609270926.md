@@ -25,4 +25,6 @@ Updated `Email App.md` §11.12, the mailroom state/timing contract, and the exis
 
 Archive: `~/Library/Developer/Xcode/Archives/2026-09-27/DecisionInbox 2026-09-27 09.26.xcarchive`. Release build/signature checks passed: bundle `com.craigroberts.decisioninbox`, version 1.0, build 2609270926. DEBUG sample/probe flags are absent from the executable. The existing Rive asset is unchanged, SHA-256 `144d63f650f48438b469872c2efe82eaf406d1e4f58846fdab98543d563c1e4f`.
 
-Upload and tester availability are still pending at this checkpoint; an archive alone is not a deployed TestFlight build.
+Xcode Organizer confirmed upload of **1.0 (2609270926)** on September 27. Tester availability is unverified because App Store Connect requires the user's sign-in.
+
+Final retained-video review found a remaining intermittent renderer failure, despite passing native status/behavior assertions. A repeated cold-launch run reproduced Rive `noDrawable` at 09:39:13, followed by static checking/arrival poses for the entire refresh. The wrapper treated that transient Metal frame-acquisition failure as fatal. This upload is superseded by [build 2609270943](native-release-2609270943.md), uploaded at 09:46 EDT with the drawable-recovery correction and verified motion recordings.
