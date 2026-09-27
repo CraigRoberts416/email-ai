@@ -106,13 +106,18 @@ def character(pose):
         'settle':(1,0,-1,3,0),
     }[pose]
     if pose=='duck':hip_shift,lean,left_step,right_step,heel=3,5,-5,8,0
+    # Orientation is shared by the helmet, shoulder line, rib cage, pelvis and
+    # boots. Translation/lean alone cannot make a character turn around.
+    facing={
+        'watch':'front', 'brace':'quarter', 'windup':'side',
+        'lift':'back', 'hit':'back', 'hard':'back', 'recoil':'side',
+        'duck':'quarter', 'startled':'quarter', 'peek':'quarter',
+        'proud':'front', 'tired':'front', 'settle':'front',
+    }[pose]
+    if shake:
+        hip_shift+=shake
+        lean+=shake
     def finish():
-        if shake:
-            # Yaw just the helmet around its neck; the lowered stick, hands,
-            # torso and feet stay still, so this reads as "nope," not a sway.
-            head=p.p
-            if shake<0:head={(2*(xx+25)-x,y):c for (x,y),c in head.items()}
-            p.p=body_pixels|head
         # Step into the clear center lane between the falling envelopes.
         offset={'duck':26,'peek':22,'settle':10}.get(pose,0)
         if offset:p.p={(x+offset,y):c for (x,y),c in p.p.items()}
@@ -131,42 +136,110 @@ def character(pose):
         p.box(c[0]-3,c[1]-2,6,2,MIST)
         p.box(c[0],c[1],3,1,STEEL)
         p.box(c[0]-3,c[1],2,2,TEAL)
-    # Feet widen for the wind-up, knees bend under the hips, then the back
-    # foot rolls onto its toe as the torso reaches up. Soles settle on recoil.
-    left_x,right_x=116+left_step,146+right_step
-    for hip,knee,ankle in [
-        ((128+hip_shift,110+s),(124+hip_shift//2-s//2,118+max(s,0)//2-heel//2),(left_x+5,124-heel)),
-        ((144+hip_shift,110+s),(148+hip_shift//2+s//2,118+max(s,0)//2),(right_x+5,124)),
-    ]:
+    # A foot actually pivots: outward-facing toe caps at rest, narrow side
+    # boots through the turn, and heel plates/toes receding on the rear pose.
+    # The far leg/arm are painted first, then the rib cage, then the near arm.
+    foot_layout={
+        'front':[(116+left_step,0,128,'left'),(146+right_step,0,144,'right')],
+        'quarter':[(120+left_step,3,129,'diagonal'),(144+right_step,0,144,'diagonal')],
+        'side':[(129+left_step,5,134,'right'),(143+right_step,0,140,'right')],
+        'back':[(116+left_step,2,126,'heel'),(145+right_step,0,145,'heel')],
+    }[facing]
+    for index,(x,depth,hip_x,direction) in enumerate(foot_layout):
+        rise=heel if index==0 else 0
+        ankle=(x+7,124-depth-rise)
+        knee=(round((hip_x+hip_shift+ankle[0])/2),117-depth+max(s,0)//2-rise//2)
+        hip=(hip_x+hip_shift,111+s)
         p.line(hip,knee,INK,11);p.line(knee,ankle,INK,9)
         p.line(hip,knee,STEEL,7);p.line(knee,ankle,BLUE,6)
         p.line((hip[0]-2,hip[1]),(knee[0]-2,knee[1]),TEAL,2)
-        p.box(knee[0]-3,knee[1]-2,6,4,DARKWOOD)
-        p.box(knee[0]-2,knee[1]-2,5,2,BRASS)
-        p.box(ankle[0]-3,ankle[1]-2,6,2,MIST)
-    for x,raise_heel in [(left_x,heel),(right_x,0)]:
-        p.poly([(x,125-raise_heel),(x+3,122-raise_heel),(x+9,123-raise_heel),(x+16,126),(x+17,130),(x+11,130),(x,129-raise_heel)],INK)
-        p.poly([(x+2,125-raise_heel),(x+5,124-raise_heel),(x+13,126),(x+14,128),(x+10,128),(x+2,127-raise_heel)],BLUE)
-        p.line((x+4,123-raise_heel),(x+10,124-raise_heel//2),MIST,2)
-        p.line((x+2,127-raise_heel),(x+13,128),STEEL)
-    limb((124+hip_shift+lean,96+s),back_elbow,back_hand)
-    # Reference robot: compact armored torso, upper recess and pale waist belt.
+        if facing=='back':
+            # Rear knee hinges are dark; no forward-facing gold knee pads.
+            p.box(knee[0]-3,knee[1]-2,6,4,DEEP)
+            p.box(knee[0]-2,knee[1]-1,4,1,BLUE)
+        else:
+            p.box(knee[0]-3,knee[1]-2,6,4,DARKWOOD)
+            p.box(knee[0]-2,knee[1]-2,5,2,BRASS)
+        boot=Pixels()
+        if direction=='heel':
+            boot.poly([(3,0),(10,0),(14,5),(14,12),(0,12),(0,6)],INK)
+            boot.poly([(4,2),(9,2),(11,5),(11,8),(2,8),(2,5)],BLUE)
+            boot.box(3,2,6,2,TEAL)
+            boot.box(2,7,10,3,STEEL);boot.box(4,8,6,2,DEEP)
+            boot.box(2,10,10,1,MIST)
+        elif direction=='diagonal':
+            boot.poly([(7,0),(13,1),(17,5),(15,10),(3,12),(0,9),(2,5)],INK)
+            boot.poly([(7,2),(12,3),(14,5),(12,8),(3,10),(2,8),(4,5)],BLUE)
+            boot.line((7,2),(12,3),MIST,2)
+            boot.line((3,9),(13,7),STEEL,2)
+        else:
+            boot.poly([(0,5-rise),(3,2-rise),(9,3-rise),(16,6),(17,10),(11,10),(0,9-rise)],INK)
+            boot.poly([(2,5-rise),(5,4-rise),(13,6),(14,8),(10,8),(2,7-rise)],BLUE)
+            boot.line((4,3-rise),(10,4-rise//2),MIST,2)
+            boot.line((2,7-rise),(13,8),STEEL)
+            if direction=='left':boot.p={(16-bx,by):c for (bx,by),c in boot.p.items()}
+        boot_y=118 if direction in ['heel','diagonal'] else 120
+        for (bx,by),c in boot.p.items():
+            p.p[x+bx,boot_y-depth+by-(rise if direction in ['heel','diagonal'] else 0)]=c
+    shoulder_far,shoulder_near={
+        'front':((124,96),(148,98)),
+        'quarter':((125,96),(149,100)),
+        'side':((137,95),(141,101)),
+        'back':((122,98),(151,97)),
+    }[facing]
+    def shoulder(point):return (point[0]+hip_shift+lean,point[1]+s)
+    limb(shoulder(shoulder_far),back_elbow,back_hand)
     torso=Pixels()
-    torso.poly([(125,92+s),(146,92+s),(152,99+s),(152,112+s),(147,116+s),(124,116+s),(120,110+s),(120,100+s)],INK)
-    torso.box(125,94+s,20,3,TEAL);torso.box(122,99+s,27,12,STEEL)
-    torso.box(124,98+s,22,9,BLUE);torso.box(124,98+s,4,9,TEAL)
-    torso.box(145,98+s,4,13,DEEP)
-    if pose in ['lift','hit','hard']:
-        torso.box(129,97+s,13,8,STEEL);torso.box(130,97+s,11,2,TEAL)
-        torso.box(135,100+s,2,5,DEEP)
-        for x in [125,143]:torso.box(x,101+s,2,2,BRASS)
+    if facing=='front':
+        # The supplied robot's chest recess and pale belt face the reader.
+        torso.poly([(125,92),(146,92),(152,99),(152,112),(147,116),(124,116),(120,110),(120,100)],INK)
+        torso.box(125,94,20,3,TEAL);torso.box(122,99,27,12,STEEL)
+        torso.box(124,98,22,9,BLUE);torso.box(124,98,4,9,TEAL)
+        torso.box(145,98,4,13,DEEP)
+        torso.box(131,96,12,9,MIST);torso.box(134,98,6,6,GLASS)
+        torso.box(135,98,4,1,REFLECT);torso.box(125,99,3,3,BRASS)
+        torso.box(124,106,23,6,MIST);torso.box(124,106,22,2,CREAM)
+        torso.box(129,109,14,2,DEEP);torso.box(125,113,22,1,BLUE)
+    elif facing=='quarter':
+        # The left side is broad; the chest and buckle recede around the right.
+        torso.poly([(125,92),(140,91),(150,96),(153,107),(149,115),(131,118),(121,111),(120,100)],INK)
+        torso.poly([(125,95),(138,94),(139,111),(132,115),(123,109),(123,100)],STEEL)
+        torso.poly([(125,95),(129,94),(130,109),(126,110),(123,107),(123,100)],TEAL)
+        torso.poly([(139,94),(148,98),(150,107),(147,111),(140,113)],BLUE)
+        torso.poly([(142,97),(147,99),(148,105),(142,104)],MIST)
+        torso.box(144,99,3,4,GLASS)
+        torso.poly([(138,108),(150,105),(148,111),(138,114)],MIST)
+        torso.line((139,108),(148,106),CREAM,2)
+        torso.line((142,111),(147,109),DEEP,2)
+        torso.line((124,111),(136,115),BLUE,3)
+        torso.box(126,101,4,5,DEEP);torso.box(127,101,2,1,BRASS)
+    elif facing=='side':
+        # Narrow rib cage, overlapping hips and a single visible shoulder.
+        # Only a sliver of pale chest armor remains at the far right edge.
+        torso.poly([(132,91),(140,91),(147,98),(149,109),(143,117),(131,115),(127,107),(128,97)],INK)
+        torso.poly([(132,94),(139,94),(143,100),(144,111),(139,114),(132,112),(130,105),(130,98)],STEEL)
+        torso.line((132,95),(131,105),TEAL,3)
+        torso.poly([(141,96),(145,99),(147,107),(143,112)],BLUE)
+        torso.line((144,105),(146,108),MIST,2)
+        torso.box(132,101,7,7,DEEP);torso.box(133,102,4,1,TEAL)
+        torso.box(133,105,4,1,BLUE)
+        torso.line((131,111),(140,114),BLUE,3)
     else:
-        torso.box(131,96+s,12,9,MIST);torso.box(134,98+s,6,6,GLASS)
-        torso.box(135,98+s,4,1,REFLECT);torso.box(125,99+s,3,3,BRASS)
-    torso.box(124,106+s,23,6,MIST);torso.box(124,106+s,22,2,CREAM)
-    torso.box(129,109+s,14,2,DEEP);torso.box(125,113+s,22,1,BLUE)
+        # A full rear shell: shoulder blades, central spine, vents and rear
+        # hip plates replace the face-on chest badge/buckle completely.
+        torso.poly([(124,92),(147,92),(154,99),(153,111),(147,118),(124,118),(118,110),(119,99)],INK)
+        torso.poly([(125,94),(146,94),(150,99),(148,111),(142,114),(127,112),(122,106),(122,100)],STEEL)
+        torso.poly([(125,94),(132,94),(130,108),(124,110),(122,105),(122,100)],TEAL)
+        torso.poly([(139,95),(147,96),(150,100),(148,110),(140,113)],BLUE)
+        torso.box(133,96,5,14,DEEP);torso.box(134,96,2,12,BLUE)
+        for y in [101,104,107]:
+            torso.box(124,y,6,1,DEEP);torso.box(141,y,6,1,DEEP)
+        torso.box(125,95,3,2,MIST);torso.box(144,95,3,2,TEAL)
+        torso.line((124,113),(132,115),BLUE,3)
+        torso.line((139,115),(147,113),BLUE,3)
+        torso.box(133,113,5,4,DEEP)
     for (x,y),c in torso.p.items():
-        p.p[x+hip_shift+round(lean*(116+s-y)/24),y]=c
+        p.p[x+hip_shift+round(lean*(116-y)/24),y+s]=c
     # A lightly crooked wooden branch, with taper, bark knots, a cut end and
     # one trimmed twig. Its asymmetric silhouette stays readable at app size.
     dx,dy=tip[0]-base[0],tip[1]-base[1]
@@ -182,21 +255,18 @@ def character(pose):
     for t in [.15,.44,.83]:
         x,y=along(t);p.box(x-1,y,2,3,DARKWOOD);p.box(x-1,y,1,1,BARK)
     p.box(tip[0]-2,tip[1],4,2,CUTWOOD)
-    limb((148+hip_shift+lean,98+s),elbow,hand)
+    limb(shoulder(shoulder_near),elbow,hand)
     # Turn through front, three-quarter, profile and a fully rear-facing
     # helmet. The eyes disappear while he watches the stick hit the phone.
-    if shake:
-        body_pixels=p.p.copy()
-        p=Pixels()
     xx,yy=(hx-5)*2+hip_shift+lean,(hy+1)*2-2
     lift=pose in ['watch','lift','hit','hard','recoil','proud','startled','peek']
     tilt=-2 if lift else (2 if pose in ['duck','tired'] else 0)
     if shake:tilt=0
     def poly(points,c):p.poly([(xx+x,yy+y+round(tilt*(x-25)/25)) for x,y in points],c)
     def box(x,y,w,h,c):p.box(xx+x,yy+y+round(tilt*(x-25)/25),w,h,c)
-    front=pose in ['watch','proud','tired','settle'] and not shake
-    profile=pose in ['windup','recoil']
-    away=pose in ['lift','hit','hard']
+    front=facing=='front'
+    profile=facing=='side'
+    away=facing=='back'
     if front:
         tilt=0
         box(19,32,14,7,INK);box(21,34,10,3,STEEL)
@@ -207,13 +277,17 @@ def character(pose):
         poly([(9,11),(14,6),(21,3),(30,3),(36,6),(21,6),(14,11),(10,19),(10,25),(8,24),(6,19)],TEAL)
         poly([(11,10),(16,6),(22,4),(30,4),(32,6),(22,7),(16,10),(12,15),(10,22),(8,22),(8,17)],MIST)
         box(21,4,9,1,GLEAM)
-        poly([(13,13),(18,9),(33,9),(39,13),(41,20),(39,28),(33,32),(18,32),(12,28),(10,20)],MIST)
-        poly([(14,14),(19,11),(32,11),(37,14),(39,20),(37,27),(32,30),(19,30),(14,27),(12,20)],INK)
-        poly([(15,14),(20,12),(31,12),(35,14),(23,15),(14,21),(13,20)],GLASS)
-        poly([(16,27),(25,28),(36,24),(35,27),(30,29),(20,29)],GLASS)
+        # The quiet head shake is a small yaw: visor shifts inside the
+        # rounded shell, with a two-pixel shoulder/hip counterturn below it.
+        def face_poly(points,c):poly([(x+shake*2,y) for x,y in points],c)
+        def face_box(x,y,w,h,c):box(x+shake*2,y,w,h,c)
+        face_poly([(13,13),(18,9),(33,9),(39,13),(41,20),(39,28),(33,32),(18,32),(12,28),(10,20)],MIST)
+        face_poly([(14,14),(19,11),(32,11),(37,14),(39,20),(37,27),(32,30),(19,30),(14,27),(12,20)],INK)
+        face_poly([(15,14),(20,12),(31,12),(35,14),(23,15),(14,21),(13,20)],GLASS)
+        face_poly([(16,27),(25,28),(36,24),(35,27),(30,29),(20,29)],GLASS)
         height=3 if pose=='tired' else 6
         for x in [19,31]:
-            box(x,18,5,height,CREAM);box(x+1,18,4,1,GLEAM)
+            face_box(x,18,5,height,CREAM);face_box(x+1,18,4,1,GLEAM)
         return finish()
     # Neck connection and the larger rear ear establish the turned silhouette.
     box(22,32,14,7,INK);box(24,34,10,3,STEEL);box(24,34,2,3,BRASS)

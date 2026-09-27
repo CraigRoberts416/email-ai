@@ -19,6 +19,6 @@
     "mailroom_endings_distinct": true,
     "mailroom_letters_require_arrivals": true
   },
-  "bytes": 779221,
-  "benchmark": "[16:25:40.087] rive  deferred replay: inline\n[16:25:43.218] rive  built /Users/craigroberts/email-ai/design/motion/margin-studio/build/margin-studio.riv (779221 bytes, 3130ms, 0 errors, 0 warnings)\n[16:25:43.229] rive  data: phase = 1\n[16:25:43.229] rive  showing Reading [2/4]\n[16:25:43.229] rive  viewport 280x160 @1x\n[16:25:43.351] rive  bench advance: mean 0.002ms p50 0.002ms p95 0.005ms max 0.040ms\n[16:25:43.351] rive  bench render: mean 0.198ms p50 0.148ms p95 0.661ms max 1.691ms\n[16:25:43.351] rive  bench memory: 0 -> 0 wasm pages (+0) over 240 frames\n"
+  "bytes": 762312,
+  "benchmark": "[16:58:48.958] rive  deferred replay: inline\n[16:58:52.033] rive  built /Users/craigroberts/email-ai/design/motion/margin-studio/build/margin-studio.riv (762312 bytes, 3074ms, 0 errors, 0 warnings)\n[16:58:52.044] rive  data: phase = 1\n[16:58:52.044] rive  showing Reading [2/4]\n[16:58:52.044] rive  viewport 280x160 @1x\n[16:58:52.179] rive  bench advance: mean 0.003ms p50 0.002ms p95 0.005ms max 0.021ms\n[16:58:52.179] rive  bench render: mean 0.216ms p50 0.139ms p95 0.459ms max 2.943ms\n[16:58:52.179] rive  bench memory: 0 -> 0 wasm pages (+0) over 240 frames\n"
 }
