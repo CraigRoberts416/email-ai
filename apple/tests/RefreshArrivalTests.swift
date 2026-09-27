@@ -12,6 +12,9 @@ enum RefreshArrivalTests {
         let queued = RefreshArrivalSnapshot(known: ["a:1", "a:2"], waiting: ["a:2"])
         precondition(queued.hasArrivals(available: ["a:1", "a:2"]), "Admitted waiting mail is new to this feed visit")
         precondition(!queued.hasArrivals(available: ["a:1"]), "Removed or deselected waiting mail is not an arrival")
-        print("PASS: 7 refresh arrival identity checks")
+        precondition(baseline.count(available: ["a:1", "a:3", "b:3"]) == 2, "Result copy counts new mailbox-qualified identities")
+        precondition(queued.count(available: ["a:1", "a:2", "a:3"]) == 2, "Result includes waiting and newly fetched mail")
+        precondition(queued.count(available: ["a:1"]) == 0, "Removed waiting mail cannot inflate result copy")
+        print("PASS: 10 refresh arrival identity checks")
     }
 }

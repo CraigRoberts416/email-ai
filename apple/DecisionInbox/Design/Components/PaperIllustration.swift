@@ -38,6 +38,7 @@ struct PaperIllustration: View {
     var pull: Double = 0
     var motion = true
     var inverted = false
+    var onReady: ((Bool) -> Void)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.illustrationMotionEnabled) private var enabled
@@ -56,6 +57,9 @@ struct PaperIllustration: View {
     }
     private var input: PaperInput { .init(phase: phase, pull: pull, generation: loadedGeneration) }
     private var loops: Bool { phase == 1 && art != .closing }
+    private var presentationReady: Bool {
+        reduceMotion || renderFailed || renderer.failed || (shouldRender && rive != nil)
+    }
 
     var body: some View {
         Group {
@@ -73,6 +77,7 @@ struct PaperIllustration: View {
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        .onChange(of: presentationReady, initial: true) { _, ready in onReady?(ready) }
         .onAppear { desiredPhase = phase; desiredPull = pull; visible = true }
         .onDisappear { visible = false; rive = nil }
         .onGeometryChange(for: Bool.self) { proxy in
@@ -115,7 +120,7 @@ struct PaperIllustration: View {
             rive.viewModelInstance?.setValue(of: NumberProperty(path: "phase"), to: Float(phase))
             rive.viewModelInstance?.setValue(of: NumberProperty(path: "pull"), to: Float(min(100, max(0, pull))))
             guard !loops else { return }
-            do { try await Task.sleep(for: .milliseconds(1100)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(art == .mailroom ? 1300 : 1100)) } catch { return }
             paused = true
         }
     }

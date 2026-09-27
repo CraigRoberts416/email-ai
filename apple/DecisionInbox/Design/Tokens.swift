@@ -607,8 +607,11 @@ enum Move {
         static let armAt: CGFloat = 72
         /// The strip holds open this long while refreshing.
         static let holdOpen: CGFloat = 56
-        /// The freshness stamp is held this long before the strip collapses.
-        static let stampHold: Double = 1.2
+        /// Enough of the authored loop for both knocks and their recoil.
+        /// Only presentation waits; fetched mail is already usable.
+        static let checkingHold: Double = 1.6
+        /// The 1.17s arrival ending finishes before its caption collapses.
+        static let stampHold: Double = 1.8
         /// A failure is held longer, because the user may need to act on it.
         static let failureHold: Double = 3
     }

@@ -66,6 +66,68 @@ final class FeedGestureTests: XCTestCase {
     }
 
     @MainActor
+    private func assertBubbleShowsArrival(older: Bool) {
+        let app = launch(["-samplePendingArrival"] + (older ? ["-sampleOlderArrival"] : []))
+        app.swipeUp()
+        let bubble = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "1 new emails, from Arrival Test")).firstMatch
+        XCTAssertTrue(bubble.waitForExistence(timeout: 5))
+        bubble.tap()
+        let arrival = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Arrival Test, fyi.")).firstMatch
+        // A combined SwiftUI accessibility element can report non-hittable
+        // despite a visible, tappable body. Verify its viewport and then tap it.
+        expectation(for: NSPredicate { _, _ in
+            arrival.exists && arrival.frame.midY > app.frame.minY + 100
+                && arrival.frame.midY < app.frame.maxY - 100
+        }, evaluatedWith: nil)
+        waitForExpectations(timeout: 5)
+        XCTAssertEqual(arrival.value as? String, "Unread", "Bubble navigation must not mark the new email read")
+        XCTAssertFalse(bubble.exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = older ? "Bubble to older date section" : "Bubble to today arrival"
+        shot.lifetime = .keepAlways
+        add(shot)
+        arrival.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["Back"].waitForExistence(timeout: 5), "The announced card must actually open")
+        app.buttons["Back"].tap()
+        let before = arrival.frame.minY
+        app.swipeUp()
+        expectation(for: NSPredicate { _, _ in !arrival.exists || arrival.frame.minY < before - 80 }, evaluatedWith: nil)
+        waitForExpectations(timeout: 5)
+        app.tabBars.buttons["Feed"].tap()
+        if older { XCTAssertTrue(firstCard(in: app).isHittable, "Feed retap still reaches the real top") }
+    }
+
+    @MainActor func testBubbleShowsTodayArrival() { assertBubbleShowsArrival(older: false) }
+    @MainActor func testBubbleShowsArrivalInOlderSection() { assertBubbleShowsArrival(older: true) }
+
+    @MainActor
+    private func assertFastRefresh(arrival: Bool) {
+        let app = launch(arrival ? ["-sampleRefreshArrival"] : [])
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.35))
+            .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.85)))
+        let checking = app.staticTexts["CHECKING YOUR MAILBOX…"]
+        XCTAssertTrue(checking.exists || checking.waitForExistence(timeout: 3), "Fast responses still show the checking sequence")
+        let result = app.staticTexts[arrival ? "1 NEW EMAIL" : "NO NEW EMAILS"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5), "The result distinguishes arrivals from no arrivals")
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = arrival ? "Refresh arrival outcome" : "Refresh no-arrival outcome"
+        shot.lifetime = .keepAlways
+        add(shot)
+        expectation(for: NSPredicate { _, _ in !result.exists }, evaluatedWith: nil)
+        waitForExpectations(timeout: 5)
+        if arrival {
+            let post = app.descendants(matching: .any)
+                .matching(NSPredicate(format: "label BEGINSWITH %@", "Arrival Test, fyi.")).firstMatch
+            XCTAssertTrue(post.exists && app.frame.contains(CGPoint(x: post.frame.midX, y: post.frame.midY)),
+                "Refresh reveals the email it found without another bubble tap")
+        }
+    }
+
+    @MainActor func testFastRefreshShowsNoArrivalSequence() { assertFastRefresh(arrival: false) }
+    @MainActor func testFastRefreshShowsArrivalSequence() { assertFastRefresh(arrival: true) }
+
+    @MainActor
     private func scrollPastFirstCard(in app: XCUIApplication) {
         func todayRemaining() -> Int? {
             let label = app.descendants(matching: .any)

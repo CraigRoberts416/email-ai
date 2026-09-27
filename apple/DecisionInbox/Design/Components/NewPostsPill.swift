@@ -72,7 +72,7 @@ struct NewPostsPill: View {
         .buttonStyle(TapStyle())
         .accessibilityLabel(accessibilityLabel)
         // The action now moves the viewport, and the old label did not say so.
-        .accessibilityHint("Scrolls to the top and shows them")
+        .accessibilityHint("Moves to the new emails and shows them")
         .accessibilityAddTraits(.isButton)
     }
 

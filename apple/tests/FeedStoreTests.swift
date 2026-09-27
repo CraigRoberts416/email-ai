@@ -258,6 +258,45 @@ import Foundation
         f.stop()
     }
 
+    static func pendingAdmissionReturnsOnlyNewIdentities() async {
+        let f = fixture(), a = f.accounts[0]
+        a.feed = { _, _ in page([card("visible")], total: 1) }
+        await f.store.start()
+        let original = f.store.sessionMessages[0]
+        let older = wire(card("delayed-arrival", age: 86400)).asMessage(mailboxID: f.ids[0])
+        f.store.pending = [original, older, older]
+        check(f.store.eligiblePending.map(\.id) == ["delayed-arrival"],
+              "The bubble counts unique emails absent from the visible session")
+        let admitted = f.store.admitPending()
+        check(admitted.map(\.id) == ["delayed-arrival"],
+              "Admission returns the actual announced target, including older mail")
+        check(Set(f.store.sessionMessages.map(\.feedKey)).count == f.store.sessionMessages.count,
+              "Admission cannot duplicate an already visible card")
+        check(!f.store.hasPendingInFeed && f.store.pending.isEmpty,
+              "A stale pending copy cannot recreate the bubble after admission")
+        check(f.store.sessionMessages.allSatisfy { !$0.isRead },
+              "Bubble navigation never creates read evidence")
+        check(f.store.admitPending().isEmpty, "Repeated admission cannot invent another target")
+        f.stop()
+    }
+
+    static func explicitRefreshAdmitsFetchedMailAcrossAccounts() async {
+        let f = fixture(2)
+        f.accounts[0].feed = { _, _ in page([card("old-a", age: 120)], total: 1) }
+        f.accounts[1].feed = { _, _ in page([card("old-b", age: 180)], total: 1) }
+        await f.store.start()
+        f.accounts[0].feed = { _, _ in page([card("new-a", age: 0), card("old-a", age: 120)], total: 2) }
+        f.accounts[1].feed = { _, _ in page([card("new-b", age: 60), card("old-b", age: 180)], total: 2) }
+        f.store.beginFeedSession()
+        await f.store.refresh()
+        let admitted = f.store.admitPending()
+        check(admitted.map(\.id) == ["new-a", "new-b"], "Explicit refresh admits each account's newly fetched head")
+        check(f.store.sessionMessages.map(\.id) == ["new-a", "new-b", "old-a", "old-b"],
+              "Refreshed arrivals appear above the retained unread cards in time order")
+        check(!f.store.hasPendingInFeed, "Refresh cannot leave its fetched arrivals behind another bubble")
+        f.stop()
+    }
+
     static func batchedKnownReadReconciliation() async {
         let cached = (0..<450).map { card("cached-\($0)", age: Double($0)) }
         let f = fixture(cached: cached), a = f.accounts[0]
@@ -711,6 +750,8 @@ import Foundation
         await generationRace()
         await multiAccountOrdering()
         await staleResponseAndPendingAdmission()
+        await pendingAdmissionReturnsOnlyNewIdentities()
+        await explicitRefreshAdmitsFetchedMailAcrossAccounts()
         await batchedKnownReadReconciliation()
         await displayProgressDuringRevalidation()
         await durableScrollReads()

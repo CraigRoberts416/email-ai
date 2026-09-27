@@ -11,6 +11,10 @@ struct RefreshArrivalSnapshot {
     }
 
     func hasArrivals(available: Set<String>) -> Bool {
-        !available.subtracting(alreadyPresented).isEmpty
+        count(available: available) > 0
+    }
+
+    func count(available: Set<String>) -> Int {
+        available.subtracting(alreadyPresented).count
     }
 }

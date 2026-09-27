@@ -8,7 +8,7 @@ Ten pixel poses preserve the reference's large round helmet, navy face, two pale
 
 The 144 × 98 scene uses vector rectangles and Rive Solo, with 12 fps held keys. `build_mailroom.py` is the editable art source; the generated `scene.rml` remains editable in Rive's authoring pipeline. The supplied image is preserved unmodified as a reference. No new runtime, remote resource, sound or per-hit haptic is introduced.
 
-The first contact is at 250 ms, within the existing 400 ms refresh minimum. A loop takes three seconds, with a pause after the double knock. The arrival ending takes about 1.17 seconds, within the existing 1.2-second status hold; all envelopes leave the drawing by 1.08 seconds. No additional network delay is added to finish the illustration.
+The first contact is at 250 ms. A loop takes three seconds, with a pause after the double knock. The September 27 repair gives the checking presentation 1.6 seconds from renderer readiness, covering both knocks and recoil even when the network responds immediately. The arrival ending takes about 1.17 seconds; its native caption stays for 1.8 seconds and the mailroom player pauses after 1.3 seconds. All envelopes leave the drawing by 1.08 seconds. Fetched mail becomes usable immediately; only the nonblocking status presentation waits. Reduce Motion retains a shorter checking hold with static artwork.
 
 ## State contract
 
@@ -20,7 +20,7 @@ The first contact is at 250 ms, within the existing 400 ms refresh minimum. A lo
 | 3 | Existing refresh reports failure | Rest the stick; native Retry/dismiss actions |
 | 4 | Successful refresh without arrivals | Lower the stick; all envelopes stay hidden |
 
-`RefreshArrivalSnapshot` compares mailbox-qualified message identities before and after refresh, including waiting mail admitted by the explicit refresh. It never interprets a changed unread total as an arrival. The after-set contains the store's eligible messages and eligible pending messages, so deselected or removed waiting mail does not trigger the ending. Any reported refresh failure takes precedence over arrival art. This does not alter network requests, read tracking or the store's admission policy.
+`RefreshArrivalSnapshot` compares mailbox-qualified message identities before and after refresh, including waiting mail admitted by the explicit refresh. It never interprets a changed unread total as an arrival. The after-set contains eligible unread cards actually admitted to the session, so deselected or removed waiting mail does not trigger the ending. Refresh now admits newly fetched pending cards before it reports **N NEW EMAILS**; the quiet ending says **NO NEW EMAILS**. Any reported refresh failure takes precedence over arrival art. Background arrivals continue waiting for explicit bubble admission.
 
 The drawing is 288 × 196 points at rest, with native status/actions over the empty lower part of the scene. The strip measures its actual screen origin and draws upward through the top safe area so the stick hits the physical screen edge. It reserves only the remaining content height. Dynamic Type can add room for native controls. During the pull the scene fits the available overscroll height; after release it opens to 2× its authored pixel size. The illustration cannot intercept touches. No feed/card gesture recognizer is added.
 

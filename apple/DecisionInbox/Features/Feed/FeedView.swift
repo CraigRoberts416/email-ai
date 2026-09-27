@@ -15,6 +15,7 @@ struct FeedView: View {
     // retain ScrollViewProxy across layout changes or bind the viewport to top.
     @State private var scrollRequest = 0
     @State private var animateScrollRequest = false
+    @State private var scrollDestination = "feed.top"
     #if DEBUG
     @State private var didRunNavigationProbe = false
     #endif
@@ -92,6 +93,7 @@ struct FeedView: View {
     @State private var settled: String?
     @State private var refreshFailed = false
     @State private var refreshHasArrivals = false
+    @State private var refreshPresentationBegan: ContinuousClock.Instant?
     @State private var refreshWaitStage = 0
     @State private var firstWaitStage = 0
     @State private var refreshID = UUID()
@@ -156,6 +158,7 @@ struct FeedView: View {
                                 )
                                 .environment(\.holdsFeedMediaLayout, scrollSnapshot != nil)
                                 .id(message.feedKey)
+                                .accessibilityIdentifier("feed.card.\(message.feedKey)")
                                 .onGeometryChange(for: FeedPostGeometry.self) { geometry in
                                     let frame = geometry.frame(in: .scrollView(axis: .vertical))
                                     let region: ScrollPastState.Region = frame.maxY <= 0 ? .above
@@ -182,6 +185,7 @@ struct FeedView: View {
                                         cancelIfLayoutChanged(from: old, to: new)
                                     }
                             }
+                            .id("feed.section.\(section)")
                         }
 
                         if let failure = displayedSeenFailure {
@@ -219,6 +223,22 @@ struct FeedView: View {
                     if !didRunNavigationProbe && ProcessInfo.processInfo.arguments.contains("-verifyFeedNavigation") {
                         didRunNavigationProbe = true
                         await verifyNavigation(using: proxy)
+                    } else if !didRunNavigationProbe && ProcessInfo.processInfo.arguments.contains("-stageRealArrivalForTouchTest") {
+                        didRunNavigationProbe = true
+                        // The opt-in real-account XCTest drives every gesture.
+                        // Only arrival timing is staged; provider mail is intact.
+                        await store.start()
+                        await store.refresh()
+                        store.beginFeedSession()
+                        store.noteFeedInteraction()
+                        _ = store.stageNavigationProbeArrival(limit: 1)
+                        // Let the session-boundary top request finish before
+                        // positioning this opt-in test below the bubble.
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
+                        if store.sessionMessages.count > 4 {
+                            proxy.scrollTo(store.sessionMessages[4].feedKey, anchor: .top)
+                        }
                     }
                     #endif
                 }
@@ -241,8 +261,8 @@ struct FeedView: View {
                     await Task.yield()
                     guard !Task.isCancelled else { return }
                     if animateScrollRequest && !reduceMotion {
-                        withAnimation(Move.layout) { proxy.scrollTo(Self.topAnchor, anchor: .top) }
-                    } else { proxy.scrollTo(Self.topAnchor, anchor: .top) }
+                        withAnimation(Move.layout) { proxy.scrollTo(scrollDestination, anchor: .top) }
+                    } else { proxy.scrollTo(scrollDestination, anchor: .top) }
                 }
                 // Two geometry observers, both of which return a value that is
                 // CONSTANT during ordinary scrolling, so `body` is not
@@ -526,7 +546,12 @@ struct FeedView: View {
     }
 
     private func scrollToTop(animated: Bool = true) {
+        requestScroll(to: Self.topAnchor, animated: animated)
+    }
+
+    private func requestScroll(to destination: String, animated: Bool = true) {
         cancelScrollReads()
+        scrollDestination = destination
         animateScrollRequest = animated
         scrollRequest += 1
     }
@@ -554,14 +579,23 @@ struct FeedView: View {
         .animation(Move.resolved(Move.crisp, reduceMotion), value: showsPill)
     }
 
-    /// Both new-mail entry points admit the batch before requesting its new
-    /// layout's top. The target cannot disappear when lazy rows are recycled.
+    /// Navigate to the batch we actually admitted, including delayed mail
+    /// grouped into Yesterday or Earlier. Feed retap still uses the fixed top.
     private func admitPending() {
         cancelScrollReads()
-        admitted = Set(store.eligiblePending.map(\.feedKey))
-        store.admitPending()
+        let incoming = store.admitPending()
+        admitted = Set(incoming.map(\.feedKey))
         pillVisible = false
-        scrollToTop()
+        if let first = incoming.first {
+            // The permanent anchor is already laid out when a brand-new
+            // first row is not. Later date bands use their containing section.
+            let groups = store.messages()
+            if let group = groups.first(where: { $0.1.contains(where: { $0.feedKey == first.feedKey }) }) {
+                // Admission puts this card first within its date band. Target
+                // the band so its pinned header cannot cover the sender.
+                requestScroll(to: groups.first?.0 == group.0 ? Self.topAnchor : "feed.section.\(group.0)")
+            }
+        }
         Task { @MainActor in
             await Task.yield()
             withAnimation(Move.resolved(Move.reveal, reduceMotion)) { admitted = [] }
@@ -619,7 +653,10 @@ struct FeedView: View {
                 let scale = min(1, max(0, stageHeight / 196))
                 PaperIllustration(art: .mailroom,
                     phase: refreshing ? 1 : (settled == nil ? 0 : (refreshFailed ? 3 : (refreshHasArrivals ? 2 : 4))),
-                    pull: Double(armingProgress * 100))
+                    pull: Double(armingProgress * 100), onReady: { ready in
+                        guard refreshing else { return }
+                        if ready && refreshPresentationBegan == nil { refreshPresentationBegan = .now }
+                    })
                     .frame(width: 288, height: 196)
                     .scaleEffect(scale, anchor: .top)
                     .frame(width: 288, height: 196 * scale, alignment: .top)
@@ -699,6 +736,7 @@ struct FeedView: View {
         refreshing = true
         refreshFailed = false
         refreshHasArrivals = false
+        refreshPresentationBegan = nil
         refreshWaitStage = 0
         settled = nil
         armed = false
@@ -713,22 +751,31 @@ struct FeedView: View {
             waiting: Set(store.eligiblePending.map(\.feedKey)))
         await refreshNow()
         guard !Task.isCancelled, id == refreshID else { return }
-        let elapsed = began.duration(to: .now)
-        let floor = Duration.seconds(Move.skeletonMinHold)
+        // The pull overlay becomes an inset on release and mounts a new
+        // renderer. Start its presentation clock when that player is ready,
+        // not while the file is still loading. Mail is admitted immediately;
+        // only this nonblocking status presentation has a minimum duration.
+        while !reduceMotion && refreshPresentationBegan == nil
+                && began.duration(to: .now) < .seconds(1) && feedVisible {
+            do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+        }
+        let elapsed = (refreshPresentationBegan ?? began).duration(to: .now)
+        let floor = Duration.seconds(reduceMotion ? Move.skeletonMinHold : Move.Pull.checkingHold)
         if elapsed < floor {
             do { try await Task.sleep(for: floor - elapsed) } catch { return }
         }
         guard !Task.isCancelled, id == refreshID else { return }
         let failure = store.loadFailure != nil
-        let foundMail = !failure && arrivals.hasArrivals(
-            available: Set((store.activeMessages + store.eligiblePending).map(\.feedKey)))
+        let arrivalCount = failure ? 0 : arrivals.count(
+            available: Set(store.sessionMessages.filter { !$0.isRead && $0.isFeedEligible }.map(\.feedKey)))
+        let foundMail = arrivalCount > 0
         if failure && feedVisible { Haptics.needsYou() }
         withAnimation(Move.resolved(Move.crisp, reduceMotion)) {
             refreshing = false
             refreshFailed = failure
             refreshHasArrivals = foundMail
             settled = failure ? (store.needsReconnect.isEmpty ? "COULDN’T REACH YOUR MAILBOX" : "RECONNECT TO CHECK YOUR MAIL")
-                : "CURRENT AS OF \(Date.now.formatted(date: .omitted, time: .shortened).uppercased())"
+                : (foundMail ? "\(arrivalCount) NEW \(arrivalCount == 1 ? "EMAIL" : "EMAILS")" : "NO NEW EMAILS")
         }
         if feedVisible { UIAccessibility.post(notification: .announcement, argument: settled) }
         // Failure is actionable and stays until dismissed or retried.
@@ -754,6 +801,10 @@ struct FeedView: View {
         cancelScrollReads()
         store.beginFeedSession()
         await store.refresh()
+        // Mail discovered by this explicit refresh belongs in the refreshed
+        // feed, even if the reader moved while the request was in flight.
+        // Ordinary background arrivals continue waiting behind their bubble.
+        store.admitPending()
     }
 
     @ViewBuilder private var feedFooter: some View {
