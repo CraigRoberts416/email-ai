@@ -21,10 +21,12 @@ Pause stops after the current request. Leaving or backgrounding also requests pa
 - 22,000-message synthetic inventory: 44 pages, exact identities, no preview writes, 44 bounded apply requests. New-arrival exclusion, date boundaries, expiry, ownership, zero matches, provider failure/recovery, SQL rollback and Gmail revision ordering were checked.
 - Native model/transport suite: 204 checks passed, including multi-account cutoff, durable approval, pause/relaunch, lost-response recovery, account isolation, stable session positions and removal on the next session.
 - Native Simulator: two focused UI tests passed, covering scope/date picker, preview, Cancel, confirmation, completion and Pause/Resume. Screenshots visually inspected. Tests used synthetic accounts and no live bulk read mutations.
+- The final native build also passed two existing gesture/session regressions: scrolling marks read and removes the card on the next visit; swiping after a tab change remains responsive (41.076 seconds, zero failures).
 - Existing full server suite passed 139 tests before the additional HTTP route test; the final eight focused backlog tests passed including authenticated HTTP routing.
+- After production deployment, the signed-in Recovery Simulator enumerated 21,491 eligible unread messages and reached the exact confirmation preview. This was a read-only real-provider check; Mark as read was not pressed. Bulk read changes were verified with synthetic provider/SQL fixtures, not bulk changes to the user's mailbox.
 
 ## Figma
 
 [Editable native backlog board](https://www.figma.com/design/LlstGMGXZrDiY2Ee4dd3yl/Email-App-Component-Library?node-id=396-1880) includes selection, exact preview, paused progress and completed states with reusable controls and interaction notes. The existing native Feed settings screen also includes the entry. Counts/addresses in the board are synthetic; no private email content is copied.
 
-Live deployment and TestFlight evidence are recorded separately when verified.
+Live deployment and Apple upload evidence are recorded in [release 2609281900](native-release-2609281900.md).

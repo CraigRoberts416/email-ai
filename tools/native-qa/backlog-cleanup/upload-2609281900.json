@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "build": "2609281900",
+  "implementationCommit": "969228b0b6ae8e5d4e72b34d052f06237c74fcf6",
+  "bundleIdentifier": "com.craigroberts.decisioninbox",
+  "destination": "upload",
+  "upload": {
+    "date": "2026-09-28T23:03:23Z",
+    "state": "success",
+    "title": "Uploaded to Apple",
+    "errors": [],
+    "warnings": []
+  },
+  "testFlightAvailability": "unverified: web session signed out",
+  "backend": {
+    "commit": "969228b0b6ae8e5d4e72b34d052f06237c74fcf6",
+    "status": "live",
+    "deploy": "dep-datf24gu01pc73f88bp0"
+  },
+  "riveSHA256": "ae690c2f817d3df4a4efce5eaeea8711aea78c5cd9e1695a3202cf7ff89d08a7"
+}
