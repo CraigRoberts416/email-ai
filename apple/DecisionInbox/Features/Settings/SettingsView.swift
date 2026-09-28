@@ -39,6 +39,7 @@ struct SettingsView: View {
             SettingsGroup("THE APP")
             Rule()
             SettingsLink(title: "Feed", value: feedValue) { route = .feed }
+                .accessibilityIdentifier("settings.feed")
             Rule()
             SettingsLink(title: "AI") { route = .ai }
             Rule()

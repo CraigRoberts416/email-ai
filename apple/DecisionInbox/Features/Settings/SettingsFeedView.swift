@@ -2,8 +2,8 @@ import SwiftUI
 
 /// `02 · Settings · Feed`.
 ///
-/// One thing on this screen changes the feed, and it is the only thing on this
-/// screen: which mailboxes feed it. `FeedStore.messages()` filters on exactly
+/// Feed scope, old-post access, and explicit backlog cleanup live here.
+/// Which mailboxes feed it remains a device preference. `FeedStore.messages()` filters on exactly
 /// this set, so a mailbox switched off here stops appearing the moment you go
 /// back — which is the test every control in the product has to pass.
 ///
@@ -16,6 +16,7 @@ struct SettingsFeedView: View {
     @Environment(FeedStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var filtering = false
+    @State private var clearingBacklog = false
 
     /// Past five mailboxes the per-row toggles become a sheet with search and
     /// multi-select — the threshold the scale board sets.
@@ -52,6 +53,9 @@ struct SettingsFeedView: View {
 
             SettingsGroup("INBOX ZERO", caption: "Scroll past a post or open its email to mark it read. Cards stay until you refresh or return from another tab or app.")
             Rule()
+            SettingsLink(title: "Clear unread backlog", subtitle: "Choose which emails to mark as read.") { clearingBacklog = true }
+                .accessibilityIdentifier("settings.clearBacklog")
+            Rule()
             SettingsToggle(title: "See old posts", subtitle: "Offer a way back to older posts once the feed is clear.", isOn: Binding(
                 get: { store.showOldPosts }, set: { store.showOldPosts = $0 }
             ))
@@ -61,6 +65,7 @@ struct SettingsFeedView: View {
             SettingsParagraph("The feed runs newest first and groups by day. Neither of those is a setting yet, so neither is offered as one here.")
             SettingsParagraph("Every post carries the sender\u{2019}s own words in sans and ours in mono. That is not a preference either \u{2014} it is how you tell them apart.")
         }
+        .navigationDestination(isPresented: $clearingBacklog) { BacklogCleanupView() }
         .sheet(isPresented: $filtering) {
             MailboxFilterSheet()
                 .presentationDetents([.medium, .large])

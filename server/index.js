@@ -1455,6 +1455,13 @@ app.get('/all-mail', async (req, res) => {
   }
 });
 
+const { createBacklogService, createBacklogRepository, registerBacklogRoutes } = require('./backlog');
+registerBacklogRoutes(app, { resolveUserId, service: createBacklogService({
+  repository: createBacklogRepository(require('./db').pool),
+  tokenFor: userId => userStore.getValidAccessToken(userId),
+  invalidate: userId => mailNotifications.invalidateUnreadCount(userId),
+}) });
+
 // Mark message as read — removes UNREAD label via Gmail API + updates DB
 registerNotificationMessageRoute(app, {
   resolveUserId, messageStore, gmailSync, cardsForMessages, sanitize: stripLoneSurrogates,

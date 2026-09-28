@@ -773,6 +773,70 @@ import Foundation
         check(f.store.sessionMessages.isEmpty, "Recovered read leaves at the next session boundary")
     }
 
+    static func backlogLifecycle() async {
+        var remote: [String: BacklogJob] = [:]
+        var saved: BacklogCleanup.Journal?
+        var mutations = 0
+        var failResponse = false
+        var creationCutoffs: [Date?] = []
+        var controller: BacklogCleanup!
+        let request: BacklogCleanup.Request = { account, job, before, action in
+            if job == nil { creationCutoffs.append(before) }
+            var value = remote[account] ?? BacklogJob(id: account + "-job", phase: "scanning", before: "2026-09-28T00:00:00Z", total: 0, completed: 0, version: 0, readIDs: [])
+            switch action {
+            case "scan": value.total = account == "a" ? 1_200 : 5; value.phase = "ready"
+            case "start": value.phase = "applying"
+            case "apply":
+                mutations += 1
+                value.completed = min(value.total, value.completed + 500)
+                value.readIDs = ["confirmed-\(value.completed)"]
+                if value.completed == value.total { value.phase = "complete" }
+            default: break
+            }
+            value.version += 1
+            remote[account] = value
+            if action == "apply" && failResponse { failResponse = false; throw APIError.transport }
+            return value
+        }
+        controller = BacklogCleanup(request: request, persist: { saved = $0 })
+        let accounts = ["a", "b"].map { Mailbox(id: $0, address: $0 + "@example.invalid", provider: "Gmail", status: .active(lastSynced: .now), tag: $0, includeInUnifiedFeed: true) }
+        await controller.preview(mailboxes: accounts, before: nil)
+        check(creationCutoffs.count == 2 && creationCutoffs[0] == nil && creationCutoffs[1] == ISO8601DateFormatter().date(from: "2026-09-28T00:00:00Z"), "All accounts share the first server snapshot cutoff, excluding arrivals during preview")
+        check(controller.ready && controller.total == 1_205, "Backlog preview includes all selected accounts and every matched identity")
+        check(mutations == 0 && !controller.approved, "Preview makes no external read mutations")
+        let recoveredPreview = BacklogCleanup(restored: saved, request: request, persist: { saved = $0 })
+        await recoveredPreview.resume()
+        check(mutations == 0 && recoveredPreview.ready, "Relaunched preview does not authorize writes")
+        controller.onProgress = { _, _ in controller.pause() }
+        await controller.approve()
+        check(controller.completed == 500 && !controller.busy && controller.approved, "Pause commits one batch and leaves the rest outstanding")
+        check(remote["b"]?.phase == "ready", "Pausing the first account does not start the next")
+        controller = BacklogCleanup(restored: saved, request: request, persist: { saved = $0 })
+        check(controller.completed == 500 && !controller.busy, "Relaunch preserves receipt without auto-resuming")
+        failResponse = true
+        await controller.resume()
+        check(controller.failure != nil && controller.completed == 500 && remote["a"]?.completed == 1_000, "Lost response remains unconfirmed locally")
+        await controller.resume()
+        check(controller.done && controller.completed == 1_205, "Resume recovers server progress and finishes remaining mailboxes")
+        check(mutations == 4, "Confirmed batch with lost response is not applied twice")
+        controller.reset()
+        check(!controller.hasWork && saved == nil, "Starting over clears only local cleanup reference")
+    }
+
+    static func backlogReadReconciliation() async {
+        let f = fixture(2)
+        for a in f.accounts { a.feed = { _, _ in page([card("shared"), card("kept", age: 60)], total: 2) } }
+        await f.store.start()
+        let original = f.store.sessionMessages
+        f.store.backlogCleanup.onProgress?(f.ids[0], ["shared"])
+        check(f.store.sessionMessages.map(\.feedKey) == original.map(\.feedKey), "Bulk confirmation preserves current session positions")
+        check(f.store.sessionMessages.first { $0.id == "shared" && $0.mailboxID == f.ids[0] }?.isRead == true, "Bulk confirmation marks the correct account's card read")
+        check(f.store.sessionMessages.first { $0.id == "shared" && $0.mailboxID == f.ids[1] }?.isRead == false, "Same provider ID in another account stays unread")
+        f.store.beginFeedSession()
+        check(f.store.sessionMessages.count == 3 && !f.store.sessionMessages.contains { $0.id == "shared" && $0.mailboxID == f.ids[0] }, "Bulk-read cards leave at the next session boundary")
+        f.stop()
+    }
+
     static func main() async {
         let drafts = FileManager.default.temporaryDirectory.appendingPathComponent("send-fixture-\(UUID().uuidString)")
         MailDraftStore.directoryOverride = drafts
@@ -781,6 +845,8 @@ import Foundation
         check(URLProtocol.registerClass(HarnessURLProtocol.self), "Transport interception installed")
         completedActivityStaysDismissed()
         await reconnectFinishesRecordedReads()
+        await backlogLifecycle()
+        await backlogReadReconciliation()
         await readRaceAndSession()
         await alreadyReadAndFailure()
         await cachedCountsAndScope()

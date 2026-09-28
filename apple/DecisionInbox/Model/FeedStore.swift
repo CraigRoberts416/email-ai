@@ -1687,6 +1687,30 @@ final class FeedStore {
         }
     }
 
+    @ObservationIgnored lazy var backlogCleanup: BacklogCleanup = {
+        let cleanup = BacklogCleanup(auth: auth, sample: isSample)
+        cleanup.onProgress = { [weak self] account, ids in self?.applyBacklogReads(ids, accountID: account) }
+        cleanup.onSettled = { [weak self] in await self?.refresh() }
+        return cleanup
+    }()
+
+    private func applyBacklogReads(_ ids: [String], accountID: String) {
+        guard canUseMailbox(accountID) else { return }
+        let keys = Set(ids.map { accountID + ":" + $0 })
+        mailboxVersions[accountID, default: 0] += 1
+        for message in messages + pending + retained where keys.contains(message.feedKey) {
+            readVersions[message.feedKey, default: 0] += 1
+            seenKeys.insert(message.feedKey)
+            mutate(message.id, accountID: accountID) { $0.isRead = true }
+            recordedReads.removeValue(forKey: message.feedKey)
+            failedSeen.removeValue(forKey: message.feedKey)
+        }
+        persistSeen(); persistRecordedReads()
+        completeCounts.remove(accountID)
+        unreadCounts[accountID] = nil
+        scheduleCountsRefresh(); scheduleBadgeRefresh()
+    }
+
     func markRead(_ message: Message) {
         guard !currentVersion(of: message).isRead else { return }
         recordSeen([message])

@@ -304,6 +304,17 @@ struct APIClient {
         return try JSONDecoder().decode(Result.self, from: data).wasUnread
     }
 
+    func backlogJob(id: String? = nil, before: Date? = nil, action: String? = nil, version: Int = 0) async throws -> BacklogJob {
+        let path = "/feed/backlog" + (id.map { "/" + Self.pathComponent($0) } ?? "") + (action == nil ? "" : "/step")
+        var payload: [String: Any] = [:]
+        if let action { payload = ["action": action, "version": version] }
+        if let before { payload["before"] = ISO8601DateFormatter().string(from: before) }
+        let method = id != nil && action == nil ? "GET" : "POST"
+        let body = method == "GET" ? nil : try JSONSerialization.data(withJSONObject: payload)
+        let data = try await send(path: path, method: method, body: body)
+        return try JSONDecoder().decode(BacklogJob.self, from: data)
+    }
+
     struct Body: Codable {
         let plainText: String
         let htmlRaw: String
@@ -470,7 +481,7 @@ struct APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 15
+        request.timeoutInterval = path.hasPrefix("/feed/backlog") ? 60 : 15
         // The feed answered 304 and URLSession served a stale body from its
         // own cache. This data is the point of the app; it is never revalidated
         // against a local copy. Our own on-disk cache is the offline story.

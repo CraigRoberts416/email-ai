@@ -5296,6 +5296,16 @@ Session reset is an explicit product rule, not hidden relevance filtering. Ranki
 * Old posts open in a separate history sheet with **Done**. Browsing its read mail never starts an automatic read/clear cycle. New unread arrivals stay in the incoming flow, including while history is open.
 * Literal navigation, state, and recovery copy follows the operational fallback exception in the zero-shot philosophy. Email interpretations remain generated from actual mail. Completion never says an email's requested obligation has been resolved merely because it was read.
 
+### **Deliberate backlog cleanup**
+
+**Added September 28, 2026.** **You → Feed → Clear unread backlog** provides an explicit way to clear years of unread mail without scrolling through every post. The user chooses **All unread** or **Before a date**, selects connected mailboxes, and taps **Preview emails**. All connected accounts are initially selected, independently of feed visibility. Before a date uses local midnight at the start of that date. Archived unread mail is included; Spam and Trash are excluded.
+
+The preview enumerates every matching Gmail message identity, rather than trusting an estimated count or loaded cards. All unread shares one server-established cutoff across selected accounts. The count is provisional while counting, and confirmation remains unavailable until every selected mailbox finishes. The final **Mark N as read** action opens a native confirmation explaining that Gmail unread status changes while the emails remain searchable. Cancel and preview alone never mark mail read. No mail is deleted or archived.
+
+Confirmed cleanup acts on the frozen preview, never reruns the search to sweep in later arrivals, and processes bounded batches with actual progress. Leaving the screen or backgrounding pauses after the current step. Confirmed progress survives restart; **Resume cleanup** checks the server before continuing. Relaunch does not automatically authorize or resume writes. **Finish here** confirms abandoning the remainder while completed changes stay read. There is no bulk Undo promise. Unapproved previews expire after 24 hours and require a fresh preview.
+
+Confirmed reads reconcile local cards, section totals, and the app badge. Current-session positions remain stable; cards leave at the normal next-session boundary. **Cleanup complete** means the selected snapshot was processed, not that live unread totals are zero. New arrivals, excluded mailboxes, and failed requests retain their normal unread/completion rules.
+
 ### **Acceptance checks**
 
 1. A stationary post remains unread. A qualifying forward scroll-past immediately animates X LEFT downward while the card and neighboring positions stay stable. Successful confirmation updates read styling after active scrolling ends; failure restores the displayed count and exposes retry. Provisional zero never establishes completion.

@@ -102,6 +102,58 @@ final class FeedGestureTests: XCTestCase {
         app.tabBars.buttons["Feed"].tap()
     }
 
+    @MainActor private func openBacklog(_ app: XCUIApplication) {
+        app.tabBars.buttons["You"].tap()
+        XCTAssertTrue(app.buttons["settings.feed"].waitForExistence(timeout: 5))
+        app.buttons["settings.feed"].tap()
+        let control = app.buttons["settings.clearBacklog"]
+        for _ in 0..<3 { if control.isHittable { break }; app.swipeUp() }
+        XCTAssertTrue(control.isHittable)
+        control.tap()
+        XCTAssertTrue(app.buttons["backlog.preview"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor func testBacklogPreviewRequiresConfirmationAndCompletes() {
+        let app = launch()
+        openBacklog(app)
+        app.buttons["Before a date"].tap()
+        XCTAssertTrue(app.datePickers.firstMatch.exists)
+        let selection = XCTAttachment(screenshot: app.screenshot())
+        selection.name = "Backlog selection"; selection.lifetime = .keepAlways; add(selection)
+        app.buttons["All unread"].tap()
+        app.buttons["backlog.preview"].tap()
+        let confirm = app.buttons["backlog.confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        let preview = XCTAttachment(screenshot: app.screenshot())
+        preview.name = "Backlog exact preview"; preview.lifetime = .keepAlways; add(preview)
+        confirm.tap()
+        XCTAssertTrue(app.alerts.firstMatch.waitForExistence(timeout: 3))
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertTrue(confirm.exists, "Cancel keeps the preview; no cleanup starts")
+        confirm.tap()
+        app.alerts.buttons["Mark as read"].tap()
+        XCTAssertTrue(app.staticTexts["CLEANUP COMPLETE"].waitForExistence(timeout: 15))
+        let done = XCTAttachment(screenshot: app.screenshot())
+        done.name = "Backlog completed"; done.lifetime = .keepAlways; add(done)
+    }
+
+    @MainActor func testBacklogCanPauseAndResume() {
+        let app = launch(["-sampleBacklogSlow"])
+        openBacklog(app)
+        app.buttons["backlog.preview"].tap()
+        XCTAssertTrue(app.buttons["backlog.confirm"].waitForExistence(timeout: 15))
+        app.buttons["backlog.confirm"].tap()
+        app.alerts.buttons["Mark as read"].tap()
+        let pause = app.buttons["Pause after this step"]
+        XCTAssertTrue(pause.waitForExistence(timeout: 5)); pause.tap()
+        let resume = app.buttons["Resume cleanup"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 5))
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "Backlog paused with saved progress"; shot.lifetime = .keepAlways; add(shot)
+        resume.tap()
+        XCTAssertTrue(app.staticTexts["CLEANUP COMPLETE"].waitForExistence(timeout: 20))
+    }
+
     @MainActor func testBubbleShowsTodayArrival() { assertBubbleShowsArrival(fromEarlier: false) }
     @MainActor func testRealArrivalFromEarlierReturnsToTop() { assertBubbleShowsArrival(fromEarlier: true) }
 

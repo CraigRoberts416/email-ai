@@ -79,3 +79,13 @@ CREATE TABLE IF NOT EXISTS unsubscribe_tasks (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (user_id, message_id)
 );
+
+-- Frozen, mailbox-scoped bulk-read previews and resumable progress. Provider
+-- identities only; no message bodies. Disconnect cascades this local history.
+CREATE TABLE IF NOT EXISTS backlog_jobs (
+  user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  id TEXT NOT NULL,
+  state JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, id)
+);
