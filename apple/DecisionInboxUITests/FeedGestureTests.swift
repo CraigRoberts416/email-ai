@@ -307,6 +307,10 @@ final class FeedGestureTests: XCTestCase {
         let app = launch()
         let clear = app.buttons["feed.clearUnread"]
         XCTAssertTrue(clear.isHittable, "Backlog cleanup is visible without opening Settings")
+        let screen = XCTAttachment(screenshot: app.screenshot())
+        screen.name = "Feed with visible Clear unread"
+        screen.lifetime = .keepAlways
+        add(screen)
         clear.tap()
         XCTAssertTrue(app.buttons["backlog.preview"].waitForExistence(timeout: 5))
         app.buttons["backlog.preview"].tap()
@@ -328,6 +332,10 @@ final class FeedGestureTests: XCTestCase {
         app.tabBars.buttons["Saved"].tap()
         app.tabBars.buttons["Feed"].tap()
         XCTAssertFalse(hide.exists)
+        let screen = XCTAttachment(screenshot: app.screenshot())
+        screen.name = "Feed after activity notice expires"
+        screen.lifetime = .keepAlways
+        add(screen)
         app.buttons["Activity"].tap()
         XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 5), "Activity remains reachable after the notice expires")
     }

@@ -14,3 +14,5 @@ Local test artifacts:
 - `/tmp/di-oct9-webkit.log`: real WebKit remote-content and active-content boundary checks.
 
 See `product_docs/images-and-activity-2026-10-09.md` for the implemented behavior and verification limits.
+
+`feed-clear-unread.png` and `feed-no-banner.png` came from a focused two-test capture run (`/tmp/di-oct9-visible.xcresult`); both tests passed. Other captures come from the full passing suite. `release-2610090850.json` explicitly records the successful backend/validated archive and the Apple-account upload blocker; it is not an upload receipt.
