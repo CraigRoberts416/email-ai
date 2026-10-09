@@ -394,9 +394,8 @@ struct PostView: View {
                 .accessibilityHidden(true)
 
             if case .media(let urls) = message.shape, let picture = urls.first {
-                PromoMedia(url: picture)
+                PromoMedia(url: picture, cacheKey: "mail:\(message.mailboxID):\(message.id):picture")
                     .padding(.top, Space.lg)
-                    .accessibilityHidden(true)
             }
 
             if let label = message.actionLabel, !label.isEmpty {

@@ -452,6 +452,30 @@ final class FeedStore {
         didSet { if !isSample { InteractionArchive.saveRuns(unsubscribes) } }
     }
     var isActivityTrayVisible = false
+    @ObservationIgnored private var activityNoticeTask: Task<Void, Never>?
+    @ObservationIgnored private var activityNoticeVersion = UUID()
+
+    /// Feedback belongs to the current action; durable work belongs in Activity.
+    /// The store owns this deadline so switching tabs cannot restart it.
+    func showActivityNotice(for duration: Duration = .seconds(8)) {
+        activityNoticeTask?.cancel()
+        let version = UUID()
+        activityNoticeVersion = version
+        isActivityTrayVisible = true
+        activityNoticeTask = Task { [weak self] in
+            do { try await Task.sleep(for: duration) } catch { return }
+            guard let self, self.activityNoticeVersion == version else { return }
+            self.isActivityTrayVisible = false
+            self.activityNoticeTask = nil
+        }
+    }
+
+    func hideActivityNotice() {
+        activityNoticeVersion = UUID()
+        activityNoticeTask?.cancel()
+        activityNoticeTask = nil
+        isActivityTrayVisible = false
+    }
     var activityPresented = false
     var activitySyncFailure: String?
     private var unsubscribeRequestsInFlight: Set<String> = []
@@ -471,7 +495,7 @@ final class FeedStore {
             guard let value = newValue else { if !receipts.isEmpty { receipts.removeLast() }; return }
             if let index = receipts.firstIndex(where: { $0.id == value.id }) { receipts[index] = value }
             else { receipts.append(value) }
-            isActivityTrayVisible = true
+            showActivityNotice()
         }
     }
 
@@ -563,7 +587,7 @@ final class FeedStore {
             }
             return run
         }
-        isActivityTrayVisible = summaryUnsubscribeRuns.contains { !$0.isTerminal || $0.needsAttention }
+        // Restored work remains reachable in Activity, without replaying a toast.
         var restored: [Message] = []
         for account in auth.accounts {
             guard let cached = FeedCache.load(for: account.id) else { continue }
@@ -1763,7 +1787,6 @@ final class FeedStore {
         guard let url = message.unsubscribeURL else { return }
         let key = seenKey(message)
         if unsubscribes[key] != nil {
-            isActivityTrayVisible = true
             activityPresented = true
             return
         }
@@ -1772,7 +1795,7 @@ final class FeedStore {
             mailboxID: message.mailboxID, attemptId: UUID().uuidString, updatedAt: Date.now.timeIntervalSince1970 * 1000,
             sourceURL: url.absoluteString)
         unsubscribes[key] = initial
-        isActivityTrayVisible = true
+        showActivityNotice()
         let intent = initial.attemptId!
         unsubscribeRequestsInFlight.insert(intent)
         Task {
@@ -1879,7 +1902,7 @@ final class FeedStore {
         queued.runId = nil; queued.attemptId = UUID().uuidString; queued.history = nil; queued.openedByUserAt = nil; queued.userReportedComplete = nil
         queued.updatedAt = Date.now.timeIntervalSince1970 * 1000
         unsubscribes[id] = queued
-        isActivityTrayVisible = true
+        showActivityNotice()
         let intent = queued.attemptId!
         unsubscribeRequestsInFlight.insert(intent)
         Task {
@@ -1943,7 +1966,7 @@ final class FeedStore {
             sendJobs[id]?.detail = "Couldn’t save this send on the device. Keep this draft open and try again."
             return nil
         }
-        isActivityTrayVisible = true
+        showActivityNotice()
         MailDraftStore.removeDraft(key)
         outgoing[id] = Task {
             do { try await Task.sleep(for: .seconds(Move.sendUndoWindow)) }

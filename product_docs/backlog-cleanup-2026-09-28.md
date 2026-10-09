@@ -4,7 +4,7 @@ The user requested a control for clearing approximately 22,000 unread emails. Th
 
 ## Control
 
-You → Feed → Clear unread backlog. Choose All unread or Before a date, select mailboxes, then Preview emails. A complete provider identity inventory supplies the exact count. A native confirmation is required before Mark N as read begins. The date cutoff is local midnight; All unread shares the first server snapshot cutoff across accounts. Archived unread mail is eligible; Spam and Trash are excluded. Messages arriving afterward remain unread.
+Updated October 9: **Clear unread** is visible beside the Feed total; **You → Feed → Clear unread backlog** remains available. Choose All unread or Before a date, select mailboxes, then Preview emails. A complete provider identity inventory supplies the exact count. A native confirmation is required before Mark N as read begins. The date cutoff is local midnight; All unread shares the first server snapshot cutoff across accounts. Archived unread mail is eligible; Spam and Trash are excluded. Messages arriving afterward remain unread.
 
 Pause stops after the current request. Leaving or backgrounding also requests pause. Resume checks durable server state before proceeding. Finish here abandons remaining work with confirmation; confirmed batches stay read. Relaunch restores a receipt without restarting writes. Preview, Cancel, and changing selection have no Gmail write effects.
 

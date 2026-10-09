@@ -750,6 +750,29 @@ import Foundation
         f.stop()
     }
 
+    static func activityNoticeExpires() async {
+        let f = fixture()
+        let run = UnsubscribeRun(messageId: "pending-notice", senderName: "Example", status: "needs_you",
+            mailboxID: f.ids[0], runId: "notice-run", attemptId: "notice-attempt", updatedAt: 100)
+        f.store.receiveUnsubscribe(run, accountID: f.ids[0])
+        let restored = FeedStore(auth: AuthService(accounts: f.ids))
+        check(!restored.isActivityTrayVisible && restored.unsubscribeRuns.count == 1,
+              "Restored pending activity stays available without opening a banner")
+        f.store.showActivityNotice(for: .milliseconds(40))
+        check(f.store.isActivityTrayVisible, "A new notice appears immediately")
+        try? await Task.sleep(for: .milliseconds(80))
+        check(!f.store.isActivityTrayVisible && f.store.unsubscribeRuns.count == 1,
+              "Notice expires without discarding its Activity record")
+        f.store.showActivityNotice(for: .milliseconds(40))
+        f.store.showActivityNotice(for: .milliseconds(150))
+        try? await Task.sleep(for: .milliseconds(80))
+        check(f.store.isActivityTrayVisible, "An older timer cannot dismiss a newer notice")
+        f.store.hideActivityNotice()
+        try? await Task.sleep(for: .milliseconds(100))
+        check(!f.store.isActivityTrayVisible, "Manual dismissal cancels the notice lifetime")
+        f.stop()
+    }
+
     static func reconnectFinishesRecordedReads() async {
         let f = fixture(), a = f.accounts[0]
         a.feed = { _, _ in page([card("expired-read")], total: 1) }
@@ -844,6 +867,7 @@ import Foundation
         defer { try? FileManager.default.removeItem(at: drafts) }
         check(URLProtocol.registerClass(HarnessURLProtocol.self), "Transport interception installed")
         completedActivityStaysDismissed()
+        await activityNoticeExpires()
         await reconnectFinishesRecordedReads()
         await backlogLifecycle()
         await backlogReadReconciliation()

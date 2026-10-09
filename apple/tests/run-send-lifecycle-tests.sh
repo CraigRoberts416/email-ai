@@ -21,6 +21,7 @@ swiftc -swift-version 5 -parse-as-library \
   "$project_root/apple/DecisionInbox/Services/DiscussionStore.swift" \
   "$project_root/apple/DecisionInbox/Model/Conversation.swift" \
   "$project_root/apple/DecisionInbox/Model/FeedSession.swift" \
+  "$project_root/apple/DecisionInbox/Model/BacklogCleanup.swift" \
   "$project_root/apple/DecisionInbox/Model/FeedPaginationLifecycle.swift" \
   "$project_root/apple/DecisionInbox/Services/NotificationTapBuffer.swift" \
   "$project_root/apple/DecisionInbox/Services/APIClient.swift" \

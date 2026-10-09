@@ -30,6 +30,8 @@ struct FeedView: View {
     @State private var focusDiscussion = false
     @State private var choosingMailboxes = false
     @State private var showingOldPosts = false
+    @State private var clearingBacklog = false
+    @State private var cleanupMadeProgress = false
     @State private var scrollPass = ScrollPastState()
     @State private var progress = FeedScrollProgress()
     @State private var viewportHeight: CGFloat = 700
@@ -57,7 +59,11 @@ struct FeedView: View {
                  total: store.remainingInFeed ?? store.activeMessages.count,
                  totalIsComplete: store.remainingInFeed != nil,
                  isReading: hasSelectedMailboxes && (store.isFirstSync || (store.activeMessages.isEmpty && store.checkingCompletion)),
-                 isComplete: hasSelectedMailboxes && store.completionVerified, showsActivity: true)
+                 isComplete: hasSelectedMailboxes && store.completionVerified, showsActivity: true,
+                 onClearUnread: {
+                     cleanupMadeProgress = false
+                     clearingBacklog = true
+                 })
     }
     private var displayedGroups: [(String, [Message])] { scrollSnapshot?.groups ?? store.messages() }
     private var displayedMasthead: Masthead { scrollSnapshot?.masthead ?? currentMasthead }
@@ -71,7 +77,7 @@ struct FeedView: View {
         // cards. The refresh boundary/layout change cancels stale evidence;
         // the request's lifetime must not disable later reading gestures.
         feedVisible && scenePhase == .active && open == nil && profile == nil
-            && compose == nil && !showingOldPosts && !choosingMailboxes && !swiping && !notificationLoading
+            && compose == nil && !showingOldPosts && !choosingMailboxes && !clearingBacklog && !swiping && !notificationLoading
     }
 
 
@@ -115,6 +121,85 @@ struct FeedView: View {
 
     var body: some View {
         NavigationStack {
+            feedContent
+            .alert("Couldn’t open email", isPresented: Binding(
+                get: { notificationFailure != nil }, set: { if !$0 { notificationFailure = nil } }
+            )) {
+                Button("Try again") {
+                    if let request = notificationRequest { Task { await loadNotification(request) } }
+                }
+                Button("Cancel", role: .cancel) { notificationFailure = nil }
+            } message: { Text(notificationFailure ?? "Please try again.") }
+            .onDisappear { feedVisible = false; cancelScrollReads() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { cancelScrollReads() }
+            }
+            .onChange(of: open != nil) { _, presented in
+                if presented { store.noteFeedInteraction(); cancelScrollReads() }
+            }
+            .onChange(of: profile != nil) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: showingOldPosts) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: compose != nil) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: choosingMailboxes) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: clearingBacklog) { _, shown in if shown { cancelScrollReads() } }
+            .onChange(of: store.backlogCleanup.completed) { old, new in
+                if clearingBacklog && new > old { cleanupMadeProgress = true }
+            }
+            .onChange(of: swiping) { _, active in if active { cancelScrollReads() } }
+            .sheet(isPresented: $showingOldPosts) { OldPostsView() }
+            .sheet(isPresented: $choosingMailboxes) { MailboxFilterSheet() }
+            .sheet(isPresented: $clearingBacklog, onDismiss: {
+                // A confirmed cleanup should reveal its result immediately.
+                // Merely previewing or canceling preserves this feed visit.
+                if cleanupMadeProgress {
+                    store.beginFeedSession()
+                    scrollToTop(animated: false)
+                }
+            }) { NavigationStack { BacklogCleanupView() } }
+            // The sender. `profile` was being set by every avatar tap and
+            // observed by nothing — the screen existed, was built, was styled,
+            // and could not be reached from the feed at all. Search had this
+            // destination; the feed never did.
+            .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
+            // An actual sheet, not a push dressed as one.
+            //
+            // The corners, the drag-to-dismiss, the feed scaling back behind
+            // it and the rubber-banding all come from the system here. Drawn
+            // by hand on a pushed view they were a costume: the shape of a
+            // sheet with none of the behaviour, which is exactly what reads as
+            // wrong even when the radius is right.
+            .sheet(item: $open) { message in
+                ThreadView(message: message, initialComposeIntent: initialComposeIntent, focusDiscussion: focusDiscussion)
+                    .id(message.feedKey)
+                    .presentationDetents([.large])
+                    // No grabber. The gesture exists either way, and the
+                    // handle is the system's way of advertising a *resize*
+                    // between detents — there is only one detent here.
+                    .presentationDragIndicator(.hidden)
+                    .presentationBackground(.clear)
+                    // Delivers the post lifting and expanding into the sheet,
+                    // and the system's own fallback when the source row has
+                    // been recycled out of the LazyVStack.
+                    .modifier(FeedThreadTransition(sourceID: message.feedKey, namespace: feedZoom, reduceMotion: reduceMotion))
+            }
+            .sheet(item: $compose) { intent in
+                ComposeView(intent: intent, message: open)
+                    .presentationDetents([.large])
+                    // Cancel already exists; two dismissals with different
+                    // consequences is one too many.
+                    .presentationDragIndicator(.hidden)
+            }
+            // Hardware keyboard and Full Keyboard Access, which `.refreshable`
+            // also used to cover.
+            .background {
+                Button("Refresh") { startRefresh() }
+                    .keyboardShortcut("r", modifiers: .command)
+                    .hidden()
+            }
+        }
+    }
+
+    private var feedContent: some View {
             ZStack(alignment: .top) {
                 ScrollViewReader { proxy in
                 ScrollView {
@@ -175,6 +260,7 @@ struct FeedView: View {
                                 }
                                 .opacity(admitted.contains(message.feedKey) ? 0 : 1)
                                 .matchedTransitionSource(id: message.feedKey, in: feedZoom)
+                                .task(id: message.feedKey) { await warmUpcomingImages(after: message) }
                             }
                             } header: {
                                 // Sticky, because a date band that scrolls away
@@ -404,69 +490,6 @@ struct FeedView: View {
                         .accessibilityAddTraits(.updatesFrequently)
                 }
             }
-            .alert("Couldn’t open email", isPresented: Binding(
-                get: { notificationFailure != nil }, set: { if !$0 { notificationFailure = nil } }
-            )) {
-                Button("Try again") {
-                    if let request = notificationRequest { Task { await loadNotification(request) } }
-                }
-                Button("Cancel", role: .cancel) { notificationFailure = nil }
-            } message: { Text(notificationFailure ?? "Please try again.") }
-            .onDisappear { feedVisible = false; cancelScrollReads() }
-            .onChange(of: scenePhase) { _, phase in
-                if phase != .active { cancelScrollReads() }
-            }
-            .onChange(of: open != nil) { _, presented in
-                if presented { store.noteFeedInteraction(); cancelScrollReads() }
-            }
-            .onChange(of: profile != nil) { _, shown in if shown { cancelScrollReads() } }
-            .onChange(of: showingOldPosts) { _, shown in if shown { cancelScrollReads() } }
-            .onChange(of: compose != nil) { _, shown in if shown { cancelScrollReads() } }
-            .onChange(of: choosingMailboxes) { _, shown in if shown { cancelScrollReads() } }
-            .onChange(of: swiping) { _, active in if active { cancelScrollReads() } }
-            .sheet(isPresented: $showingOldPosts) { OldPostsView() }
-            .sheet(isPresented: $choosingMailboxes) { MailboxFilterSheet() }
-            // The sender. `profile` was being set by every avatar tap and
-            // observed by nothing — the screen existed, was built, was styled,
-            // and could not be reached from the feed at all. Search had this
-            // destination; the feed never did.
-            .navigationDestination(item: $profile) { SenderProfileView(sender: $0) }
-            // An actual sheet, not a push dressed as one.
-            //
-            // The corners, the drag-to-dismiss, the feed scaling back behind
-            // it and the rubber-banding all come from the system here. Drawn
-            // by hand on a pushed view they were a costume: the shape of a
-            // sheet with none of the behaviour, which is exactly what reads as
-            // wrong even when the radius is right.
-            .sheet(item: $open) { message in
-                ThreadView(message: message, initialComposeIntent: initialComposeIntent, focusDiscussion: focusDiscussion)
-                    .id(message.feedKey)
-                    .presentationDetents([.large])
-                    // No grabber. The gesture exists either way, and the
-                    // handle is the system's way of advertising a *resize*
-                    // between detents — there is only one detent here.
-                    .presentationDragIndicator(.hidden)
-                    .presentationBackground(.clear)
-                    // Delivers the post lifting and expanding into the sheet,
-                    // and the system's own fallback when the source row has
-                    // been recycled out of the LazyVStack.
-                    .modifier(FeedThreadTransition(sourceID: message.feedKey, namespace: feedZoom, reduceMotion: reduceMotion))
-            }
-            .sheet(item: $compose) { intent in
-                ComposeView(intent: intent, message: open)
-                    .presentationDetents([.large])
-                    // Cancel already exists; two dismissals with different
-                    // consequences is one too many.
-                    .presentationDragIndicator(.hidden)
-            }
-            // Hardware keyboard and Full Keyboard Access, which `.refreshable`
-            // also used to cover.
-            .background {
-                Button("Refresh") { startRefresh() }
-                    .keyboardShortcut("r", modifiers: .command)
-                    .hidden()
-            }
-        }
     }
 
     private func openMessage(_ message: Message, intent: ComposeView.Intent? = nil, discuss: Bool = false) {
@@ -474,6 +497,18 @@ struct FeedView: View {
         initialComposeIntent = intent
         focusDiscussion = discuss
         open = message
+    }
+
+    private func warmUpcomingImages(after message: Message) async {
+        guard let index = store.sessionMessages.firstIndex(where: { $0.feedKey == message.feedKey }) else { return }
+        // A small lookahead, using only image URLs already supplied by the
+        // feed. This never fetches remote reader HTML or the entire backlog.
+        for next in store.sessionMessages.dropFirst(index + 1).prefix(3) {
+            guard !Task.isCancelled else { return }
+            if case .media(let urls) = next.shape, let url = urls.first {
+                await RemoteImageStore.shared.load(url, key: "mail:\(next.mailboxID):\(next.id):picture")
+            }
+        }
     }
 
     private func openNotificationIfAvailable() {
@@ -910,6 +945,7 @@ struct Masthead: View {
     var isReading = false
     var isComplete = false
     var showsActivity = false
+    var onClearUnread: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -939,7 +975,17 @@ struct Masthead: View {
             headline
                 .padding(.bottom, Space.lg + 2)
 
-            counts
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Space.md) {
+                    counts
+                    Spacer(minLength: Space.sm)
+                    clearUnreadButton
+                }
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    counts
+                    clearUnreadButton
+                }
+            }
         }
         .padding(.horizontal, Metric.gutter)
         // Keep the greeting, while letting the first message share the first
@@ -1047,6 +1093,17 @@ struct Masthead: View {
                     .foregroundStyle(Ink.secondary)
                     .monospacedDigit()
             }
+        }
+    }
+
+    @ViewBuilder private var clearUnreadButton: some View {
+        if let onClearUnread {
+            Button("Clear unread", action: onClearUnread)
+                .typeStyle(Style.bodySmall)
+                .foregroundStyle(Ink.primary)
+                .frame(minHeight: Metric.tapTarget)
+                .accessibilityHint("Preview and choose emails to mark as read")
+                .accessibilityIdentifier("feed.clearUnread")
         }
     }
 

@@ -3,7 +3,7 @@ import Contacts
 
 /// `04 · Settings · Privacy`.
 ///
-/// Two controls, and both of them do the thing their label says. Retention and
+/// Controls that do the thing their label says. Retention and
 /// usage analytics were drawn here too; neither is reachable from this phone —
 /// there is no analytics pipeline to switch off and no retention endpoint to
 /// call — so neither is offered. A privacy switch that writes a preference
@@ -24,6 +24,7 @@ struct SettingsPrivacyView: View {
     /// nothing. This is the one place the reader can hand that back, so it is
     /// theirs to switch on knowingly rather than ours to switch on quietly.
     @AppStorage("links.richPreviews") private var richPreviews = false
+    @AppStorage("email.loadImagesAutomatically") private var loadImagesAutomatically = true
 
     @State private var contactPhotos = ContactPhotoStore.shared
     @State private var identities = SenderIdentityStore.shared
@@ -101,6 +102,9 @@ struct SettingsPrivacyView: View {
                 SettingsParagraph("Only the contacts you selected in iOS are available. Other people keep their initials or existing avatar.")
             }
             SettingsGroup("CONTROLS")
+            Rule()
+            SettingsToggle(title: "Load email images automatically", isOn: $loadImagesAutomatically)
+            SettingsParagraph("Images load when you open an email. Loading remote images can tell the sender you opened it. Turn this off to choose Load images in each email.")
             Rule()
             SettingsToggle(
                 title: "Rich link previews",

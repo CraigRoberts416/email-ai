@@ -4,11 +4,8 @@ import WebKit
 /// Renders an email's own HTML, sized to its content so it scrolls with the
 /// page rather than trapping a scroll view inside a scroll view.
 ///
-/// Two things are off and both are deliberate:
-///   JavaScript — an email has no business running code.
-///   Remote loads — a tracking pixel is a read receipt the sender never asked
-///   permission for, and this product reads your mail before you do. Blocking
-///   them until you say otherwise is the only position that holds.
+/// Remote loads follow the reader's automatic-image preference. Scripts,
+/// forms, frames and programmatic connections remain disabled either way.
 struct EmailBodyWeb: View {
     let html: String
     let loadRemoteContent: Bool
@@ -31,7 +28,7 @@ private struct WebBody: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
-        configuration.suppressesIncrementalRendering = true
+        configuration.suppressesIncrementalRendering = false
         configuration.websiteDataStore = .nonPersistent()
 
         let view = WKWebView(frame: .zero, configuration: configuration)

@@ -181,7 +181,9 @@ private final class AppContext: ObservableObject {
                 if ProcessInfo.processInfo.arguments.contains("-sampleActivityReturned") {
                     store.openedUnsubscribePage(handoff.id)
                 }
-                store.isActivityTrayVisible = true
+                if ProcessInfo.processInfo.arguments.contains("-sampleActivityNotice") {
+                    store.showActivityNotice()
+                }
                 if ProcessInfo.processInfo.arguments.contains("-sampleActivityExpanded") { store.activityPresented = true }
             }
             if ProcessInfo.processInfo.arguments.contains("-sampleFeedZero") {

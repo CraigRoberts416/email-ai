@@ -3,6 +3,12 @@ import Foundation
 /// The policy is injected before any sender-controlled markup. It is never loosened by sender content.
 enum EmailHTMLPolicy {
     static func document(html: String, allowRemote: Bool) -> String {
+        // HTML loaded from a string has no https base. Gmail senders often
+        // omit the scheme from image src attributes; make those usable while
+        // keeping the same content-security policy when images are disabled.
+        let html = html.replacingOccurrences(
+            of: #"(?i)(\b(?:src|background)\s*=\s*["']?)//"#,
+            with: "$1https://", options: .regularExpression)
         let remote = allowRemote ? " https: http:" : ""
         let policy = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'\(remote); img-src data: cid:\(remote); font-src data:\(remote); media-src 'none'; frame-src 'none'; object-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 

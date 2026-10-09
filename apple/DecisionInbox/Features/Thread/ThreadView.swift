@@ -21,7 +21,8 @@ struct ThreadView: View {
 
     @State private var body_: APIClient.Body?
     @State private var failed = false
-    @State private var showRemoteContent = false
+    @AppStorage("email.loadImagesAutomatically") private var loadImagesAutomatically = true
+    @State private var loadImagesForThisEmail = false
     /// Sender profiles share the same system navigation controls in a sheet
     /// as they do when pushed from Feed or People.
     @State private var profile: Sender?
@@ -265,9 +266,9 @@ struct ThreadView: View {
                     // add its own 16pt inside that, so a 390pt screen gave the
                     // sender 286pt to lay out in — every table squeezed, every
                     // line broken early. One margin, owned by the card.
-                    EmailBodyWeb(html: body_.htmlRaw, loadRemoteContent: showRemoteContent)
+                    EmailBodyWeb(html: body_.htmlRaw, loadRemoteContent: loadImagesAutomatically || loadImagesForThisEmail)
                         .padding(.horizontal, -Space.lg)
-                    if !showRemoteContent { remoteContentNotice }
+                    if !loadImagesAutomatically && !loadImagesForThisEmail { remoteContentNotice }
                 }
             } else {
                 Text(body_.plainText.isEmpty ? message.snippet : body_.plainText)
@@ -295,8 +296,7 @@ struct ThreadView: View {
         }
     }
 
-    /// Remote images in email are read receipts. Blocking them by default is
-    /// the only honest position for a product that reads your mail for you.
+    /// A per-email override remains available when automatic loading is off.
     private var remoteContentNotice: some View {
         HStack(spacing: Space.md) {
             Text("REMOTE CONTENT BLOCKED · LOADING CAN TELL THE SENDER YOU OPENED THIS")
@@ -304,7 +304,7 @@ struct ThreadView: View {
                 .foregroundStyle(Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            Button("Load") { showRemoteContent = true }
+            Button("Load images") { loadImagesForThisEmail = true }
                 .typeStyle(Style.bodySmall)
                 .foregroundStyle(Ink.primary)
         }

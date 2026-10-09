@@ -144,9 +144,6 @@ struct GlobalActivityTray: View {
             }
         }
         .animation(Move.resolved(Move.crisp, reduceMotion), value: store.isActivityTrayVisible)
-        .onChange(of: store.visibleSendJobs.map(\.id)) { old, new in
-            if new.contains(where: { !old.contains($0) }) { store.isActivityTrayVisible = true }
-        }
     }
-    private func hide() { store.isActivityTrayVisible = false }
+    private func hide() { store.hideActivityNotice() }
 }

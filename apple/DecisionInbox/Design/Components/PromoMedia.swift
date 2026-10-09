@@ -23,7 +23,9 @@ extension EnvironmentValues {
 /// first and the small print last.
 struct PromoMedia: View {
     let url: URL
+    let cacheKey: String
     @Environment(\.holdsFeedMediaLayout) private var holdsLayout
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The tallest a promo may be, as a multiple of the card's width. 1.25 is
     /// 4:5 — the portrait shape a phone-first marketing email is built to —
@@ -32,6 +34,13 @@ struct PromoMedia: View {
 
     @State private var loaded: UIImage?
     @State private var pending: UIImage?
+    @State private var failed = false
+
+    init(url: URL, cacheKey: String) {
+        self.url = url
+        self.cacheKey = cacheKey
+        _loaded = State(initialValue: RemoteImageStore.shared.image(for: cacheKey))
+    }
 
     var body: some View {
         Color.clear
@@ -46,7 +55,16 @@ struct PromoMedia: View {
                         .scaledToFill()
                         .accessibilityHidden(true)
                 } else {
-                    Ink.surfaceTertiary
+                    Ink.surfaceTertiary.overlay {
+                        if failed {
+                            Button("Retry image", systemImage: "arrow.clockwise") {
+                                Task { await load(retry: true) }
+                            }
+                            .typeStyle(Style.bodySmall)
+                            .foregroundStyle(Ink.secondary)
+                            .frame(minWidth: Metric.tapTarget, minHeight: Metric.tapTarget)
+                        }
+                    }
                 }
             }
             .clipped()
@@ -70,7 +88,7 @@ struct PromoMedia: View {
                 receive(image)
             }
             #endif
-            .animation(Move.crossfade, value: loaded == nil)
+            .animation(Move.resolved(Move.crossfade, reduceMotion), value: loaded == nil)
     }
 
     /// Width ÷ height of the box. The image's own ratio, unless that is taller
@@ -84,19 +102,15 @@ struct PromoMedia: View {
         return max(loaded.size.width / loaded.size.height, 1 / Self.heightCap)
     }
 
-    private func load() async {
-        guard loaded == nil else { return }
+    private func load(retry: Bool = false) async {
         #if DEBUG
         if url.scheme == "feed-fixture" { return }
         #endif
-        // `URLSession.shared` reads and writes `URLCache.shared`, so a post
-        // scrolled past and back does not refetch. The reason this is not
-        // `AsyncImage` is that AsyncImage hands back an `Image`, which has no
-        // size — and the size is the entire point here.
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let image = UIImage(data: data)
-        else { return }
-        receive(image)
+        failed = false
+        let image = await RemoteImageStore.shared.load(url, key: cacheKey, retry: retry)
+        guard !Task.isCancelled else { return }
+        if let image { receive(image) }
+        else { failed = true }
     }
 
     private func receive(_ image: UIImage) {

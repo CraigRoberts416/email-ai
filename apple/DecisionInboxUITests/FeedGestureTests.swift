@@ -301,4 +301,34 @@ final class FeedGestureTests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
     }
+
+    @MainActor
+    func testClearUnreadIsReachableFromFeed() {
+        let app = launch()
+        let clear = app.buttons["feed.clearUnread"]
+        XCTAssertTrue(clear.isHittable, "Backlog cleanup is visible without opening Settings")
+        clear.tap()
+        XCTAssertTrue(app.buttons["backlog.preview"].waitForExistence(timeout: 5))
+        app.buttons["backlog.preview"].tap()
+        XCTAssertTrue(app.buttons["backlog.confirm"].waitForExistence(timeout: 10))
+        app.buttons["Back"].tap()
+        XCTAssertTrue(firstCard(in: app).waitForExistence(timeout: 5))
+        XCTAssertEqual(firstCard(in: app).value as? String, "Unread", "Previewing never marks mail read")
+    }
+
+    @MainActor
+    func testActivityNoticeExpiresAndDoesNotReturnOnTabSwitch() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-sampleActivity", "-sampleActivityNotice"]
+        app.launch()
+        let hide = app.buttons["Hide activity summary"]
+        XCTAssertTrue(hide.waitForExistence(timeout: 5))
+        expectation(for: NSPredicate { _, _ in !hide.exists }, evaluatedWith: nil)
+        waitForExpectations(timeout: 12)
+        app.tabBars.buttons["Saved"].tap()
+        app.tabBars.buttons["Feed"].tap()
+        XCTAssertFalse(hide.exists)
+        app.buttons["Activity"].tap()
+        XCTAssertTrue(app.buttons["Close"].waitForExistence(timeout: 5), "Activity remains reachable after the notice expires")
+    }
 }

@@ -25,6 +25,8 @@ const processingWorker = require('./processingWorker');
 const watchManager     = require('./watchManager');
 const heroImage        = require('./heroImageGenerator');
 const emailImage       = require('./emailImage');
+const { prepareEmailBody, INLINE_IMAGE_TYPES } = require('./emailBody');
+const { createImageResponseCache, readBoundedImage } = require('./imageResponseCache');
 const conversations    = require('./conversations');
 const crypto           = require('crypto');
 const { runUnsubscribeAgent } = require('./unsubscribeAgent');
@@ -980,27 +982,12 @@ app.get('/messages/:messageId/body', async (req, res) => {
   try {
     const rawMsg = await gmailSync.fetchFullMessage(userId, messageId);
 
-    // Extract plain text + raw HTML directly so the client can choose how to
-    // render. cleanEmailForAI strips all tags and collapses whitespace, which
-    // is useful for AI but destroys paragraph breaks for display.
-    function decodeBody(data) {
-      if (!data) return '';
-      return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
-    }
-    function extractBody(payload, mimeType) {
-      if (!payload) return '';
-      if (payload.mimeType === mimeType && payload.body?.data) return decodeBody(payload.body.data);
-      for (const part of payload.parts ?? []) {
-        const result = extractBody(part, mimeType);
-        if (result) return result;
-      }
-      return '';
-    }
-
-    const plainText = extractBody(rawMsg.payload, 'text/plain');
-    const htmlRaw   = extractBody(rawMsg.payload, 'text/html');
-
-    res.json({ plainText, htmlRaw });
+    const body = prepareEmailBody(rawMsg.payload, (attachmentId, mime) => {
+      const token = emailImage.signImage(userId, `${messageId}:${attachmentId}:${mime}`);
+      return `https://${req.get('host')}/messages/${encodeURIComponent(messageId)}`
+        + `/attachments/${encodeURIComponent(attachmentId)}/file?imageType=${encodeURIComponent(mime)}&t=${token}`;
+    });
+    res.json(body);
   } catch (err) {
     console.error('[message-body] error:', err.message);
     res.status(500).json({ error: 'failed to load message body' });
@@ -1011,14 +998,14 @@ app.get('/messages/:messageId/body', async (req, res) => {
 //
 // This is the whole reason the feed can show what a message is actually about.
 // Pointing an <img> at the sender's CDN would hand them a timestamped read
-// receipt for every post scrolled past — strictly worse than opening the mail,
-// which this product already refuses to leak. Here the sender sees one request
+// receipt for every post scrolled past. Automatic images in opened email are
+// a separate reader preference. Here the sender sees one request
 // from a server, with no user agent, no cookie, and no relationship to when
 // anyone looked.
 //
 // The message id is the capability: you have to already be able to see the
 // message to name it, and the URL is only ever handed out to its owner.
-const emailImageCache = new Map();
+const emailImageCache = createImageResponseCache();
 const EMAIL_IMAGE_WIDTH = 900;
 const EMAIL_IMAGE_MAX_BYTES = 12 * 1024 * 1024;
 
@@ -1041,72 +1028,67 @@ app.get('/messages/:messageId/image', async (req, res) => {
     if (!userId) return res.status(401).end();
 
     const key = `${userId}:${messageId}`;
-    if (emailImageCache.has(key)) {
-      const hit = emailImageCache.get(key);
-      res.setHeader('Content-Type', hit.mime);
-      res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
-      return res.send(hit.bytes);
-    }
+    const hit = await emailImageCache.get(key, async () => {
+      const record = await messageStore.getMessage(userId, messageId);
+      if (!record?.imageUrl) throw Object.assign(new Error('missing image'), { status: 404 });
 
-    const record = await messageStore.getMessage(userId, messageId);
-    if (!record?.imageUrl) return res.status(404).end();
+      const upstream = await fetch(record.imageUrl, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(8000),
+        // No cookies, no referrer, nothing that identifies a person.
+        headers: { 'User-Agent': 'DecisionInbox/1.0 (+image-proxy)' },
+      });
+      if (!upstream.ok) throw Object.assign(new Error('upstream unavailable'), { status: 404 });
 
-    const upstream = await fetch(record.imageUrl, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(8000),
-      // No cookies, no referrer, nothing that identifies a person.
-      headers: { 'User-Agent': 'DecisionInbox/1.0 (+image-proxy)' },
-    });
-    if (!upstream.ok) return res.status(404).end();
+      const type = upstream.headers.get('content-type') ?? '';
+      if (!type.startsWith('image/')) throw Object.assign(new Error('not an image'), { status: 415 });
 
-    const type = upstream.headers.get('content-type') ?? '';
-    if (!type.startsWith('image/')) return res.status(415).end();
+      const raw = await readBoundedImage(upstream, EMAIL_IMAGE_MAX_BYTES);
 
-    const raw = Buffer.from(await upstream.arrayBuffer());
-    if (raw.length > EMAIL_IMAGE_MAX_BYTES) return res.status(413).end();
+      let bytes = raw;
+      let mime = type;
+      try {
+        const sharp = require('sharp');
 
-    let bytes = raw;
-    let mime = type;
-    try {
-      const sharp = require('sharp');
+        // The only place in the pipeline that sees actual pixels, and therefore
+        // the only place that can catch what a URL cannot say. Medium's digest
+        // picture is `miro.medium.com/max/1200/4*pUIf…png` — nothing in that
+        // name suggests it is a wordmark, and it arrived on the card as a
+        // hard-cropped fragment reading "Dail".
+        //
+        // Writing the empty string is what makes this self-healing: the next
+        // /feed drops the picture from the card entirely and the post falls
+        // back to text, rather than showing a grey band forever.
+        const meta = await sharp(raw).metadata();
+        const w = meta.width ?? 0;
+        const h = meta.height ?? 0;
+        if (w && h && (Math.max(w / h, h / w) > 3 || Math.min(w, h) < 180)) {
+          await messageStore.setImageUrl(userId, messageId, '');
+          console.log(`[email-image] rejected ${w}x${h} for ${messageId} — not a photograph`);
+          return null;
+        }
 
-      // The only place in the pipeline that sees actual pixels, and therefore
-      // the only place that can catch what a URL cannot say. Medium's digest
-      // picture is `miro.medium.com/max/1200/4*pUIf…png` — nothing in that
-      // name suggests it is a wordmark, and it arrived on the card as a
-      // hard-cropped fragment reading "Dail".
-      //
-      // Writing the empty string is what makes this self-healing: the next
-      // /feed drops the picture from the card entirely and the post falls
-      // back to text, rather than showing a grey band forever.
-      const meta = await sharp(raw).metadata();
-      const w = meta.width ?? 0;
-      const h = meta.height ?? 0;
-      if (w && h && (Math.max(w / h, h / w) > 3 || Math.min(w, h) < 180)) {
-        await messageStore.setImageUrl(userId, messageId, '');
-        console.log(`[email-image] rejected ${w}x${h} for ${messageId} — not a photograph`);
-        return res.status(404).end();
+        bytes = await sharp(raw)
+          .resize(EMAIL_IMAGE_WIDTH, null, { withoutEnlargement: true })
+          .webp({ quality: 80 })
+          .toBuffer();
+        mime = 'image/webp';
+      } catch (err) {
+        // An animated GIF or an SVG we cannot re-encode still deserves to show.
+        console.warn(`[email-image] resize failed for ${messageId}: ${err.message}`);
       }
 
-      bytes = await sharp(raw)
-        .resize(EMAIL_IMAGE_WIDTH, null, { withoutEnlargement: true })
-        .webp({ quality: 80 })
-        .toBuffer();
-      mime = 'image/webp';
-    } catch (err) {
-      // An animated GIF or an SVG we cannot re-encode still deserves to show.
-      console.warn(`[email-image] resize failed for ${messageId}: ${err.message}`);
-    }
-
-    emailImageCache.set(key, { bytes, mime });
-    res.setHeader('Content-Type', mime);
+      return { bytes, mime };
+    });
+    if (!hit) return res.status(404).end();
+    res.setHeader('Content-Type', hit.mime);
     res.setHeader('Cache-Control', 'private, max-age=604800, immutable');
-    res.send(bytes);
+    res.send(hit.bytes);
   } catch (err) {
     // A picture is decoration. It must never be able to fail a request the
     // reader made for their mail.
     console.warn('[email-image] error:', err.message);
-    res.status(404).end();
+    res.status(err.status || 404).end();
   }
 });
 
@@ -1184,13 +1166,15 @@ app.get('/messages/:messageId/attachments/:attachmentId', async (req, res) => {
 app.get('/messages/:messageId/attachments/:attachmentId/file', async (req, res) => {
   const { messageId, attachmentId } = req.params;
   const token = typeof req.query.t === 'string' ? req.query.t : '';
+  const imageType = typeof req.query.imageType === 'string' ? req.query.imageType : '';
+  if (imageType && !INLINE_IMAGE_TYPES.has(imageType)) return res.status(400).end();
 
   try {
     let userId = await resolveUserId(req);
     if (!userId && token) {
       const owners = await messageStore.getMessageOwners(messageId);
       userId = owners.find(id => {
-        const expected = emailImage.signImage(id, `${messageId}:${attachmentId}`);
+        const expected = emailImage.signImage(id, `${messageId}:${attachmentId}${imageType ? ":" + imageType : ""}`);
         return expected.length === token.length &&
           crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(token));
       }) ?? null;
@@ -1220,7 +1204,7 @@ app.get('/messages/:messageId/attachments/:attachmentId/file', async (req, res) 
 
     const filename = (meta?.filename ?? 'attachment').replace(/["\\\r\n]/g, '');
     accountSignal.throwIfAborted();
-    res.setHeader('Content-Type', meta?.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Type', imageType || meta?.mimeType || 'application/octet-stream');
     res.setHeader('Content-Length', bytes.length);
     // `inline`: the phone previews it rather than dropping it in Files. The
     // reader asked to look at the thing, not to file it somewhere.
